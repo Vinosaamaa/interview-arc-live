@@ -8,6 +8,9 @@ struct SystemDesignRoomView: View {
         VStack(spacing: 0) {
             header
             question
+            if let errorMessage = model.errorMessage {
+                recoveryBanner(errorMessage)
+            }
 
             HSplitView {
                 transcript
@@ -21,6 +24,13 @@ struct SystemDesignRoomView: View {
         .background(LivePalette.room)
         .foregroundStyle(LivePalette.ink)
         .task { await model.open() }
+        .sheet(isPresented: $model.isCredentialSetupPresented) {
+            GroqCredentialSetupView(
+                isSaving: model.isSavingCredential,
+                errorMessage: model.credentialErrorMessage,
+                onSave: model.saveGroqCredential
+            )
+        }
     }
 
     private var header: some View {
@@ -36,10 +46,19 @@ struct SystemDesignRoomView: View {
                 .frame(width: 1, height: 18)
             Text(model.statusMessage)
                 .foregroundStyle(LivePalette.line)
+                .lineLimit(1)
+            if model.needsGroqCredential {
+                Button("Add Groq key") {
+                    model.presentCredentialSetup()
+                }
+                .buttonStyle(.bordered)
+                .tint(LivePalette.liveSignal)
+                .accessibilityHint("Opens secure Groq transcription setup")
+            }
             Rectangle()
                 .fill(LivePalette.line.opacity(0.45))
                 .frame(width: 1, height: 18)
-            Label("Private", systemImage: "lock")
+            Label("Local source · Groq transcript", systemImage: "lock")
         }
         .font(.system(.body, design: .rounded))
         .foregroundStyle(LivePalette.paper)
@@ -69,43 +88,124 @@ struct SystemDesignRoomView: View {
     private var transcript: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 0) {
-                if let snapshot = model.snapshot, !snapshot.turns.isEmpty {
+                if let snapshot = model.snapshot {
                     ForEach(snapshot.turns.indices, id: \.self) { index in
                         turnlineEntry(
                             snapshot.turns[index],
                             isLast: index == snapshot.turns.count - 1
+                                && snapshot.phase != .candidateFloor
                         )
                     }
-                } else {
-                    VStack(alignment: .leading, spacing: 10) {
-                        Text("CANDIDATE FLOOR")
-                            .font(.system(.caption, design: .monospaced, weight: .bold))
-                            .foregroundStyle(LivePalette.candidate)
-                        Text("Think aloud, work on the board, then hand off one complete answer.")
-                            .font(.system(.body, design: .rounded))
-                            .foregroundStyle(LivePalette.muted)
+
+                    if snapshot.phase == .candidateFloor {
+                        candidateFloorEntry
+                    } else if snapshot.turns.isEmpty {
+                        preparingEmptyState
                     }
-                    .padding(28)
+                } else {
+                    preparingEmptyState
                 }
             }
         }
         .background(LivePalette.paper)
     }
 
+    private var preparingEmptyState: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("PREPARING ROOM")
+                .font(.system(.caption, design: .monospaced, weight: .bold))
+                .foregroundStyle(LivePalette.interviewer)
+            Text("Restoring the latest complete local session.")
+                .font(.system(.body, design: .rounded))
+                .foregroundStyle(LivePalette.muted)
+        }
+        .padding(28)
+    }
+
+    private var candidateFloorEntry: some View {
+        HStack(alignment: .top, spacing: 18) {
+            VStack(spacing: 0) {
+                Circle()
+                    .fill(LivePalette.candidate)
+                    .frame(width: 11, height: 11)
+                Rectangle()
+                    .fill(Color.clear)
+                    .frame(width: 1)
+                    .frame(minHeight: 82)
+            }
+            .padding(.top, 4)
+            .accessibilityHidden(true)
+
+            VStack(alignment: .leading, spacing: 14) {
+                HStack(alignment: .firstTextBaseline) {
+                    Text("YOUR ANSWER DRAFT")
+                        .font(.system(.caption, design: .monospaced, weight: .bold))
+                        .foregroundStyle(LivePalette.candidate)
+                    Spacer()
+                    Text(segmentCountLabel)
+                        .font(.system(.caption, design: .monospaced))
+                        .foregroundStyle(LivePalette.muted)
+                }
+
+                if model.segments.isEmpty {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("Record your first segment")
+                            .font(.system(.title3, design: .rounded, weight: .semibold))
+                        Text("Working pauses can become separate segments. Only Hand off commits them as one answer.")
+                            .font(.system(.body, design: .rounded))
+                            .foregroundStyle(LivePalette.muted)
+                    }
+                    .padding(14)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(
+                        LivePalette.room.opacity(0.48),
+                        in: RoundedRectangle(cornerRadius: 12)
+                    )
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 12)
+                            .stroke(LivePalette.line, style: StrokeStyle(lineWidth: 1, dash: [5]))
+                    }
+                } else {
+                    ForEach(model.segments) { segment in
+                        CandidateSegmentCard(
+                            segment: segment,
+                            isBusy: model.isWorking || model.canStopRecording,
+                            onPlay: {
+                                Task { await model.playSegment(id: segment.id) }
+                            },
+                            onTranscribe: {
+                                Task { await model.transcribeSegment(id: segment.id) }
+                            },
+                            onExclude: {
+                                Task { await model.excludeSegment(id: segment.id) }
+                            }
+                        )
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.bottom, 24)
+        }
+        .padding(.horizontal, 28)
+    }
+
     private func turnlineEntry(_ turn: InterviewTurn, isLast: Bool) -> some View {
         let role: String
         let body: String
         let color: Color
+        let rendersMarkdown: Bool
 
         switch turn {
         case .candidate(let candidate):
             role = "YOU"
             body = candidate.transcript.body
             color = LivePalette.candidate
+            rendersMarkdown = false
         case .interviewer(let interviewer):
             role = "MARA"
             body = interviewer.displayMarkdown
             color = LivePalette.interviewer
+            rendersMarkdown = true
         }
 
         return HStack(alignment: .top, spacing: 18) {
@@ -125,7 +225,13 @@ struct SystemDesignRoomView: View {
                 Text(role)
                     .font(.system(.caption, design: .monospaced, weight: .bold))
                     .foregroundStyle(color)
-                Text(.init(body))
+                Group {
+                    if rendersMarkdown {
+                        Text(.init(body))
+                    } else {
+                        Text(body)
+                    }
+                }
                     .font(.system(.title3, design: .rounded))
                     .textSelection(.enabled)
                     .fixedSize(horizontal: false, vertical: true)
@@ -147,8 +253,8 @@ struct SystemDesignRoomView: View {
                 Spacer()
                 Text("Draft revision \(model.snapshot?.revision ?? 0)")
                     .foregroundStyle(LivePalette.muted)
-                Button("Attach revision") {}
-                    .disabled(true)
+                Label("Reference draft · read-only", systemImage: "lock")
+                    .foregroundStyle(LivePalette.muted)
             }
             .padding(.horizontal, 20)
             .frame(height: 52)
@@ -182,6 +288,31 @@ struct SystemDesignRoomView: View {
             Capsule()
                 .fill(LivePalette.liveSignal.opacity(0.72))
                 .frame(height: 3)
+
+            if model.canStopRecording {
+                Button {
+                    Task { await model.stopRecording() }
+                } label: {
+                    Label(model.stopActionTitle, systemImage: model.stopActionIcon)
+                        .font(.system(.body, design: .rounded, weight: .semibold))
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(LivePalette.handoff)
+                .disabled(model.isWorking)
+                .keyboardShortcut(.space, modifiers: [.command])
+            } else if model.showsRecordControl {
+                Button {
+                    Task { await model.recordSegment() }
+                } label: {
+                    Label(model.recordActionTitle, systemImage: "record.circle")
+                        .font(.system(.body, design: .rounded, weight: .semibold))
+                }
+                .buttonStyle(.bordered)
+                .tint(LivePalette.paper)
+                .disabled(!model.canRecordSegment)
+                .keyboardShortcut(.space, modifiers: [.command])
+            }
+
             Button {
                 Task { await model.performPrimaryAction() }
             } label: {
@@ -209,9 +340,37 @@ struct SystemDesignRoomView: View {
         default: "Preparing room"
         }
     }
+
+    private var segmentCountLabel: String {
+        let count = model.segments.count
+        return count == 1 ? "1 SEGMENT" : "\(count) SEGMENTS"
+    }
+
+    private func recoveryBanner(_ message: String) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(LivePalette.warning)
+                .accessibilityHidden(true)
+            Text(message)
+                .font(.system(.callout, design: .rounded, weight: .medium))
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer()
+            if model.needsGroqCredential {
+                Button("Add Groq key") {
+                    model.presentCredentialSetup()
+                }
+            }
+        }
+        .padding(.horizontal, 24)
+        .padding(.vertical, 10)
+        .background(LivePalette.warning.opacity(0.12))
+        .overlay(alignment: .bottom) {
+            Rectangle().fill(LivePalette.warning.opacity(0.5)).frame(height: 1)
+        }
+    }
 }
 
-private enum LivePalette {
+enum LivePalette {
     static let room = Color(red: 232 / 255, green: 239 / 255, blue: 236 / 255)
     static let paper = Color(red: 251 / 255, green: 252 / 255, blue: 250 / 255)
     static let ink = Color(red: 16 / 255, green: 42 / 255, blue: 42 / 255)
@@ -222,6 +381,7 @@ private enum LivePalette {
     static let interviewer = Color(red: 88 / 255, green: 105 / 255, blue: 201 / 255)
     static let handoff = Color(red: 223 / 255, green: 102 / 255, blue: 63 / 255)
     static let liveSignal = Color(red: 185 / 255, green: 219 / 255, blue: 87 / 255)
+    static let warning = Color(red: 176 / 255, green: 78 / 255, blue: 39 / 255)
 }
 
 private struct LiveMark: View {

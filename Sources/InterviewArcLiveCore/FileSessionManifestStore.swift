@@ -8,12 +8,16 @@ import Foundation
 /// complete destination remains readable.
 public actor FileSessionManifestStore: SessionManifestStore {
     private let directoryURL: URL
+    private let privateDirectoryHierarchy: [URL]
     private let replace: @Sendable (_ destination: URL, _ prepared: URL) throws -> Void
     private let encoder: JSONEncoder
     private let decoder: JSONDecoder
 
     public init(directoryURL: URL) {
-        self.init(directoryURL: directoryURL) { destination, prepared in
+        self.init(
+            directoryURL: directoryURL,
+            privateDirectoryHierarchy: [directoryURL]
+        ) { destination, prepared in
             _ = try FileManager.default.replaceItemAt(
                 destination,
                 withItemAt: prepared,
@@ -24,9 +28,22 @@ public actor FileSessionManifestStore: SessionManifestStore {
     }
 
     public init() throws {
-        self.init(
-            directoryURL: try LivePaths.sessionManifestsDirectory()
+        let root = try LivePaths.applicationSupportRoot()
+        let manifests = root.appendingPathComponent(
+            "SessionManifests",
+            isDirectory: true
         )
+        self.init(
+            directoryURL: manifests,
+            privateDirectoryHierarchy: [root, manifests]
+        ) { destination, prepared in
+            _ = try FileManager.default.replaceItemAt(
+                destination,
+                withItemAt: prepared,
+                backupItemName: nil,
+                options: []
+            )
+        }
     }
 
     init(
@@ -36,7 +53,40 @@ public actor FileSessionManifestStore: SessionManifestStore {
             _ prepared: URL
         ) throws -> Void
     ) {
+        self.init(
+            directoryURL: directoryURL,
+            privateDirectoryHierarchy: [directoryURL],
+            replace: replace
+        )
+    }
+
+    init(
+        directoryURL: URL,
+        privateDirectoryHierarchy: [URL]
+    ) {
+        self.init(
+            directoryURL: directoryURL,
+            privateDirectoryHierarchy: privateDirectoryHierarchy
+        ) { destination, prepared in
+            _ = try FileManager.default.replaceItemAt(
+                destination,
+                withItemAt: prepared,
+                backupItemName: nil,
+                options: []
+            )
+        }
+    }
+
+    init(
+        directoryURL: URL,
+        privateDirectoryHierarchy: [URL],
+        replace: @escaping @Sendable (
+            _ destination: URL,
+            _ prepared: URL
+        ) throws -> Void
+    ) {
         self.directoryURL = directoryURL
+        self.privateDirectoryHierarchy = privateDirectoryHierarchy
         self.replace = replace
 
         let encoder = JSONEncoder()
@@ -57,6 +107,7 @@ public actor FileSessionManifestStore: SessionManifestStore {
         guard FileManager.default.fileExists(atPath: manifestURL.path) else {
             return nil
         }
+        try securePrivateFile(manifestURL)
 
         let manifest = try decoder.decode(
             SessionManifest.self,
@@ -113,7 +164,12 @@ public actor FileSessionManifestStore: SessionManifestStore {
         }
 
         try encoder.encode(manifest).write(to: prepared, options: [.atomic])
+        try securePrivateFile(prepared)
 
+        // Both the existing destination (secured by `loadUnlocked`) and the
+        // prepared replacement are already 0600. Do not add a fallible chmod
+        // after the atomic commit, which could report failure after new state
+        // is durable.
         if current == nil {
             try FileManager.default.moveItem(at: prepared, to: destination)
         } else {
@@ -122,10 +178,23 @@ public actor FileSessionManifestStore: SessionManifestStore {
     }
 
     private func prepareDirectory() throws {
-        try FileManager.default.createDirectory(
-            at: directoryURL,
-            withIntermediateDirectories: true,
-            attributes: [.posixPermissions: 0o700]
+        for directory in privateDirectoryHierarchy {
+            try FileManager.default.createDirectory(
+                at: directory,
+                withIntermediateDirectories: true,
+                attributes: [.posixPermissions: 0o700]
+            )
+            try FileManager.default.setAttributes(
+                [.posixPermissions: 0o700],
+                ofItemAtPath: directory.path
+            )
+        }
+    }
+
+    private func securePrivateFile(_ url: URL) throws {
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o600],
+            ofItemAtPath: url.path
         )
     }
 

@@ -51,6 +51,93 @@ final class SessionManifestStoreTests: XCTestCase {
         XCTAssertEqual(restored, next)
     }
 
+    func testFileAdapterForcesPrivateDirectoryAndManifestModes() async throws {
+        let temporaryRoot = makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: temporaryRoot) }
+
+        let liveRoot = temporaryRoot.appendingPathComponent(
+            "InterviewArcLive",
+            isDirectory: true
+        )
+        let manifestsDirectory = liveRoot.appendingPathComponent(
+            "SessionManifests",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(
+            at: manifestsDirectory,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o777]
+        )
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o777],
+            ofItemAtPath: liveRoot.path
+        )
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o777],
+            ofItemAtPath: manifestsDirectory.path
+        )
+
+        let sessionID = SessionID("public-private-file-modes")
+        let store = FileSessionManifestStore(
+            directoryURL: manifestsDirectory,
+            privateDirectoryHierarchy: [liveRoot, manifestsDirectory]
+        )
+        try await store.save(
+            manifest(sessionID: sessionID, revision: 0),
+            expectedRevision: nil
+        )
+
+        let manifestURL = try XCTUnwrap(
+            FileManager.default.contentsOfDirectory(
+                at: manifestsDirectory,
+                includingPropertiesForKeys: nil
+            ).first { $0.pathExtension == "json" }
+        )
+        let lockURL = try XCTUnwrap(
+            FileManager.default.contentsOfDirectory(
+                at: manifestsDirectory,
+                includingPropertiesForKeys: nil
+            ).first { $0.pathExtension == "lock" }
+        )
+        XCTAssertEqual(try permissions(of: liveRoot), 0o700)
+        XCTAssertEqual(try permissions(of: manifestsDirectory), 0o700)
+        XCTAssertEqual(try permissions(of: manifestURL), 0o600)
+        XCTAssertEqual(try permissions(of: lockURL), 0o600)
+
+        // Simulate permissive creation/replacement defaults. The next save must
+        // repair every private mode before it becomes durable.
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o777],
+            ofItemAtPath: liveRoot.path
+        )
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o777],
+            ofItemAtPath: manifestsDirectory.path
+        )
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o666],
+            ofItemAtPath: manifestURL.path
+        )
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o666],
+            ofItemAtPath: lockURL.path
+        )
+
+        try await store.save(
+            manifest(
+                sessionID: sessionID,
+                revision: 1,
+                phase: .candidateFloor
+            ),
+            expectedRevision: 0
+        )
+
+        XCTAssertEqual(try permissions(of: liveRoot), 0o700)
+        XCTAssertEqual(try permissions(of: manifestsDirectory), 0o700)
+        XCTAssertEqual(try permissions(of: manifestURL), 0o600)
+        XCTAssertEqual(try permissions(of: lockURL), 0o600)
+    }
+
     func testFileAdapterRejectsStaleWriterWithoutChangingReadableManifest() async throws {
         let directory = makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -252,6 +339,12 @@ final class SessionManifestStoreTests: XCTestCase {
     private func makeTemporaryDirectory() -> URL {
         FileManager.default.temporaryDirectory
             .appendingPathComponent("InterviewArcLiveTests-\(UUID().uuidString)", isDirectory: true)
+    }
+
+    private func permissions(of url: URL) throws -> Int {
+        let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
+        return try XCTUnwrap(attributes[.posixPermissions] as? NSNumber).intValue
+            & 0o777
     }
 }
 
