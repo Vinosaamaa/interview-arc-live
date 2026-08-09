@@ -23,10 +23,14 @@ jobs:
         run: swift test
       - name: Build opt-in Codex smoke helper
         run: swift build --product InterviewArcLiveCodexSmoke
+      - name: Build opt-in endpoint smoke helper
+        run: swift build --product InterviewArcLiveEndpointSmoke
       - name: Test installer safety
         run: Tests/ScriptTests/install-app-tests.zsh
       - name: Test installed Codex smoke safety
         run: Tests/ScriptTests/codex-smoke-tests.zsh
+      - name: Test installed endpoint smoke safety
+        run: Tests/ScriptTests/endpoint-smoke-tests.zsh
       - name: Package merged application
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         run: scripts/package-app.sh release

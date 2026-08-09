@@ -128,6 +128,77 @@ final class SystemDesignRoomModel: ObservableObject {
         credentialState == .missing || credentialState == .unusable
     }
 
+    var availableTurnModes: [TurnMode] {
+        [.manual, .patientAuto]
+    }
+
+    var turnMode: TurnMode {
+        snapshot?.turnMode ?? .manual
+    }
+
+    var canSelectTurnMode: Bool {
+        guard !isWorking, let snapshot else { return false }
+        return snapshot.phase != .completed
+    }
+
+    func turnModeTitle(_ mode: TurnMode) -> String {
+        switch mode {
+        case .manual:
+            return "Manual"
+        case .patientAuto:
+            return "Patient Auto · Shadow"
+        case .cueOnly:
+            return "Cue Only"
+        }
+    }
+
+    var endpointShadowPresentation: EndpointShadowPresentation {
+        guard let snapshot else {
+            return EndpointShadowPresentation.make(
+                turnMode: .manual,
+                phase: nil,
+                currentEvaluation: nil,
+                hasSelectedDraft: false,
+                hasUnresolvedDraft: false,
+                hasStaleEvaluation: false
+            )
+        }
+
+        let draftSegments = snapshot.segments.filter { $0.committedTurnID == nil }
+        let includedDrafts = draftSegments
+            .filter { $0.lifecycle != .excluded }
+            .sorted { $0.ordinal < $1.ordinal }
+        let hasUnresolvedDraft = includedDrafts.contains {
+            $0.lifecycle == .captureAuthorized
+                || $0.lifecycle == .recording
+                || $0.lifecycle == .finalizationAuthorized
+                || $0.lifecycle == .transcribing
+                || $0.selectedCandidateID == nil
+        }
+        let selectedCandidateIDs = includedDrafts.compactMap(\.selectedCandidateID)
+        let questionTurnID: TurnID? = snapshot.turns.reversed().lazy.compactMap { turn in
+            guard case .interviewer(let interviewer) = turn else { return nil }
+            return interviewer.id
+        }.first
+        let latestEvaluation = snapshot.endpointEvaluations.last
+        let currentEvaluation = EndpointShadowPresentation.currentEvaluation(
+            in: snapshot.endpointEvaluations,
+            selectedCandidateIDs: selectedCandidateIDs,
+            questionTurnID: questionTurnID,
+            hasUnresolvedDraft: hasUnresolvedDraft
+        )
+
+        return EndpointShadowPresentation.make(
+            turnMode: snapshot.turnMode,
+            phase: snapshot.phase,
+            currentEvaluation: currentEvaluation,
+            hasSelectedDraft: !selectedCandidateIDs.isEmpty,
+            hasUnresolvedDraft: hasUnresolvedDraft,
+            hasStaleEvaluation: latestEvaluation != nil
+                && currentEvaluation == nil
+        )
+    }
+
     private var hasUsableGroqCredential: Bool {
         credentialState == .readyFromKeychain
             || credentialState == .readyUntilQuit
@@ -228,7 +299,10 @@ final class SystemDesignRoomModel: ObservableObject {
                 interviewerRuntime: codexRuntime,
                 recording: VoiceCoreSegmentRecorder(),
                 transcriber: VoiceCoreSegmentTranscriber(),
-                credentialReader: credentialStore
+                credentialReader: credentialStore,
+                semanticEndpointClassifier: GroqEndpointClassifier(
+                    credentialReader: credentialStore
+                )
             )
             coordinator = opened
             opened.setSnapshotHandler { [weak self, weak opened] nextSnapshot in
@@ -268,6 +342,31 @@ final class SystemDesignRoomModel: ObservableObject {
         defer { isCheckingCodex = false }
 
         applyCodexReadiness(await codexRuntime.preflight())
+    }
+
+    func selectTurnMode(_ mode: TurnMode) async {
+        guard mode == .manual || mode == .patientAuto,
+              mode != turnMode,
+              canSelectTurnMode,
+              let coordinator else {
+            return
+        }
+
+        isWorking = true
+        errorMessage = nil
+        statusMessage = "Saving turn-taking mode…"
+        defer { isWorking = false }
+
+        do {
+            let updated = try await coordinator.setTurnMode(
+                mode,
+                commandID: commandID("set-turn-mode")
+            )
+            publish(updated)
+        } catch {
+            publish(coordinator.snapshot)
+            errorMessage = safeMessage(for: error)
+        }
     }
 
     func recordSegment() async {

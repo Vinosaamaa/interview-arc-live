@@ -684,7 +684,7 @@ final class SegmentLifecycleTests: XCTestCase {
         XCTAssertEqual(failed.lifecycle, .failed)
         XCTAssertEqual(failed.captureFailureReason, .noPlayableAudio)
         XCTAssertEqual(failed.capturedAudio, nonPlayable)
-        let durable = try await store.load(sessionID: finalized.sessionID)
+        let durable = await store.load(sessionID: finalized.sessionID)
         XCTAssertEqual(durable?.segments.first?.capturedAudio, nonPlayable)
 
         let next = try await coordinator.beginSegment(
@@ -787,8 +787,858 @@ final class SegmentLifecycleTests: XCTestCase {
             recovered.segments[0].capturedAudio?.audioIdentity.fileName,
             "start-persistence-recovery.m4a"
         )
-        let durable = try await store.load(sessionID: coordinator.snapshot.sessionID)
+        let durable = await store.load(sessionID: coordinator.snapshot.sessionID)
         XCTAssertEqual(durable?.segments[0].lifecycle, .audioReady)
+    }
+
+    func testManualAndCueOnlyNeverInvokeSemanticEndpointClassifier() async throws {
+        for mode in [TurnMode.manual, .cueOnly] {
+            let classifier = RecordingSemanticEndpointClassifier(
+                results: [
+                    .success(
+                        SemanticEndpointProposal(
+                            decision: .likelyEnd,
+                            reasonCode: .answerResolvesQuestion
+                        )
+                    )
+                ]
+            )
+            let coordinator = try await SegmentSpeechCoordinator.open(
+                sessionID: SessionID("endpoint-off-\(mode.rawValue)"),
+                activityID: "endpoint-off-activity",
+                activityPrompt: try fixtureActivityPrompt(),
+                turnMode: mode,
+                manifestStore: InMemorySessionManifestStore(),
+                interviewerRuntime: fixtureRuntime(),
+                recording: StubSegmentRecorder(
+                    capture: try capturedAudio(fileName: "endpoint-off.m4a")
+                ),
+                transcriber: SequencedSegmentTranscriber(
+                    results: [
+                        .success(
+                            SegmentTranscriptionResult(
+                                body: "A durable manual answer.",
+                                quality: .verified
+                            )
+                        )
+                    ]
+                ),
+                credentialReader: FixedCredentialReader(value: "credential"),
+                semanticEndpointClassifier: classifier
+            )
+            _ = try await coordinator.giveCandidateFloor(
+                commandID: CommandID("endpoint-off-floor-\(mode.rawValue)")
+            )
+            _ = try await coordinator.beginSegment(
+                commandID: CommandID("endpoint-off-begin-\(mode.rawValue)")
+            )
+            let completed = try await coordinator.finishSegment(
+                commandID: CommandID("endpoint-off-finish-\(mode.rawValue)"),
+                transcriptionCommandID: CommandID("endpoint-off-transcribe-\(mode.rawValue)")
+            )
+
+            let classifierCalls = await classifier.invocationCount()
+            XCTAssertEqual(classifierCalls, 0)
+            XCTAssertTrue(completed.endpointEvaluations.isEmpty)
+            XCTAssertEqual(completed.phase, .candidateFloor)
+            XCTAssertTrue(completed.turns.isEmpty)
+        }
+    }
+
+    func testPatientAutoPersistsAuthorizationBeforeExactShadowContextAndProposal() async throws {
+        let store = InMemorySessionManifestStore()
+        let session = try await makeCandidateFloorSession(
+            store: store,
+            turnMode: .patientAuto
+        )
+        _ = try await makeTranscribedSegment(
+            session: session,
+            commandStem: "endpoint-first",
+            body: "  first spoken part  ",
+            quality: .verified
+        )
+        let restored = await session.snapshot()
+        let classifier = RecordingSemanticEndpointClassifier(
+            results: [
+                .success(
+                    SemanticEndpointProposal(
+                        decision: .likelyContinue,
+                        reasonCode: .requestedPartUnanswered
+                    )
+                )
+            ],
+            authorizationStore: store,
+            sessionID: restored.sessionID
+        )
+        let interviewerRuntime = CountingInterviewerRuntime()
+        let coordinator = try await SegmentSpeechCoordinator.open(
+            sessionID: restored.sessionID,
+            activityID: restored.activityID,
+            activityPrompt: restored.activityPrompt,
+            manifestStore: store,
+            interviewerRuntime: interviewerRuntime,
+            recording: StubSegmentRecorder(
+                capture: try capturedAudio(fileName: "endpoint-second.m4a")
+            ),
+            transcriber: SequencedSegmentTranscriber(
+                results: [
+                    .success(
+                        SegmentTranscriptionResult(
+                            body: "\n second spoken part \n",
+                            quality: .verified
+                        )
+                    )
+                ]
+            ),
+            credentialReader: FixedCredentialReader(value: "credential"),
+            semanticEndpointClassifier: classifier
+        )
+        _ = try await coordinator.beginSegment(
+            commandID: CommandID("endpoint-second-begin")
+        )
+        let completed = try await coordinator.finishSegment(
+            commandID: CommandID("endpoint-second-finish"),
+            transcriptionCommandID: CommandID("endpoint-second-transcribe")
+        )
+
+        let contexts = await classifier.recordedContexts()
+        let context = try XCTUnwrap(contexts.first)
+        XCTAssertEqual(context.interviewerQuestion, restored.activityPrompt.question)
+        XCTAssertEqual(context.requestedParts, restored.activityPrompt.requestedParts)
+        XCTAssertEqual(context.accumulatedAnswer, "first spoken part\n\nsecond spoken part")
+        XCTAssertEqual(context.latestSegment, "second spoken part")
+        XCTAssertEqual(context.silenceDurationMilliseconds, 0)
+        XCTAssertEqual(context.specialty, "system_design")
+        XCTAssertEqual(context.stage, restored.activityPrompt.stage)
+        XCTAssertFalse(context.explicitCue)
+        XCTAssertTrue(context.workspaceActivity.isEmpty)
+
+        let authorizationStates = await classifier.authorizationStatesAtEntry()
+        XCTAssertEqual(authorizationStates, [true])
+        let evaluation = try XCTUnwrap(completed.endpointEvaluations.last)
+        XCTAssertEqual(evaluation.lifecycle, .proposalStored)
+        XCTAssertEqual(
+            evaluation.proposal,
+            SemanticEndpointProposal(
+                decision: .likelyContinue,
+                reasonCode: .requestedPartUnanswered
+            )
+        )
+        let selectedCandidateIDs = completed.segments
+            .filter { $0.committedTurnID == nil && $0.lifecycle != .excluded }
+            .sorted { $0.ordinal < $1.ordinal }
+            .compactMap(\.selectedCandidateID)
+        XCTAssertEqual(evaluation.selectedCandidateIDs, selectedCandidateIDs)
+        XCTAssertNil(evaluation.questionTurnID)
+        XCTAssertEqual(completed.phase, .candidateFloor)
+        XCTAssertTrue(completed.turns.isEmpty)
+        let interviewerCalls = await interviewerRuntime.invocationCount()
+        XCTAssertEqual(interviewerCalls, 0)
+    }
+
+    func testPatientAutoLaterFloorUsesLatestCanonicalInterviewerQuestionAndRestoresMode() async throws {
+        let store = InMemorySessionManifestStore()
+        let classifier = RecordingSemanticEndpointClassifier(
+            results: [
+                .success(
+                    SemanticEndpointProposal(
+                        decision: .likelyEnd,
+                        reasonCode: .answerResolvesQuestion
+                    )
+                ),
+                .success(
+                    SemanticEndpointProposal(
+                        decision: .likelyContinue,
+                        reasonCode: .unfinishedThought
+                    )
+                ),
+            ]
+        )
+        let runtime = CountingInterviewerRuntime()
+        let coordinator = try await SegmentSpeechCoordinator.open(
+            sessionID: SessionID("endpoint-later-floor"),
+            activityID: "endpoint-later-floor-activity",
+            activityPrompt: try fixtureActivityPrompt(),
+            turnMode: .patientAuto,
+            manifestStore: store,
+            interviewerRuntime: runtime,
+            recording: StubSegmentRecorder(
+                capture: try capturedAudio(fileName: "endpoint-later-floor.m4a")
+            ),
+            transcriber: SequencedSegmentTranscriber(
+                results: [
+                    .success(
+                        SegmentTranscriptionResult(
+                            body: "Initial answer.",
+                            quality: .verified
+                        )
+                    ),
+                    .success(
+                        SegmentTranscriptionResult(
+                            body: "Later-floor answer.",
+                            quality: .verified
+                        )
+                    ),
+                ]
+            ),
+            credentialReader: FixedCredentialReader(value: "credential"),
+            semanticEndpointClassifier: classifier
+        )
+        _ = try await coordinator.giveCandidateFloor(
+            commandID: CommandID("endpoint-later-floor-initial-floor")
+        )
+        _ = try await coordinator.beginSegment(
+            commandID: CommandID("endpoint-later-floor-first-begin")
+        )
+        _ = try await coordinator.finishSegment(
+            commandID: CommandID("endpoint-later-floor-first-finish"),
+            transcriptionCommandID: CommandID("endpoint-later-floor-first-transcribe")
+        )
+        let interviewerTurn = try await coordinator.handOff(
+            commandID: CommandID("endpoint-later-floor-hand-off")
+        )
+        guard case .interviewer(let canonicalQuestion) = interviewerTurn.turns.last else {
+            return XCTFail("Expected the canonical Interviewer Turn")
+        }
+        _ = try await coordinator.giveCandidateFloor(
+            commandID: CommandID("endpoint-later-floor-second-floor")
+        )
+        _ = try await coordinator.beginSegment(
+            commandID: CommandID("endpoint-later-floor-second-begin")
+        )
+        let completed = try await coordinator.finishSegment(
+            commandID: CommandID("endpoint-later-floor-second-finish"),
+            transcriptionCommandID: CommandID("endpoint-later-floor-second-transcribe")
+        )
+
+        let contexts = await classifier.recordedContexts()
+        XCTAssertEqual(contexts.count, 2)
+        XCTAssertEqual(contexts[1].interviewerQuestion, canonicalQuestion.displayMarkdown)
+        XCTAssertEqual(contexts[1].requestedParts, [])
+        XCTAssertEqual(contexts[1].accumulatedAnswer, "Later-floor answer.")
+        XCTAssertEqual(completed.endpointEvaluations.last?.questionTurnID, canonicalQuestion.id)
+
+        let restored = try await SegmentSpeechCoordinator.open(
+            sessionID: completed.sessionID,
+            activityID: completed.activityID,
+            activityPrompt: completed.activityPrompt,
+            manifestStore: store,
+            interviewerRuntime: runtime,
+            recording: StubSegmentRecorder(
+                capture: try capturedAudio(fileName: "endpoint-later-floor-restore.m4a")
+            ),
+            transcriber: SequencedSegmentTranscriber(results: []),
+            credentialReader: FixedCredentialReader(value: "credential"),
+            semanticEndpointClassifier: classifier
+        )
+        XCTAssertEqual(restored.snapshot.turnMode, .patientAuto)
+    }
+
+    func testPatientAutoStoresSafeClassifierFailureWithoutFailingTranscription() async throws {
+        let classifier = RecordingSemanticEndpointClassifier(
+            results: [.failure(.rejected(statusCode: 429))]
+        )
+        let coordinator = try await SegmentSpeechCoordinator.open(
+            sessionID: SessionID("endpoint-safe-failure"),
+            activityID: "endpoint-safe-failure-activity",
+            activityPrompt: try fixtureActivityPrompt(),
+            turnMode: .patientAuto,
+            manifestStore: InMemorySessionManifestStore(),
+            interviewerRuntime: fixtureRuntime(),
+            recording: StubSegmentRecorder(
+                capture: try capturedAudio(fileName: "endpoint-safe-failure.m4a")
+            ),
+            transcriber: SequencedSegmentTranscriber(
+                results: [
+                    .success(
+                        SegmentTranscriptionResult(
+                            body: "The transcript succeeds independently.",
+                            quality: .verified
+                        )
+                    )
+                ]
+            ),
+            credentialReader: FixedCredentialReader(value: "credential"),
+            semanticEndpointClassifier: classifier
+        )
+        _ = try await coordinator.giveCandidateFloor(
+            commandID: CommandID("endpoint-safe-failure-floor")
+        )
+        _ = try await coordinator.beginSegment(
+            commandID: CommandID("endpoint-safe-failure-begin")
+        )
+
+        let completed = try await coordinator.finishSegment(
+            commandID: CommandID("endpoint-safe-failure-finish"),
+            transcriptionCommandID: CommandID("endpoint-safe-failure-transcribe")
+        )
+
+        XCTAssertEqual(
+            completed.segments.first?.selectedCandidate?.body,
+            "The transcript succeeds independently."
+        )
+        let evaluation = try XCTUnwrap(completed.endpointEvaluations.first)
+        XCTAssertEqual(evaluation.lifecycle, .failed)
+        XCTAssertEqual(evaluation.failure?.reason, .providerRejected)
+        XCTAssertEqual(evaluation.failure?.providerStatusCode, 429)
+        XCTAssertNil(evaluation.proposal)
+        XCTAssertEqual(completed.phase, .candidateFloor)
+    }
+
+    func testPatientAutoAuthorizationPersistenceFailureKeepsSuccessfulTranscript() async throws {
+        let store = EndpointWriteFailingSessionManifestStore(failurePoint: .authorization)
+        let classifier = RecordingSemanticEndpointClassifier(
+            results: [
+                .success(
+                    SemanticEndpointProposal(
+                        decision: .likelyEnd,
+                        reasonCode: .answerResolvesQuestion
+                    )
+                )
+            ]
+        )
+        let transcriber = SequencedSegmentTranscriber(
+            results: [
+                .success(
+                    SegmentTranscriptionResult(
+                        body: "The transcript remains the successful operation.",
+                        quality: .verified
+                    )
+                )
+            ]
+        )
+        let coordinator = try await SegmentSpeechCoordinator.open(
+            sessionID: SessionID("endpoint-authorization-write-failure"),
+            activityID: "endpoint-authorization-write-failure-activity",
+            activityPrompt: try fixtureActivityPrompt(),
+            turnMode: .patientAuto,
+            manifestStore: store,
+            interviewerRuntime: fixtureRuntime(),
+            recording: StubSegmentRecorder(
+                capture: try capturedAudio(fileName: "endpoint-authorization-write-failure.m4a")
+            ),
+            transcriber: transcriber,
+            credentialReader: FixedCredentialReader(value: "credential"),
+            semanticEndpointClassifier: classifier
+        )
+        _ = try await coordinator.giveCandidateFloor(
+            commandID: CommandID("endpoint-authorization-write-failure-floor")
+        )
+        _ = try await coordinator.beginSegment(
+            commandID: CommandID("endpoint-authorization-write-failure-begin")
+        )
+
+        let completed = try await coordinator.finishSegment(
+            commandID: CommandID("endpoint-authorization-write-failure-finish"),
+            transcriptionCommandID: CommandID("endpoint-authorization-write-failure-transcribe")
+        )
+
+        XCTAssertEqual(
+            completed.segments.first?.selectedCandidate?.body,
+            "The transcript remains the successful operation."
+        )
+        XCTAssertTrue(completed.endpointEvaluations.isEmpty)
+        let classifierCalls = await classifier.invocationCount()
+        let transcriptionCalls = await transcriber.invocationCount()
+        XCTAssertEqual(classifierCalls, 0)
+        XCTAssertEqual(transcriptionCalls, 1)
+        let durable = await store.load(sessionID: completed.sessionID)
+        XCTAssertEqual(durable?.revision, completed.revision)
+        XCTAssertEqual(durable?.segments, completed.segments)
+        XCTAssertEqual(durable?.endpointEvaluations, completed.endpointEvaluations)
+    }
+
+    func testPatientAutoOutcomePersistenceFailureReconcilesAuthorization() async throws {
+        let store = EndpointWriteFailingSessionManifestStore(failurePoint: .outcome)
+        let classifier = RecordingSemanticEndpointClassifier(
+            results: [
+                .success(
+                    SemanticEndpointProposal(
+                        decision: .likelyEnd,
+                        reasonCode: .answerResolvesQuestion
+                    )
+                )
+            ]
+        )
+        let transcriber = SequencedSegmentTranscriber(
+            results: [
+                .success(
+                    SegmentTranscriptionResult(
+                        body: "The transcript survives Shadow persistence recovery.",
+                        quality: .verified
+                    )
+                )
+            ]
+        )
+        let coordinator = try await SegmentSpeechCoordinator.open(
+            sessionID: SessionID("endpoint-outcome-write-failure"),
+            activityID: "endpoint-outcome-write-failure-activity",
+            activityPrompt: try fixtureActivityPrompt(),
+            turnMode: .patientAuto,
+            manifestStore: store,
+            interviewerRuntime: fixtureRuntime(),
+            recording: StubSegmentRecorder(
+                capture: try capturedAudio(fileName: "endpoint-outcome-write-failure.m4a")
+            ),
+            transcriber: transcriber,
+            credentialReader: FixedCredentialReader(value: "credential"),
+            semanticEndpointClassifier: classifier
+        )
+        _ = try await coordinator.giveCandidateFloor(
+            commandID: CommandID("endpoint-outcome-write-failure-floor")
+        )
+        _ = try await coordinator.beginSegment(
+            commandID: CommandID("endpoint-outcome-write-failure-begin")
+        )
+
+        let completed = try await coordinator.finishSegment(
+            commandID: CommandID("endpoint-outcome-write-failure-finish"),
+            transcriptionCommandID: CommandID("endpoint-outcome-write-failure-transcribe")
+        )
+
+        XCTAssertEqual(
+            completed.segments.first?.selectedCandidate?.body,
+            "The transcript survives Shadow persistence recovery."
+        )
+        let evaluation = try XCTUnwrap(completed.endpointEvaluations.first)
+        XCTAssertEqual(evaluation.lifecycle, .failed)
+        XCTAssertEqual(evaluation.failure?.reason, .interrupted)
+        XCTAssertNil(evaluation.proposal)
+        let classifierCalls = await classifier.invocationCount()
+        let transcriptionCalls = await transcriber.invocationCount()
+        XCTAssertEqual(classifierCalls, 1)
+        XCTAssertEqual(transcriptionCalls, 1)
+        let durable = await store.load(sessionID: completed.sessionID)
+        XCTAssertEqual(durable?.revision, completed.revision)
+        XCTAssertEqual(durable?.segments, completed.segments)
+        XCTAssertEqual(durable?.endpointEvaluations, completed.endpointEvaluations)
+    }
+
+    func testInFlightProposalBecomesInterruptedAfterConcurrentHandOff() async throws {
+        let classifier = SuspendedSemanticEndpointClassifier(
+            proposal: SemanticEndpointProposal(
+                decision: .likelyEnd,
+                reasonCode: .answerResolvesQuestion
+            )
+        )
+        let coordinator = try await SegmentSpeechCoordinator.open(
+            sessionID: SessionID("endpoint-concurrent-handoff"),
+            activityID: "endpoint-concurrent-handoff-activity",
+            activityPrompt: try fixtureActivityPrompt(),
+            turnMode: .patientAuto,
+            manifestStore: InMemorySessionManifestStore(),
+            interviewerRuntime: fixtureRuntime(),
+            recording: StubSegmentRecorder(
+                capture: try capturedAudio(fileName: "endpoint-concurrent-handoff.m4a")
+            ),
+            transcriber: SequencedSegmentTranscriber(
+                results: [
+                    .success(
+                        SegmentTranscriptionResult(
+                            body: "This answer is handed off while classification is pending.",
+                            quality: .verified
+                        )
+                    )
+                ]
+            ),
+            credentialReader: FixedCredentialReader(value: "credential"),
+            semanticEndpointClassifier: classifier
+        )
+        _ = try await coordinator.giveCandidateFloor(
+            commandID: CommandID("endpoint-concurrent-handoff-floor")
+        )
+        _ = try await coordinator.beginSegment(
+            commandID: CommandID("endpoint-concurrent-handoff-begin")
+        )
+
+        let finishing = Task { @MainActor in
+            try await coordinator.finishSegment(
+                commandID: CommandID("endpoint-concurrent-handoff-finish"),
+                transcriptionCommandID: CommandID("endpoint-concurrent-handoff-transcribe")
+            )
+        }
+        await classifier.waitUntilInvoked()
+        let handedOff = try await coordinator.handOff(
+            commandID: CommandID("endpoint-concurrent-handoff-turn")
+        )
+        XCTAssertEqual(handedOff.phase, .interviewerTurn)
+        await classifier.resume()
+
+        let completed = try await finishing.value
+        let evaluation = try XCTUnwrap(completed.endpointEvaluations.first)
+        XCTAssertEqual(completed.phase, .interviewerTurn)
+        XCTAssertEqual(evaluation.lifecycle, .failed)
+        XCTAssertEqual(evaluation.failure?.reason, .interrupted)
+        XCTAssertNil(evaluation.proposal)
+    }
+
+    func testPatientAutoMapsClassifierErrorsToSafeDurableFailures() async throws {
+        let cases: [(
+            name: String,
+            error: GroqEndpointClassifierError,
+            expectedReason: EndpointEvaluationFailureReason
+        )] = [
+            ("missing", .missingCredential, .missingCredential),
+            ("transport", .transportFailure, .transportFailure),
+            ("malformed", .malformedResponse, .invalidResponse),
+            (
+                "context-limit",
+                .contextLimitExceeded(.accumulatedAnswer),
+                .contextRejected
+            ),
+        ]
+
+        for testCase in cases {
+            let classifier = RecordingSemanticEndpointClassifier(
+                results: [.failure(testCase.error)]
+            )
+            let coordinator = try await SegmentSpeechCoordinator.open(
+                sessionID: SessionID("endpoint-safe-\(testCase.name)"),
+                activityID: "endpoint-safe-\(testCase.name)-activity",
+                activityPrompt: try fixtureActivityPrompt(),
+                turnMode: .patientAuto,
+                manifestStore: InMemorySessionManifestStore(),
+                interviewerRuntime: fixtureRuntime(),
+                recording: StubSegmentRecorder(
+                    capture: try capturedAudio(
+                        fileName: "endpoint-safe-\(testCase.name).m4a"
+                    )
+                ),
+                transcriber: SequencedSegmentTranscriber(
+                    results: [
+                        .success(
+                            SegmentTranscriptionResult(
+                                body: "Durable transcript for \(testCase.name).",
+                                quality: .verified
+                            )
+                        )
+                    ]
+                ),
+                credentialReader: FixedCredentialReader(value: "credential"),
+                semanticEndpointClassifier: classifier
+            )
+            _ = try await coordinator.giveCandidateFloor(
+                commandID: CommandID("endpoint-safe-\(testCase.name)-floor")
+            )
+            _ = try await coordinator.beginSegment(
+                commandID: CommandID("endpoint-safe-\(testCase.name)-begin")
+            )
+
+            let completed = try await coordinator.finishSegment(
+                commandID: CommandID("endpoint-safe-\(testCase.name)-finish"),
+                transcriptionCommandID: CommandID(
+                    "endpoint-safe-\(testCase.name)-transcribe"
+                )
+            )
+
+            XCTAssertEqual(completed.phase, .candidateFloor, testCase.name)
+            XCTAssertEqual(
+                completed.segments.first?.selectedCandidate?.body,
+                "Durable transcript for \(testCase.name).",
+                testCase.name
+            )
+            XCTAssertNotNil(completed.segments.first?.capturedAudio, testCase.name)
+            let evaluation = try XCTUnwrap(
+                completed.endpointEvaluations.first,
+                testCase.name
+            )
+            XCTAssertEqual(evaluation.lifecycle, .failed, testCase.name)
+            XCTAssertEqual(evaluation.failure?.reason, testCase.expectedReason, testCase.name)
+            XCTAssertNil(evaluation.failure?.providerStatusCode, testCase.name)
+            XCTAssertNil(evaluation.proposal, testCase.name)
+        }
+    }
+
+    func testEndpointEvaluationPersistsEveryValidDecisionReasonPairObservationally() async throws {
+        let pairs: [SemanticEndpointProposal] = [
+            .init(decision: .likelyEnd, reasonCode: .explicitHandoffCue),
+            .init(decision: .likelyEnd, reasonCode: .answerResolvesQuestion),
+            .init(decision: .likelyContinue, reasonCode: .unfinishedThought),
+            .init(decision: .likelyContinue, reasonCode: .requestedPartUnanswered),
+            .init(decision: .likelyContinue, reasonCode: .recentWorkspaceActivity),
+            .init(decision: .ambiguous, reasonCode: .insufficientEvidence),
+        ]
+        let store = InMemorySessionManifestStore()
+        let session = try await makeCandidateFloorSession(
+            store: store,
+            turnMode: .patientAuto
+        )
+        let segmentID = try await makeTranscribedSegment(
+            session: session,
+            commandStem: "endpoint-valid-pairs",
+            body: "Durable evidence remains on the Candidate Floor.",
+            quality: .verified
+        )
+        let selected = await session.snapshot()
+        let selectedCandidateIDs = selected.segments
+            .filter { $0.committedTurnID == nil && $0.lifecycle != .excluded }
+            .sorted { $0.ordinal < $1.ordinal }
+            .compactMap(\.selectedCandidateID)
+
+        for (index, proposal) in pairs.enumerated() {
+            let authorizationCommandID = CommandID("endpoint-valid-pair-\(index)-authorization")
+            let authorized = try await session.apply(
+                .authorizeEndpointEvaluation(
+                    commandID: authorizationCommandID,
+                    triggerSegmentID: segmentID,
+                    selectedCandidateIDs: selectedCandidateIDs,
+                    questionTurnID: nil,
+                    contextFingerprint: "sha256:v1:\(String(repeating: String(index), count: 64))"
+                )
+            )
+            XCTAssertEqual(authorized.disposition, .accepted)
+            let evaluation = try XCTUnwrap(
+                authorized.snapshot.endpointEvaluations.first {
+                    $0.authorizationCommandID == authorizationCommandID
+                }
+            )
+            let recorded = try await session.execute(
+                .recordEndpointEvaluationOutcome(
+                    commandID: CommandID("endpoint-valid-pair-\(index)-outcome"),
+                    evaluationID: evaluation.id,
+                    outcome: .proposal(proposal)
+                )
+            )
+
+            XCTAssertEqual(recorded.endpointEvaluations.last?.lifecycle, .proposalStored)
+            XCTAssertEqual(recorded.endpointEvaluations.last?.proposal, proposal)
+            XCTAssertEqual(recorded.phase, .candidateFloor)
+            XCTAssertTrue(recorded.turns.isEmpty)
+            XCTAssertNil(recorded.segments.first?.committedTurnID)
+        }
+    }
+
+    func testPatientAutoSkipsEvaluationWhenAnotherDraftSegmentIsUnresolved() async throws {
+        let classifier = RecordingSemanticEndpointClassifier(
+            results: [
+                .success(
+                    SemanticEndpointProposal(
+                        decision: .ambiguous,
+                        reasonCode: .insufficientEvidence
+                    )
+                )
+            ]
+        )
+        let coordinator = try await SegmentSpeechCoordinator.open(
+            sessionID: SessionID("endpoint-unresolved-draft"),
+            activityID: "endpoint-unresolved-draft-activity",
+            activityPrompt: try fixtureActivityPrompt(),
+            turnMode: .patientAuto,
+            manifestStore: InMemorySessionManifestStore(),
+            interviewerRuntime: fixtureRuntime(),
+            recording: StubSegmentRecorder(
+                capture: try capturedAudio(fileName: "endpoint-unresolved-draft.m4a")
+            ),
+            transcriber: SequencedSegmentTranscriber(
+                results: [
+                    .success(
+                        SegmentTranscriptionResult(
+                            body: "The later Segment still transcribes.",
+                            quality: .verified
+                        )
+                    )
+                ]
+            ),
+            credentialReader: FixedCredentialReader(value: "credential"),
+            semanticEndpointClassifier: classifier
+        )
+        _ = try await coordinator.giveCandidateFloor(
+            commandID: CommandID("endpoint-unresolved-floor")
+        )
+        _ = try await coordinator.beginSegment(
+            commandID: CommandID("endpoint-unresolved-first-begin")
+        )
+        _ = try await coordinator.finalizeSegment(
+            commandID: CommandID("endpoint-unresolved-first-finish")
+        )
+        _ = try await coordinator.beginSegment(
+            commandID: CommandID("endpoint-unresolved-second-begin")
+        )
+
+        let completed = try await coordinator.finishSegment(
+            commandID: CommandID("endpoint-unresolved-second-finish"),
+            transcriptionCommandID: CommandID("endpoint-unresolved-second-transcribe")
+        )
+
+        XCTAssertEqual(completed.segments[0].lifecycle, .audioReady)
+        XCTAssertNil(completed.segments[0].selectedCandidate)
+        XCTAssertEqual(
+            completed.segments[1].selectedCandidate?.body,
+            "The later Segment still transcribes."
+        )
+        XCTAssertTrue(completed.endpointEvaluations.isEmpty)
+        let classifierCalls = await classifier.invocationCount()
+        XCTAssertEqual(classifierCalls, 0)
+    }
+
+    func testPatientAutoEvaluatesOnlyWhenRetryChangesSelectedEvidence() async throws {
+        let classifier = RecordingSemanticEndpointClassifier(
+            results: [
+                .success(
+                    SemanticEndpointProposal(
+                        decision: .likelyEnd,
+                        reasonCode: .answerResolvesQuestion
+                    )
+                )
+            ]
+        )
+        let coordinator = try await SegmentSpeechCoordinator.open(
+            sessionID: SessionID("endpoint-selected-retry"),
+            activityID: "endpoint-selected-retry-activity",
+            activityPrompt: try fixtureActivityPrompt(),
+            turnMode: .manual,
+            manifestStore: InMemorySessionManifestStore(),
+            interviewerRuntime: fixtureRuntime(),
+            recording: StubSegmentRecorder(
+                capture: try capturedAudio(fileName: "endpoint-selected-retry.m4a")
+            ),
+            transcriber: SequencedSegmentTranscriber(
+                results: [
+                    .success(
+                        SegmentTranscriptionResult(
+                            body: "Selected best-available answer.",
+                            quality: .bestAvailable
+                        )
+                    ),
+                    .success(
+                        SegmentTranscriptionResult(
+                            body: "A lower-quality retry must stay observationally silent.",
+                            quality: .possibleContamination
+                        )
+                    ),
+                    .success(
+                        SegmentTranscriptionResult(
+                            body: "  Newly selected verified answer.  ",
+                            quality: .verified
+                        )
+                    ),
+                ]
+            ),
+            credentialReader: FixedCredentialReader(value: "credential"),
+            semanticEndpointClassifier: classifier
+        )
+        _ = try await coordinator.giveCandidateFloor(
+            commandID: CommandID("endpoint-selected-retry-floor")
+        )
+        _ = try await coordinator.beginSegment(
+            commandID: CommandID("endpoint-selected-retry-begin")
+        )
+        let initial = try await coordinator.finishSegment(
+            commandID: CommandID("endpoint-selected-retry-finish"),
+            transcriptionCommandID: CommandID("endpoint-selected-retry-initial")
+        )
+        let segmentID = try XCTUnwrap(initial.segments.first?.id)
+        let initiallySelectedID = try XCTUnwrap(initial.segments.first?.selectedCandidateID)
+        XCTAssertTrue(initial.endpointEvaluations.isEmpty)
+
+        _ = try await coordinator.setTurnMode(
+            .patientAuto,
+            commandID: CommandID("endpoint-selected-retry-mode")
+        )
+        let lowerQuality = try await coordinator.transcribeSegment(
+            segmentID: segmentID,
+            commandID: CommandID("endpoint-selected-retry-lower")
+        )
+        XCTAssertEqual(lowerQuality.segments.first?.selectedCandidateID, initiallySelectedID)
+        XCTAssertTrue(lowerQuality.endpointEvaluations.isEmpty)
+        let callsAfterLowerQualityRetry = await classifier.invocationCount()
+        XCTAssertEqual(callsAfterLowerQualityRetry, 0)
+
+        let higherQuality = try await coordinator.transcribeSegment(
+            segmentID: segmentID,
+            commandID: CommandID("endpoint-selected-retry-higher")
+        )
+        XCTAssertNotEqual(higherQuality.segments.first?.selectedCandidateID, initiallySelectedID)
+        XCTAssertEqual(higherQuality.endpointEvaluations.count, 1)
+        let contexts = await classifier.recordedContexts()
+        XCTAssertEqual(contexts.count, 1)
+        XCTAssertEqual(contexts.first?.accumulatedAnswer, "Newly selected verified answer.")
+        XCTAssertEqual(contexts.first?.latestSegment, "Newly selected verified answer.")
+    }
+
+    func testResumeMarksAuthorizedEndpointEvaluationInterruptedWithoutProviderReplay() async throws {
+        let store = InMemorySessionManifestStore()
+        let session = try await makeCandidateFloorSession(
+            store: store,
+            turnMode: .patientAuto
+        )
+        let segmentID = try await makeTranscribedSegment(
+            session: session,
+            commandStem: "endpoint-interrupted",
+            body: "Durable selected evidence.",
+            quality: .verified
+        )
+        let selectedSnapshot = await session.snapshot()
+        let selectedCandidateIDs = selectedSnapshot.segments
+            .filter { $0.committedTurnID == nil && $0.lifecycle != .excluded }
+            .sorted { $0.ordinal < $1.ordinal }
+            .compactMap(\.selectedCandidateID)
+        _ = try await session.execute(
+            .authorizeEndpointEvaluation(
+                commandID: CommandID("endpoint-interrupted-authorization"),
+                triggerSegmentID: segmentID,
+                selectedCandidateIDs: selectedCandidateIDs,
+                questionTurnID: nil,
+                contextFingerprint: "sha256:v1:\(String(repeating: "a", count: 64))"
+            )
+        )
+        let classifier = RecordingSemanticEndpointClassifier(results: [])
+        let coordinator = try await SegmentSpeechCoordinator.open(
+            sessionID: selectedSnapshot.sessionID,
+            activityID: selectedSnapshot.activityID,
+            activityPrompt: selectedSnapshot.activityPrompt,
+            manifestStore: store,
+            interviewerRuntime: fixtureRuntime(),
+            recording: StubSegmentRecorder(
+                capture: try capturedAudio(fileName: "endpoint-interrupted-unused.m4a")
+            ),
+            transcriber: SequencedSegmentTranscriber(results: []),
+            credentialReader: FixedCredentialReader(value: "credential"),
+            semanticEndpointClassifier: classifier
+        )
+
+        let reconciled = try await coordinator.resumePendingWork()
+
+        let evaluation = try XCTUnwrap(reconciled.endpointEvaluations.first)
+        XCTAssertEqual(evaluation.lifecycle, .failed)
+        XCTAssertEqual(evaluation.failure?.reason, .interrupted)
+        let classifierCalls = await classifier.invocationCount()
+        XCTAssertEqual(classifierCalls, 0)
+    }
+
+    func testResumeDoesNotFabricateMissingEndpointBoundaryOrCallProvider() async throws {
+        let store = InMemorySessionManifestStore()
+        let session = try await makeCandidateFloorSession(
+            store: store,
+            turnMode: .patientAuto
+        )
+        _ = try await makeTranscribedSegment(
+            session: session,
+            commandStem: "endpoint-preauthorization-crash",
+            body: "Transcript persisted before authorization.",
+            quality: .verified
+        )
+        let snapshot = await session.snapshot()
+        let classifier = RecordingSemanticEndpointClassifier(results: [])
+        let coordinator = try await SegmentSpeechCoordinator.open(
+            sessionID: snapshot.sessionID,
+            activityID: snapshot.activityID,
+            activityPrompt: snapshot.activityPrompt,
+            manifestStore: store,
+            interviewerRuntime: fixtureRuntime(),
+            recording: StubSegmentRecorder(
+                capture: try capturedAudio(fileName: "endpoint-preauthorization-unused.m4a")
+            ),
+            transcriber: SequencedSegmentTranscriber(results: []),
+            credentialReader: FixedCredentialReader(value: "credential"),
+            semanticEndpointClassifier: classifier
+        )
+
+        let resumed = try await coordinator.resumePendingWork()
+
+        XCTAssertTrue(resumed.endpointEvaluations.isEmpty)
+        let classifierCalls = await classifier.invocationCount()
+        XCTAssertEqual(classifierCalls, 0)
     }
 
     func testRestoreRejectsDuplicateCandidateTurnIDsWithoutTrapping() async throws {
@@ -853,12 +1703,14 @@ final class SegmentLifecycleTests: XCTestCase {
     }
 
     private func makeCandidateFloorSession(
-        store: InMemorySessionManifestStore
+        store: InMemorySessionManifestStore,
+        turnMode: TurnMode = .manual
     ) async throws -> InterviewRoomSession {
         let session = try await InterviewRoomSession.start(
             sessionID: SessionID("session-\(UUID().uuidString)"),
             activityID: "activity-segment-fixture",
             activityPrompt: try fixtureActivityPrompt(),
+            turnMode: turnMode,
             manifestStore: store,
             interviewerRuntime: fixtureRuntime()
         )
@@ -1127,6 +1979,95 @@ private actor SequencedSegmentTranscriber: SegmentTranscribing {
     func invocationCount() -> Int { calls }
 }
 
+private actor RecordingSemanticEndpointClassifier: SemanticEndpointClassifying {
+    private var results: [Result<SemanticEndpointProposal, GroqEndpointClassifierError>]
+    private let authorizationStore: InMemorySessionManifestStore?
+    private let sessionID: SessionID?
+    private var contexts: [SemanticEndpointContext] = []
+    private var authorizationStates: [Bool] = []
+
+    init(
+        results: [Result<SemanticEndpointProposal, GroqEndpointClassifierError>],
+        authorizationStore: InMemorySessionManifestStore? = nil,
+        sessionID: SessionID? = nil
+    ) {
+        self.results = results
+        self.authorizationStore = authorizationStore
+        self.sessionID = sessionID
+    }
+
+    func classify(
+        _ context: SemanticEndpointContext
+    ) async throws -> SemanticEndpointProposal {
+        contexts.append(context)
+        if let authorizationStore, let sessionID {
+            let manifest = await authorizationStore.load(sessionID: sessionID)
+            authorizationStates.append(
+                manifest?.endpointEvaluations.last?.lifecycle == .authorized
+            )
+        }
+        guard !results.isEmpty else {
+            throw GroqEndpointClassifierError.transportFailure
+        }
+        return try results.removeFirst().get()
+    }
+
+    func invocationCount() -> Int { contexts.count }
+    func recordedContexts() -> [SemanticEndpointContext] { contexts }
+    func authorizationStatesAtEntry() -> [Bool] { authorizationStates }
+}
+
+private actor SuspendedSemanticEndpointClassifier: SemanticEndpointClassifying {
+    private let proposal: SemanticEndpointProposal
+    private var didEnter = false
+    private var entryWaiters: [CheckedContinuation<Void, Never>] = []
+    private var resultContinuation: CheckedContinuation<SemanticEndpointProposal, Never>?
+
+    init(proposal: SemanticEndpointProposal) {
+        self.proposal = proposal
+    }
+
+    func classify(
+        _ context: SemanticEndpointContext
+    ) async throws -> SemanticEndpointProposal {
+        didEnter = true
+        let waiters = entryWaiters
+        entryWaiters.removeAll()
+        waiters.forEach { $0.resume() }
+        return await withCheckedContinuation { continuation in
+            resultContinuation = continuation
+        }
+    }
+
+    func waitUntilInvoked() async {
+        if didEnter { return }
+        await withCheckedContinuation { continuation in
+            entryWaiters.append(continuation)
+        }
+    }
+
+    func resume() {
+        resultContinuation?.resume(returning: proposal)
+        resultContinuation = nil
+    }
+}
+
+private actor CountingInterviewerRuntime: InterviewerRuntime {
+    private var calls = 0
+
+    func respond(
+        to request: InterviewerRequest
+    ) -> CanonicalInterviewerResponse {
+        calls += 1
+        return CanonicalInterviewerResponse(
+            displayMarkdown: "What trade-off comes next?",
+            spokenText: "What trade-off comes next?"
+        )
+    }
+
+    func invocationCount() -> Int { calls }
+}
+
 private struct FixedCredentialReader: GroqCredentialReading {
     let value: String
 
@@ -1169,6 +2110,52 @@ private actor FailingRevisionSessionManifestStore: SessionManifestStore {
                 expected: expectedRevision,
                 actual: current?.revision
             )
+        }
+        manifests[manifest.sessionID] = manifest
+    }
+}
+
+private enum EndpointWriteFailurePoint {
+    case authorization
+    case outcome
+}
+
+private actor EndpointWriteFailingSessionManifestStore: SessionManifestStore {
+    private var manifests: [SessionID: SessionManifest] = [:]
+    private let failurePoint: EndpointWriteFailurePoint
+    private var didFail = false
+
+    init(failurePoint: EndpointWriteFailurePoint) {
+        self.failurePoint = failurePoint
+    }
+
+    func load(sessionID: SessionID) -> SessionManifest? {
+        manifests[sessionID]
+    }
+
+    func save(
+        _ manifest: SessionManifest,
+        expectedRevision: Int?
+    ) throws {
+        let current = manifests[manifest.sessionID]
+        guard current?.revision == expectedRevision else {
+            throw SessionManifestStoreError.revisionConflict(
+                expected: expectedRevision,
+                actual: current?.revision
+            )
+        }
+        let isAuthorization = current?.endpointEvaluations.count
+            != manifest.endpointEvaluations.count
+            && manifest.endpointEvaluations.last?.lifecycle == .authorized
+        let isOutcome = current?.endpointEvaluations.last?.lifecycle == .authorized
+            && manifest.endpointEvaluations.last?.lifecycle != .authorized
+        let shouldFail = switch failurePoint {
+        case .authorization: isAuthorization
+        case .outcome: isOutcome
+        }
+        if shouldFail, !didFail {
+            didFail = true
+            throw InjectedStoreError.writeFailed
         }
         manifests[manifest.sessionID] = manifest
     }

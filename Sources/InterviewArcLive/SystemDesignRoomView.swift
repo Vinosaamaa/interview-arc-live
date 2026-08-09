@@ -14,6 +14,7 @@ struct SystemDesignRoomView: View {
             if let codexMessage = model.codexAttentionMessage {
                 codexReadinessBanner(codexMessage)
             }
+            turnModeBar
 
             HSplitView {
                 transcript
@@ -116,6 +117,84 @@ struct SystemDesignRoomView: View {
         .background(LivePalette.paper)
         .overlay(alignment: .bottom) {
             Rectangle().fill(LivePalette.line).frame(height: 1)
+        }
+    }
+
+    private var turnModeBar: some View {
+        let presentation = model.endpointShadowPresentation
+        let statusColor = endpointShadowStatusColor(for: presentation.tone)
+
+        return HStack(spacing: 14) {
+            Text("Turn-taking")
+                .font(.system(.subheadline, design: .rounded, weight: .semibold))
+
+            Picker("Turn-taking mode", selection: turnModeRawSelection) {
+                ForEach(model.availableTurnModes, id: \.rawValue) { mode in
+                    Text(model.turnModeTitle(mode)).tag(mode.rawValue)
+                }
+            }
+            .labelsHidden()
+            .pickerStyle(.segmented)
+            .frame(width: 310)
+            .disabled(!model.canSelectTurnMode)
+            .accessibilityLabel("Turn-taking mode")
+            .accessibilityHint(
+                "Patient Auto observes completed Segment transcripts, but Hand off remains manual"
+            )
+
+            Rectangle()
+                .fill(LivePalette.line)
+                .frame(width: 1, height: 28)
+
+            Image(systemName: presentation.systemImage)
+                .foregroundStyle(statusColor)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(presentation.title)
+                    .font(.system(.callout, design: .rounded, weight: .semibold))
+                    .foregroundStyle(statusColor)
+                Text(presentation.detail)
+                    .font(.system(.caption, design: .rounded))
+                    .foregroundStyle(LivePalette.muted)
+                    .lineLimit(2)
+            }
+            Spacer(minLength: 8)
+        }
+        .padding(.horizontal, 24)
+        .padding(.vertical, 9)
+        .background(LivePalette.paper)
+        .overlay(alignment: .bottom) {
+            Rectangle().fill(LivePalette.line).frame(height: 1)
+        }
+        .accessibilityElement(children: .contain)
+    }
+
+    private var turnModeRawSelection: Binding<String> {
+        Binding(
+            get: { model.turnMode.rawValue },
+            set: { rawValue in
+                guard let mode = model.availableTurnModes.first(where: {
+                    $0.rawValue == rawValue
+                }) else {
+                    return
+                }
+                Task { await model.selectTurnMode(mode) }
+            }
+        )
+    }
+
+    private func endpointShadowStatusColor(
+        for tone: EndpointShadowPresentation.Tone
+    ) -> Color {
+        switch tone {
+        case .neutral:
+            return LivePalette.muted
+        case .working:
+            return LivePalette.interviewer
+        case .advisory:
+            return LivePalette.candidate
+        case .warning:
+            return LivePalette.warning
         }
     }
 

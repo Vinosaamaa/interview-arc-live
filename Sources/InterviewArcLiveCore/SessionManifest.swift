@@ -296,6 +296,7 @@ public struct SessionManifest: Codable, Sendable, Equatable {
     public let turnMode: TurnMode
     public let turns: [InterviewTurn]
     public let segments: [CandidateSegment]
+    public let endpointEvaluations: [EndpointEvaluation]
     public let revision: Int
 
     let appliedCommands: [AppliedCommandRecord]
@@ -308,6 +309,7 @@ public struct SessionManifest: Codable, Sendable, Equatable {
         turnMode: TurnMode,
         turns: [InterviewTurn],
         segments: [CandidateSegment] = [],
+        endpointEvaluations: [EndpointEvaluation] = [],
         revision: Int,
         appliedCommands: [AppliedCommandRecord]
     ) {
@@ -318,6 +320,7 @@ public struct SessionManifest: Codable, Sendable, Equatable {
         self.turnMode = turnMode
         self.turns = turns
         self.segments = segments
+        self.endpointEvaluations = endpointEvaluations
         self.revision = revision
         self.appliedCommands = appliedCommands
     }
@@ -330,6 +333,7 @@ public struct SessionManifest: Codable, Sendable, Equatable {
         case turnMode
         case turns
         case segments
+        case endpointEvaluations
         case revision
         case appliedCommands
     }
@@ -343,6 +347,10 @@ public struct SessionManifest: Codable, Sendable, Equatable {
         turnMode = try container.decode(TurnMode.self, forKey: .turnMode)
         turns = try container.decode([InterviewTurn].self, forKey: .turns)
         segments = try container.decodeIfPresent([CandidateSegment].self, forKey: .segments) ?? []
+        endpointEvaluations = try container.decodeIfPresent(
+            [EndpointEvaluation].self,
+            forKey: .endpointEvaluations
+        ) ?? []
         revision = try container.decode(Int.self, forKey: .revision)
         appliedCommands = try container.decode(
             [AppliedCommandRecord].self,
@@ -359,6 +367,7 @@ public struct SessionManifest: Codable, Sendable, Equatable {
         try container.encode(turnMode, forKey: .turnMode)
         try container.encode(turns, forKey: .turns)
         try container.encode(segments, forKey: .segments)
+        try container.encode(endpointEvaluations, forKey: .endpointEvaluations)
         try container.encode(revision, forKey: .revision)
         try container.encode(appliedCommands, forKey: .appliedCommands)
     }
@@ -373,6 +382,7 @@ public struct InterviewRoomSnapshot: Sendable, Equatable {
     public let turnMode: TurnMode
     public let turns: [InterviewTurn]
     public let segments: [CandidateSegment]
+    public let endpointEvaluations: [EndpointEvaluation]
     public let revision: Int
 
     init(manifest: SessionManifest) {
@@ -383,6 +393,7 @@ public struct InterviewRoomSnapshot: Sendable, Equatable {
         turnMode = manifest.turnMode
         turns = manifest.turns
         segments = manifest.segments
+        endpointEvaluations = manifest.endpointEvaluations
         revision = manifest.revision
     }
 }

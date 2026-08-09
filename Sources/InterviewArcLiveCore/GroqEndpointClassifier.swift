@@ -71,26 +71,32 @@ public struct GroqEndpointClassifier: SemanticEndpointClassifying {
   private static let maximumSilenceMilliseconds = 10 * 60 * 1_000
   private static let maximumResponseBytes = 64 * 1_024
 
-  private let apiKey: String
+  private let credentialReader: any GroqCredentialReading
   private let transport: any GroqEndpointTransport
 
   public init(
-    apiKey: String,
+    credentialReader: any GroqCredentialReading,
     transport: any GroqEndpointTransport = URLSessionGroqEndpointTransport()
   ) {
-    self.apiKey = apiKey
+    self.credentialReader = credentialReader
     self.transport = transport
   }
 
   public func classify(_ context: SemanticEndpointContext) async throws -> SemanticEndpointProposal
   {
+    let apiKey: String
+    do {
+      apiKey = try await credentialReader.readGroqCredential()
+    } catch {
+      throw GroqEndpointClassifierError.missingCredential
+    }
     guard !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
       throw GroqEndpointClassifierError.missingCredential
     }
 
     let request: URLRequest
     do {
-      request = try makeRequest(context)
+      request = try makeRequest(context, apiKey: apiKey)
     } catch let error as GroqEndpointClassifierError {
       throw error
     } catch {
@@ -117,7 +123,10 @@ public struct GroqEndpointClassifier: SemanticEndpointClassifying {
     return try decodeProposal(from: data)
   }
 
-  private func makeRequest(_ context: SemanticEndpointContext) throws -> URLRequest {
+  private func makeRequest(
+    _ context: SemanticEndpointContext,
+    apiKey: String
+  ) throws -> URLRequest {
     try validate(context)
 
     let endpointContext = EndpointContextPayload(

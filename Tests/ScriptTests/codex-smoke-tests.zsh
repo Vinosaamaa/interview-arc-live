@@ -21,6 +21,7 @@ make_bundle() {
   local bundle="$1"
   local identifier="$2"
   local helper="$bundle/Contents/Helpers/InterviewArcLiveCodexSmoke"
+  local endpoint_helper="$bundle/Contents/Helpers/InterviewArcLiveEndpointSmoke"
 
   mkdir -p "$bundle/Contents/Helpers" "$bundle/Contents/Resources"
   /usr/bin/plutil -create xml1 "$bundle/Contents/Info.plist"
@@ -33,8 +34,10 @@ make_bundle() {
   mkdir -p "$bundle/Contents/MacOS"
   print -r -- $'#!/bin/zsh\nexit 0' > "$bundle/Contents/MacOS/InterviewArcLive"
   print -r -- $'#!/bin/zsh\n[[ "${INTERVIEW_ARC_LIVE_RUN_CODEX_SMOKE:-0}" == "1" ]] || exit 64\nprint -r -- "$PWD" > "${INTERVIEW_ARC_LIVE_TEST_OBSERVED_CWD:?}"' > "$helper"
-  chmod 0755 "$bundle/Contents/MacOS/InterviewArcLive" "$helper"
+  print -r -- $'#!/bin/zsh\nexit 0' > "$endpoint_helper"
+  chmod 0755 "$bundle/Contents/MacOS/InterviewArcLive" "$helper" "$endpoint_helper"
   /usr/bin/codesign --force --sign - --timestamp=none "$helper" >/dev/null
+  /usr/bin/codesign --force --sign - --timestamp=none "$endpoint_helper" >/dev/null
   /usr/bin/codesign --force --sign - --timestamp=none "$bundle" >/dev/null
 }
 
@@ -51,16 +54,19 @@ fi
 manifest="$test_root/InterviewArcLive.package-manifest.txt"
 app_executable="$installed_app/Contents/MacOS/InterviewArcLive"
 smoke_executable="$installed_app/Contents/Helpers/InterviewArcLiveCodexSmoke"
+endpoint_smoke_executable="$installed_app/Contents/Helpers/InterviewArcLiveEndpointSmoke"
 info_plist="$installed_app/Contents/Info.plist"
 cdhash="$(/usr/bin/codesign -dvvv "$installed_app" 2>&1 | /usr/bin/awk -F= '/^CDHash=/{print $2; exit}')"
 app_sha="$(/usr/bin/shasum -a 256 "$app_executable" | /usr/bin/awk '{print $1}')"
 smoke_sha="$(/usr/bin/shasum -a 256 "$smoke_executable" | /usr/bin/awk '{print $1}')"
+endpoint_smoke_sha="$(/usr/bin/shasum -a 256 "$endpoint_smoke_executable" | /usr/bin/awk '{print $1}')"
 info_sha="$(/usr/bin/shasum -a 256 "$info_plist" | /usr/bin/awk '{print $1}')"
 {
   print -r -- "bundle_identifier=app.interviewarc.live"
   print -r -- "code_directory_hash=$cdhash"
   print -r -- "executable_sha256=$app_sha"
   print -r -- "codex_smoke_executable_sha256=$smoke_sha"
+  print -r -- "endpoint_smoke_executable_sha256=$endpoint_smoke_sha"
   print -r -- "info_plist_sha256=$info_sha"
   print -r -- "resource_bundle_count=0"
 } > "$manifest"
