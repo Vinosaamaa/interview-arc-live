@@ -48,12 +48,12 @@ final class GroqEndpointClassifierTests: XCTestCase {
     let bodyData = try XCTUnwrap(request.httpBody)
     let bodyString = try XCTUnwrap(String(data: bodyData, encoding: .utf8))
     XCTAssertFalse(bodyString.contains("private-test-key"))
-    XCTAssertFalse(bodyString.lowercased().contains("confidence"))
 
     let body = try jsonDictionary(bodyData)
     XCTAssertEqual(body["model"] as? String, "openai/gpt-oss-20b")
     XCTAssertEqual(body["temperature"] as? Int, 0)
     XCTAssertEqual(body["reasoning_effort"] as? String, "low")
+    XCTAssertEqual(body["max_completion_tokens"] as? Int, 256)
 
     let messages = try XCTUnwrap(body["messages"] as? [[String: Any]])
     let userMessage = try XCTUnwrap(messages.first { $0["role"] as? String == "user" })
@@ -78,6 +78,10 @@ final class GroqEndpointClassifierTests: XCTestCase {
     let responseFormat = try XCTUnwrap(body["response_format"] as? [String: Any])
     let schemaEnvelope = try XCTUnwrap(responseFormat["json_schema"] as? [String: Any])
     XCTAssertEqual(schemaEnvelope["strict"] as? Bool, true)
+    let schema = try XCTUnwrap(schemaEnvelope["schema"] as? [String: Any])
+    let properties = try XCTUnwrap(schema["properties"] as? [String: Any])
+    XCTAssertEqual(Set(properties.keys), ["decision", "reason_code"])
+    XCTAssertNil(properties["confidence"])
   }
 
   func testStrictlyDecodesEverySupportedDecision() async throws {
