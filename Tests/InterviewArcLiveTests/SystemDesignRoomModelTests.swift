@@ -1,3 +1,4 @@
+import Foundation
 import XCTest
 
 import InterviewArcLiveCodexAdapter
@@ -107,6 +108,29 @@ final class SystemDesignRoomModelTests: XCTestCase {
             model.endpointShadowPresentation.detail,
             "Semantic endpoint calls are off. Hand off remains explicit."
         )
+    }
+
+    func testMuteStateAndPreferenceFollowControllerWhenDurableStopFails() async throws {
+        let suiteName = "InterviewArcLiveTests.mute.\(UUID().uuidString)"
+        let preferences = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { preferences.removePersistentDomain(forName: suiteName) }
+        let controller = MutingThenFailingSpeechController()
+        let model = SystemDesignRoomModel(
+            codexRuntime: CodexRuntimeFixture(readiness: .ready),
+            speechMuteController: controller,
+            preferences: preferences
+        )
+
+        await model.toggleSpeechMute()
+
+        XCTAssertTrue(controller.isMuted)
+        XCTAssertTrue(model.isSpeechMuted)
+        XCTAssertTrue(
+            preferences.bool(
+                forKey: "interviewArcLive.interviewerSpeechMuted"
+            )
+        )
+        XCTAssertNotNil(model.speechErrorMessage)
     }
 
     func testLikelyEndShadowCopyRemainsExplicitlyAdvisory() {
@@ -329,5 +353,21 @@ private actor CodexRuntimeFixture: LiveCodexInterviewerRuntime {
             displayMarkdown: "What tradeoff would you test next?",
             spokenText: "What tradeoff would you test next?"
         )
+    }
+}
+
+@MainActor
+private final class MutingThenFailingSpeechController:
+    LiveInterviewerSpeechMuteControlling
+{
+    enum Failure: Error {
+        case manifestPersistenceFailed
+    }
+
+    private(set) var isMuted = false
+
+    func setMuted(_ muted: Bool, commandID: CommandID) async throws {
+        isMuted = muted
+        throw Failure.manifestPersistenceFailed
     }
 }

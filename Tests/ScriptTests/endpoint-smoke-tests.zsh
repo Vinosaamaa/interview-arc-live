@@ -21,11 +21,13 @@ installed_app="$test_root/Applications/Interview Arc Live.app"
 app_executable="$installed_app/Contents/MacOS/InterviewArcLive"
 codex_helper="$installed_app/Contents/Helpers/InterviewArcLiveCodexSmoke"
 endpoint_helper="$installed_app/Contents/Helpers/InterviewArcLiveEndpointSmoke"
+speech_helper="$installed_app/Contents/Helpers/InterviewArcLiveSpeechSmoke"
 info_plist="$installed_app/Contents/Info.plist"
+mlx_metallib="$installed_app/Contents/Resources/mlx-swift_Cmlx.bundle/default.metallib"
 observed_cwd="$test_root/observed-cwd"
 
 mkdir -p "$installed_app/Contents/MacOS" "$installed_app/Contents/Helpers" \
-  "$installed_app/Contents/Resources"
+  "${mlx_metallib:h}"
 /usr/bin/plutil -create xml1 "$info_plist"
 /usr/libexec/PlistBuddy -c 'Add :CFBundleIdentifier string app.interviewarc.live' "$info_plist"
 /usr/libexec/PlistBuddy -c 'Add :CFBundleExecutable string InterviewArcLive' "$info_plist"
@@ -33,9 +35,12 @@ mkdir -p "$installed_app/Contents/MacOS" "$installed_app/Contents/Helpers" \
 print -r -- $'#!/bin/zsh\nexit 0' > "$app_executable"
 print -r -- $'#!/bin/zsh\nexit 0' > "$codex_helper"
 print -r -- $'#!/bin/zsh\n[[ "${INTERVIEW_ARC_LIVE_RUN_ENDPOINT_SMOKE:-0}" == "1" ]] || exit 64\nprint -r -- "$PWD" > "${INTERVIEW_ARC_LIVE_TEST_OBSERVED_CWD:?}"' > "$endpoint_helper"
-chmod 0755 "$app_executable" "$codex_helper" "$endpoint_helper"
+print -r -- $'#!/bin/zsh\nexit 0' > "$speech_helper"
+print -rn -- 'fixture-metallib' > "$mlx_metallib"
+chmod 0755 "$app_executable" "$codex_helper" "$endpoint_helper" "$speech_helper"
 /usr/bin/codesign --force --sign - --timestamp=none "$codex_helper" >/dev/null
 /usr/bin/codesign --force --sign - --timestamp=none "$endpoint_helper" >/dev/null
+/usr/bin/codesign --force --sign - --timestamp=none "$speech_helper" >/dev/null
 /usr/bin/codesign --force --sign - --timestamp=none "$installed_app" >/dev/null
 
 if INTERVIEW_ARC_LIVE_TEST_OBSERVED_CWD="$observed_cwd" \
@@ -56,15 +61,22 @@ cdhash="$(/usr/bin/codesign -dvvv "$installed_app" 2>&1 | /usr/bin/awk -F= '/^CD
 app_sha="$(/usr/bin/shasum -a 256 "$app_executable" | /usr/bin/awk '{print $1}')"
 codex_sha="$(/usr/bin/shasum -a 256 "$codex_helper" | /usr/bin/awk '{print $1}')"
 endpoint_sha="$(/usr/bin/shasum -a 256 "$endpoint_helper" | /usr/bin/awk '{print $1}')"
+speech_sha="$(/usr/bin/shasum -a 256 "$speech_helper" | /usr/bin/awk '{print $1}')"
 info_sha="$(/usr/bin/shasum -a 256 "$info_plist" | /usr/bin/awk '{print $1}')"
+mlx_sha="$(/usr/bin/shasum -a 256 "$mlx_metallib" | /usr/bin/awk '{print $1}')"
+mlx_bytes="$(/usr/bin/stat -f '%z' "$mlx_metallib")"
 {
   print -r -- "bundle_identifier=app.interviewarc.live"
   print -r -- "code_directory_hash=$cdhash"
   print -r -- "executable_sha256=$app_sha"
   print -r -- "codex_smoke_executable_sha256=$codex_sha"
   print -r -- "endpoint_smoke_executable_sha256=$endpoint_sha"
+  print -r -- "speech_smoke_executable_sha256=$speech_sha"
   print -r -- "info_plist_sha256=$info_sha"
-  print -r -- "resource_bundle_count=0"
+  print -r -- "resource_bundle_count=1"
+  print -r -- "mlx_metallib_relative_path=Contents/Resources/mlx-swift_Cmlx.bundle/default.metallib"
+  print -r -- "mlx_metallib_sha256=$mlx_sha"
+  print -r -- "mlx_metallib_byte_count=$mlx_bytes"
 } > "$manifest"
 "$manifest_verifier" "$installed_app" "$manifest" >/dev/null
 
@@ -85,8 +97,12 @@ tampered_manifest="$test_root/InterviewArcLive.tampered-package-manifest.txt"
   print -r -- "executable_sha256=$app_sha"
   print -r -- "codex_smoke_executable_sha256=$codex_sha"
   print -r -- "endpoint_smoke_executable_sha256=0000000000000000000000000000000000000000000000000000000000000000"
+  print -r -- "speech_smoke_executable_sha256=$speech_sha"
   print -r -- "info_plist_sha256=$info_sha"
-  print -r -- "resource_bundle_count=0"
+  print -r -- "resource_bundle_count=1"
+  print -r -- "mlx_metallib_relative_path=Contents/Resources/mlx-swift_Cmlx.bundle/default.metallib"
+  print -r -- "mlx_metallib_sha256=$mlx_sha"
+  print -r -- "mlx_metallib_byte_count=$mlx_bytes"
 } > "$tampered_manifest"
 rm -f "$observed_cwd"
 if INTERVIEW_ARC_LIVE_RUN_ENDPOINT_SMOKE=1 \

@@ -16,6 +16,10 @@ public enum SegmentSpeechCoordinatorError: Error, Sendable, Equatable {
 public final class SegmentSpeechCoordinator {
     public private(set) var snapshot: InterviewRoomSnapshot
 
+    /// Internal handoff to the interviewer-speech Module. The application
+    /// never receives the mutable Session actor directly.
+    var interviewRoomSession: InterviewRoomSession { session }
+
     private let session: InterviewRoomSession
     private let recording: any SegmentRecording
     private let transcriber: any SegmentTranscribing

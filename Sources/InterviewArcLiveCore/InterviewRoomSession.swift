@@ -39,6 +39,24 @@ public enum InterviewRoomCommand: Codable, Sendable, Equatable {
         commandID: CommandID,
         evaluationID: EndpointEvaluationID
     )
+    case backfillInterviewerUtterances(commandID: CommandID)
+    case authorizeInterviewerSynthesis(
+        commandID: CommandID,
+        utteranceID: InterviewerUtteranceID,
+        kind: SynthesisAttemptKind,
+        provenance: InterviewerSpeechProvenance
+    )
+    case recordInterviewerSynthesisSpeaking(
+        commandID: CommandID,
+        utteranceID: InterviewerUtteranceID,
+        attemptID: SynthesisAttemptID
+    )
+    case recordInterviewerSynthesisOutcome(
+        commandID: CommandID,
+        utteranceID: InterviewerUtteranceID,
+        attemptID: SynthesisAttemptID,
+        outcome: InterviewerSynthesisOutcome
+    )
     case excludeSegment(
         commandID: CommandID,
         segmentID: SegmentID,
@@ -61,6 +79,10 @@ public enum InterviewRoomCommand: Codable, Sendable, Equatable {
              .authorizeEndpointEvaluation(let commandID, _, _, _, _),
              .recordEndpointEvaluationOutcome(let commandID, _, _),
              .reconcileInterruptedEndpointEvaluation(let commandID, _),
+             .backfillInterviewerUtterances(let commandID),
+             .authorizeInterviewerSynthesis(let commandID, _, _, _),
+             .recordInterviewerSynthesisSpeaking(let commandID, _, _),
+             .recordInterviewerSynthesisOutcome(let commandID, _, _, _),
              .excludeSegment(let commandID, _, _),
              .handOffSegments(let commandID),
              .handOff(let commandID, _),
@@ -129,6 +151,16 @@ public enum InterviewRoomSessionError: Error, Sendable, Equatable {
     case invalidEndpointEvaluationTransition(
         evaluationID: EndpointEvaluationID,
         lifecycle: EndpointEvaluationLifecycle
+    )
+    case interviewerUtteranceNotFound(InterviewerUtteranceID)
+    case synthesisAttemptNotFound(SynthesisAttemptID)
+    case synthesisAlreadyInProgress(SynthesisAttemptID)
+    case invalidSynthesisAttemptKind
+    case invalidSpeechProvenance
+    case invalidSynthesisAudio
+    case invalidSynthesisTransition(
+        attemptID: SynthesisAttemptID,
+        lifecycle: SynthesisAttemptLifecycle
     )
     case noTranscribedSegments
     case unresolvedSegmentsPreventHandOff([SegmentID])
@@ -321,6 +353,7 @@ public actor InterviewRoomSession {
         var mode = manifest.turnMode
         var segments = manifest.segments
         var endpointEvaluations = manifest.endpointEvaluations
+        var interviewerUtterances = manifest.interviewerUtterances
 
         switch command {
         case .giveCandidateFloor:
@@ -548,6 +581,117 @@ public actor InterviewRoomSession {
                 for: endpointEvaluations[index]
             )
 
+        case .backfillInterviewerUtterances:
+            let representedTurnIDs = Set(interviewerUtterances.map(\.turnID))
+            for turn in manifest.turns {
+                guard case .interviewer(let interviewer) = turn,
+                      !representedTurnIDs.contains(interviewer.id) else {
+                    continue
+                }
+                interviewerUtterances.append(
+                    Self.makeInterviewerUtterance(
+                        sessionID: manifest.sessionID,
+                        turn: interviewer
+                    )
+                )
+            }
+
+        case .authorizeInterviewerSynthesis(
+            let commandID,
+            let utteranceID,
+            let kind,
+            let provenance
+        ):
+            if let active = interviewerUtterances.lazy
+                .flatMap(\.synthesisAttempts)
+                .first(where: Self.isActiveSynthesisAttempt) {
+                throw InterviewRoomSessionError.synthesisAlreadyInProgress(active.id)
+            }
+            try Self.validateSpeechProvenance(provenance)
+            let utteranceIndex = try Self.interviewerUtteranceIndex(
+                utteranceID,
+                in: interviewerUtterances
+            )
+            let priorAttempts = interviewerUtterances[utteranceIndex].synthesisAttempts
+            switch kind {
+            case .initial where !priorAttempts.isEmpty,
+                 .retry where priorAttempts.isEmpty:
+                throw InterviewRoomSessionError.invalidSynthesisAttemptKind
+            default:
+                break
+            }
+            let attemptID = Self.synthesisAttemptID(
+                sessionID: manifest.sessionID,
+                utteranceID: utteranceID,
+                commandID: commandID
+            )
+            let audioIdentities = try Self.synthesisAudioIdentities(attemptID: attemptID)
+            interviewerUtterances[utteranceIndex].synthesisAttempts.append(
+                SynthesisAttempt(
+                    id: attemptID,
+                    authorizationCommandID: commandID,
+                    kind: kind,
+                    provenance: provenance,
+                    partialAudioIdentity: audioIdentities.partial,
+                    finalAudioIdentity: audioIdentities.final
+                )
+            )
+            interviewerUtterances[utteranceIndex].lifecycle = .generating
+
+        case .recordInterviewerSynthesisSpeaking(
+            _,
+            let utteranceID,
+            let attemptID
+        ):
+            let utteranceIndex = try Self.interviewerUtteranceIndex(
+                utteranceID,
+                in: interviewerUtterances
+            )
+            let attemptIndex = try Self.synthesisAttemptIndex(
+                attemptID,
+                in: interviewerUtterances[utteranceIndex]
+            )
+            guard interviewerUtterances[utteranceIndex]
+                .synthesisAttempts[attemptIndex].lifecycle == .authorized else {
+                throw InterviewRoomSessionError.invalidSynthesisTransition(
+                    attemptID: attemptID,
+                    lifecycle: interviewerUtterances[utteranceIndex]
+                        .synthesisAttempts[attemptIndex].lifecycle
+                )
+            }
+            interviewerUtterances[utteranceIndex]
+                .synthesisAttempts[attemptIndex].lifecycle = .speaking
+            interviewerUtterances[utteranceIndex].lifecycle = .speaking
+
+        case .recordInterviewerSynthesisOutcome(
+            _,
+            let utteranceID,
+            let attemptID,
+            let outcome
+        ):
+            let utteranceIndex = try Self.interviewerUtteranceIndex(
+                utteranceID,
+                in: interviewerUtterances
+            )
+            let attemptIndex = try Self.synthesisAttemptIndex(
+                attemptID,
+                in: interviewerUtterances[utteranceIndex]
+            )
+            let lifecycle = interviewerUtterances[utteranceIndex]
+                .synthesisAttempts[attemptIndex].lifecycle
+            guard Self.isActiveSynthesisLifecycle(lifecycle) else {
+                throw InterviewRoomSessionError.invalidSynthesisTransition(
+                    attemptID: attemptID,
+                    lifecycle: lifecycle
+                )
+            }
+            try Self.record(
+                synthesisOutcome: outcome,
+                utteranceIndex: utteranceIndex,
+                attemptIndex: attemptIndex,
+                in: &interviewerUtterances
+            )
+
         case .excludeSegment(_, let segmentID, let reason):
             let index = try segmentIndex(segmentID, in: segments)
             guard segments[index].committedTurnID == nil,
@@ -578,7 +722,8 @@ public actor InterviewRoomSession {
             turnMode: mode,
             turns: manifest.turns,
             segments: segments,
-            endpointEvaluations: endpointEvaluations
+            endpointEvaluations: endpointEvaluations,
+            interviewerUtterances: interviewerUtterances
         )
     }
 
@@ -811,6 +956,7 @@ public actor InterviewRoomSession {
             turns: manifest.turns + [.candidate(candidate)],
             segments: segments,
             endpointEvaluations: manifest.endpointEvaluations,
+            interviewerUtterances: manifest.interviewerUtterances,
             revision: candidateRevision,
             appliedCommands: manifest.appliedCommands + [receipt]
         )
@@ -841,6 +987,7 @@ public actor InterviewRoomSession {
             turns: manifest.turns,
             segments: manifest.segments,
             endpointEvaluations: manifest.endpointEvaluations,
+            interviewerUtterances: manifest.interviewerUtterances,
             revision: manifest.revision + 1,
             appliedCommands: manifest.appliedCommands + [receipt]
         )
@@ -883,6 +1030,10 @@ public actor InterviewRoomSession {
             replyToTurnID: candidate.id,
             response: response
         )
+        let utterance = Self.makeInterviewerUtterance(
+            sessionID: manifest.sessionID,
+            turn: interviewer
+        )
         let completed = SessionManifest(
             sessionID: manifest.sessionID,
             activityID: manifest.activityID,
@@ -892,6 +1043,7 @@ public actor InterviewRoomSession {
             turns: manifest.turns + [.interviewer(interviewer)],
             segments: manifest.segments,
             endpointEvaluations: manifest.endpointEvaluations,
+            interviewerUtterances: manifest.interviewerUtterances + [utterance],
             revision: manifest.revision + 1,
             appliedCommands: manifest.appliedCommands
         )
@@ -906,7 +1058,8 @@ public actor InterviewRoomSession {
         turnMode: TurnMode,
         turns: [InterviewTurn],
         segments: [CandidateSegment],
-        endpointEvaluations: [EndpointEvaluation]
+        endpointEvaluations: [EndpointEvaluation],
+        interviewerUtterances: [InterviewerUtterance]? = nil
     ) -> SessionManifest {
         let nextRevision = manifest.revision + 1
         let applied = AppliedCommandRecord(
@@ -923,6 +1076,7 @@ public actor InterviewRoomSession {
             turns: turns,
             segments: segments,
             endpointEvaluations: endpointEvaluations,
+            interviewerUtterances: interviewerUtterances ?? manifest.interviewerUtterances,
             revision: nextRevision,
             appliedCommands: manifest.appliedCommands + [applied]
         )
@@ -951,6 +1105,116 @@ public actor InterviewRoomSession {
             throw InterviewRoomSessionError.endpointEvaluationNotFound(evaluationID)
         }
         return index
+    }
+
+    private static func interviewerUtteranceIndex(
+        _ utteranceID: InterviewerUtteranceID,
+        in utterances: [InterviewerUtterance]
+    ) throws -> Int {
+        guard let index = utterances.firstIndex(where: { $0.id == utteranceID }) else {
+            throw InterviewRoomSessionError.interviewerUtteranceNotFound(utteranceID)
+        }
+        return index
+    }
+
+    private static func synthesisAttemptIndex(
+        _ attemptID: SynthesisAttemptID,
+        in utterance: InterviewerUtterance
+    ) throws -> Int {
+        guard let index = utterance.synthesisAttempts.firstIndex(where: {
+            $0.id == attemptID
+        }) else {
+            throw InterviewRoomSessionError.synthesisAttemptNotFound(attemptID)
+        }
+        return index
+    }
+
+    private static func isActiveSynthesisAttempt(_ attempt: SynthesisAttempt) -> Bool {
+        isActiveSynthesisLifecycle(attempt.lifecycle)
+    }
+
+    private static func isActiveSynthesisLifecycle(
+        _ lifecycle: SynthesisAttemptLifecycle
+    ) -> Bool {
+        lifecycle == .authorized || lifecycle == .speaking
+    }
+
+    private static func record(
+        synthesisOutcome: InterviewerSynthesisOutcome,
+        utteranceIndex: Int,
+        attemptIndex: Int,
+        in utterances: inout [InterviewerUtterance]
+    ) throws {
+        switch synthesisOutcome {
+        case .ready(let audio):
+            let attempt = utterances[utteranceIndex].synthesisAttempts[attemptIndex]
+            try validateSynthesisAudio(audio, expectedIdentity: attempt.finalAudioIdentity)
+            utterances[utteranceIndex].synthesisAttempts[attemptIndex].lifecycle = .ready
+            utterances[utteranceIndex].synthesisAttempts[attemptIndex].audio = audio
+            utterances[utteranceIndex].synthesisAttempts[attemptIndex].failure = nil
+            utterances[utteranceIndex].synthesisAttempts[attemptIndex].stopReason = nil
+            utterances[utteranceIndex].selectedAttemptID = attempt.id
+            utterances[utteranceIndex].lifecycle = .ready
+
+        case .stopped(let reason):
+            utterances[utteranceIndex].synthesisAttempts[attemptIndex].lifecycle = .stopped
+            utterances[utteranceIndex].synthesisAttempts[attemptIndex].audio = nil
+            utterances[utteranceIndex].synthesisAttempts[attemptIndex].failure = nil
+            utterances[utteranceIndex].synthesisAttempts[attemptIndex].stopReason = reason
+            utterances[utteranceIndex].lifecycle =
+                utterances[utteranceIndex].selectedAttemptID == nil ? .stopped : .ready
+
+        case .failed(let failure):
+            utterances[utteranceIndex].synthesisAttempts[attemptIndex].lifecycle = .failed
+            utterances[utteranceIndex].synthesisAttempts[attemptIndex].audio = nil
+            utterances[utteranceIndex].synthesisAttempts[attemptIndex].failure = failure
+            utterances[utteranceIndex].synthesisAttempts[attemptIndex].stopReason = nil
+            utterances[utteranceIndex].lifecycle =
+                utterances[utteranceIndex].selectedAttemptID == nil ? .failed : .ready
+        }
+    }
+
+    private static func validateSpeechProvenance(
+        _ provenance: InterviewerSpeechProvenance
+    ) throws {
+        let values = [
+            provenance.providerID,
+            provenance.modelID,
+            provenance.modelRevision,
+        ]
+        guard values.allSatisfy({
+            !$0.isEmpty
+                && $0 == $0.trimmingCharacters(in: .whitespacesAndNewlines)
+                && $0.utf8.count <= 512
+                && $0.unicodeScalars.allSatisfy({ scalar in
+                    !CharacterSet.controlCharacters.contains(scalar)
+                })
+        }), provenance.profile.hasValidFingerprint() else {
+            throw InterviewRoomSessionError.invalidSpeechProvenance
+        }
+    }
+
+    private static func validateSynthesisAudio(
+        _ audio: InterviewerSpeechAudioArtifact,
+        expectedIdentity: InterviewerAudioIdentity
+    ) throws {
+        guard audio.isValidFinalAudio(expectedIdentity: expectedIdentity) else {
+            throw InterviewRoomSessionError.invalidSynthesisAudio
+        }
+    }
+
+    private static func makeInterviewerUtterance(
+        sessionID: SessionID,
+        turn: InterviewerTurn
+    ) -> InterviewerUtterance {
+        InterviewerUtterance(
+            id: interviewerUtteranceID(sessionID: sessionID, turnID: turn.id),
+            turnID: turn.id,
+            spokenTextFingerprint: digest(
+                Data(turn.spokenText.utf8),
+                namespace: "interviewer-spoken-text"
+            )
+        )
     }
 
     private static func currentEndpointCandidateIDs(
@@ -1278,6 +1542,39 @@ public actor InterviewRoomSession {
         ))
     }
 
+    private static func interviewerUtteranceID(
+        sessionID: SessionID,
+        turnID: TurnID
+    ) -> InterviewerUtteranceID {
+        InterviewerUtteranceID(stableIdentity(
+            namespace: "interviewer-utterance",
+            fields: [sessionID.rawValue, turnID.rawValue]
+        ))
+    }
+
+    private static func synthesisAttemptID(
+        sessionID: SessionID,
+        utteranceID: InterviewerUtteranceID,
+        commandID: CommandID
+    ) -> SynthesisAttemptID {
+        SynthesisAttemptID(stableIdentity(
+            namespace: "synthesis-attempt",
+            fields: [sessionID.rawValue, utteranceID.rawValue, commandID.rawValue]
+        ))
+    }
+
+    private static func synthesisAudioIdentities(
+        attemptID: SynthesisAttemptID
+    ) throws -> (partial: InterviewerAudioIdentity, final: InterviewerAudioIdentity) {
+        let attemptDigest = hexDigest(Data(attemptID.rawValue.utf8))
+        return (
+            try InterviewerAudioIdentity(
+                validating: "speech-\(attemptDigest).partial.wav"
+            ),
+            try InterviewerAudioIdentity(validating: "speech-\(attemptDigest).wav")
+        )
+    }
+
     private static func stableIdentity(
         namespace: String,
         fields: [String]
@@ -1591,6 +1888,169 @@ public actor InterviewRoomSession {
                         reason: "stored endpoint failure is invalid"
                     )
                 }
+            }
+        }
+
+        let interviewerTurns: [TurnID: InterviewerTurn] = Dictionary(
+            uniqueKeysWithValues: manifest.turns.compactMap { turn in
+                guard case .interviewer(let interviewer) = turn else { return nil }
+                return (interviewer.id, interviewer)
+            }
+        )
+        let utteranceIDs = manifest.interviewerUtterances.map(\.id)
+        let utteranceTurnIDs = manifest.interviewerUtterances.map(\.turnID)
+        let allSynthesisAttempts = manifest.interviewerUtterances.flatMap(
+            \.synthesisAttempts
+        )
+        let synthesisAttemptIDs = allSynthesisAttempts.map(\.id)
+        guard Set(utteranceIDs).count == utteranceIDs.count,
+              Set(utteranceTurnIDs).count == utteranceTurnIDs.count,
+              Set(synthesisAttemptIDs).count == synthesisAttemptIDs.count,
+              allSynthesisAttempts.filter(isActiveSynthesisAttempt).count <= 1 else {
+            throw InterviewRoomSessionError.invalidManifest(
+                reason: "invalid interviewer speech identity or single-flight state"
+            )
+        }
+
+        for utterance in manifest.interviewerUtterances {
+            guard let turn = interviewerTurns[utterance.turnID],
+                  utterance.id == interviewerUtteranceID(
+                      sessionID: manifest.sessionID,
+                      turnID: utterance.turnID
+                  ),
+                  utterance.spokenTextFingerprint == digest(
+                      Data(turn.spokenText.utf8),
+                      namespace: "interviewer-spoken-text"
+                  ) else {
+                throw InterviewRoomSessionError.invalidManifest(
+                    reason: "interviewer utterance does not match its canonical Turn"
+                )
+            }
+
+            let attemptIDs = utterance.synthesisAttempts.map(\.id)
+            guard Set(attemptIDs).count == attemptIDs.count else {
+                throw InterviewRoomSessionError.invalidManifest(
+                    reason: "duplicate Synthesis Attempt identity"
+                )
+            }
+            for (attemptIndex, attempt) in utterance.synthesisAttempts.enumerated() {
+                do {
+                    try validateSpeechProvenance(attempt.provenance)
+                    let expectedIdentities = try synthesisAudioIdentities(attemptID: attempt.id)
+                    guard attempt.id == synthesisAttemptID(
+                        sessionID: manifest.sessionID,
+                        utteranceID: utterance.id,
+                        commandID: attempt.authorizationCommandID
+                    ),
+                    attempt.partialAudioIdentity == expectedIdentities.partial,
+                    attempt.finalAudioIdentity == expectedIdentities.final,
+                    commandIDs.contains(attempt.authorizationCommandID),
+                    (attemptIndex == 0 ? attempt.kind == .initial : attempt.kind == .retry)
+                    else {
+                        throw InterviewRoomSessionError.invalidManifest(
+                            reason: "Synthesis Attempt provenance is inconsistent"
+                        )
+                    }
+                } catch let error as InterviewRoomSessionError {
+                    if case .invalidManifest = error { throw error }
+                    throw InterviewRoomSessionError.invalidManifest(
+                        reason: "Synthesis Attempt provenance is invalid"
+                    )
+                } catch {
+                    throw InterviewRoomSessionError.invalidManifest(
+                        reason: "Synthesis Attempt audio identity is invalid"
+                    )
+                }
+
+                switch attempt.lifecycle {
+                case .authorized, .speaking:
+                    guard attempt.audio == nil,
+                          attempt.failure == nil,
+                          attempt.stopReason == nil else {
+                        throw InterviewRoomSessionError.invalidManifest(
+                            reason: "active Synthesis Attempt has an outcome"
+                        )
+                    }
+                case .ready:
+                    guard let audio = attempt.audio,
+                          attempt.failure == nil,
+                          attempt.stopReason == nil else {
+                        throw InterviewRoomSessionError.invalidManifest(
+                            reason: "ready Synthesis Attempt has no selected audio"
+                        )
+                    }
+                    do {
+                        try validateSynthesisAudio(
+                            audio,
+                            expectedIdentity: attempt.finalAudioIdentity
+                        )
+                    } catch {
+                        throw InterviewRoomSessionError.invalidManifest(
+                            reason: "ready Synthesis Attempt audio is invalid"
+                        )
+                    }
+                case .stopped:
+                    guard attempt.audio == nil,
+                          attempt.failure == nil,
+                          attempt.stopReason != nil else {
+                        throw InterviewRoomSessionError.invalidManifest(
+                            reason: "stopped Synthesis Attempt is incomplete"
+                        )
+                    }
+                case .failed:
+                    guard attempt.audio == nil,
+                          attempt.failure != nil,
+                          attempt.stopReason == nil else {
+                        throw InterviewRoomSessionError.invalidManifest(
+                            reason: "failed Synthesis Attempt is incomplete"
+                        )
+                    }
+                }
+            }
+
+            let selectedAttempt = utterance.selectedAttemptID.flatMap { selectedID in
+                utterance.synthesisAttempts.first(where: { $0.id == selectedID })
+            }
+            let latestReadyAttempt = utterance.synthesisAttempts.last(where: {
+                $0.lifecycle == .ready
+            })
+            if utterance.selectedAttemptID != nil {
+                guard selectedAttempt?.lifecycle == .ready,
+                      selectedAttempt?.audio != nil,
+                      selectedAttempt?.id == latestReadyAttempt?.id else {
+                    throw InterviewRoomSessionError.invalidManifest(
+                        reason: "selected interviewer audio is not the latest ready Attempt"
+                    )
+                }
+            } else if latestReadyAttempt != nil {
+                throw InterviewRoomSessionError.invalidManifest(
+                    reason: "latest ready interviewer audio is not selected"
+                )
+            }
+            let latest = utterance.synthesisAttempts.last
+            let lifecycleIsConsistent: Bool
+            switch utterance.lifecycle {
+            case .pending:
+                lifecycleIsConsistent = utterance.synthesisAttempts.isEmpty
+                    && utterance.selectedAttemptID == nil
+            case .generating:
+                lifecycleIsConsistent = latest?.lifecycle == .authorized
+            case .speaking:
+                lifecycleIsConsistent = latest?.lifecycle == .speaking
+            case .ready:
+                lifecycleIsConsistent = selectedAttempt?.lifecycle == .ready
+                    && latest.map({ !isActiveSynthesisAttempt($0) }) == true
+            case .stopped:
+                lifecycleIsConsistent = utterance.selectedAttemptID == nil
+                    && latest?.lifecycle == .stopped
+            case .failed:
+                lifecycleIsConsistent = utterance.selectedAttemptID == nil
+                    && latest?.lifecycle == .failed
+            }
+            guard lifecycleIsConsistent else {
+                throw InterviewRoomSessionError.invalidManifest(
+                    reason: "Interviewer Utterance lifecycle is inconsistent"
+                )
             }
         }
 

@@ -5,24 +5,33 @@ setopt NULL_GLOB
 
 repo_root="${0:A:h:h}"
 configuration="${1:-release}"
+case "$configuration" in
+  debug) xcode_configuration="Debug" ;;
+  release) xcode_configuration="Release" ;;
+  *)
+    echo "Usage: $0 [debug|release]" >&2
+    exit 64
+    ;;
+esac
 app_name="Interview Arc Live.app"
 app_dir="$repo_root/dist/$app_name"
 contents_dir="$app_dir/Contents"
 executable_name="InterviewArcLive"
 smoke_executable_name="InterviewArcLiveCodexSmoke"
 endpoint_smoke_executable_name="InterviewArcLiveEndpointSmoke"
+speech_smoke_executable_name="InterviewArcLiveSpeechSmoke"
 info_plist="$repo_root/Resources/Info.plist"
 signing_identity="${INTERVIEW_ARC_LIVE_SIGNING_IDENTITY:--}"
 manifest_path="$repo_root/dist/InterviewArcLive.package-manifest.txt"
 allow_dirty="${INTERVIEW_ARC_LIVE_ALLOW_DIRTY:-0}"
-
-if [[ "$configuration" != "debug" && "$configuration" != "release" ]]; then
-  echo "Usage: $0 [debug|release]" >&2
-  exit 64
-fi
+derived_data="${INTERVIEW_ARC_LIVE_DERIVED_DATA_PATH:-$repo_root/.build/xcode-derived-data}"
 
 if [[ ! -f "$info_plist" ]]; then
   echo "Missing application metadata: Resources/Info.plist" >&2
+  exit 66
+fi
+if [[ ! -f "$repo_root/Package.resolved" ]]; then
+  echo "Packaging requires the committed exact dependency graph in Package.resolved." >&2
   exit 66
 fi
 
@@ -38,13 +47,29 @@ if [[ -n "$(git status --porcelain --untracked-files=all)" ]]; then
   fi
 fi
 
-swift build -c "$configuration" --product "$executable_name"
-swift build -c "$configuration" --product "$smoke_executable_name"
-swift build -c "$configuration" --product "$endpoint_smoke_executable_name"
-bin_dir="$(swift build -c "$configuration" --show-bin-path)"
+if ! command -v xcodebuild >/dev/null 2>&1; then
+  echo "Packaging the MLX runtime requires Xcode and xcodebuild." >&2
+  exit 69
+fi
+
+# MLX compiles Metal shaders through Xcode. A plain `swift build` can produce
+# source objects while omitting the runtime metallib, so it is not accepted as
+# release evidence for the TTS-enabled application.
+xcodebuild build \
+  -scheme InterviewArcLive-Package \
+  -configuration "$xcode_configuration" \
+  -destination 'platform=macOS' \
+  -derivedDataPath "$derived_data" \
+  -disableAutomaticPackageResolution \
+  -onlyUsePackageVersionsFromResolvedFile \
+  MACOSX_DEPLOYMENT_TARGET=14.0 \
+  CODE_SIGNING_ALLOWED=NO
+
+bin_dir="$derived_data/Build/Products/$xcode_configuration"
 executable="$bin_dir/$executable_name"
 smoke_executable="$bin_dir/$smoke_executable_name"
 endpoint_smoke_executable="$bin_dir/$endpoint_smoke_executable_name"
+speech_smoke_executable="$bin_dir/$speech_smoke_executable_name"
 
 if [[ -n "$(git status --porcelain --untracked-files=all)" ]]; then
   source_tree_clean="false"
@@ -55,8 +80,16 @@ if [[ -n "$(git status --porcelain --untracked-files=all)" ]]; then
 fi
 
 if [[ ! -x "$executable" || ! -x "$smoke_executable" \
-    || ! -x "$endpoint_smoke_executable" ]]; then
+    || ! -x "$endpoint_smoke_executable" || ! -x "$speech_smoke_executable" ]]; then
   echo "A built application executable or installed-smoke helper is missing." >&2
+  exit 66
+fi
+
+mlx_resource_bundle="$bin_dir/mlx-swift_Cmlx.bundle"
+mlx_metallib_candidates=("$mlx_resource_bundle"/**/default.metallib(N))
+if [[ ! -d "$mlx_resource_bundle" || ${#mlx_metallib_candidates} -ne 1 \
+    || ! -f "${mlx_metallib_candidates[1]}" ]]; then
+  echo "The Xcode build did not produce exactly one MLX default.metallib resource." >&2
   exit 66
 fi
 
@@ -73,15 +106,27 @@ cp "$info_plist" "$contents_dir/Info.plist"
 cp "$executable" "$contents_dir/MacOS/$executable_name"
 cp "$smoke_executable" "$contents_dir/Helpers/$smoke_executable_name"
 cp "$endpoint_smoke_executable" "$contents_dir/Helpers/$endpoint_smoke_executable_name"
+cp "$speech_smoke_executable" "$contents_dir/Helpers/$speech_smoke_executable_name"
 chmod 0755 "$contents_dir/MacOS/$executable_name"
 chmod 0755 "$contents_dir/Helpers/$smoke_executable_name"
 chmod 0755 "$contents_dir/Helpers/$endpoint_smoke_executable_name"
+chmod 0755 "$contents_dir/Helpers/$speech_smoke_executable_name"
 
 for resource_bundle in "$bin_dir"/*.bundle; do
   if [[ -d "$resource_bundle" ]]; then
-    cp -R "$resource_bundle" "$contents_dir/Resources/"
+    /usr/bin/ditto "$resource_bundle" \
+      "$contents_dir/Resources/${resource_bundle:t}"
   fi
 done
+
+packaged_mlx_bundle="$contents_dir/Resources/mlx-swift_Cmlx.bundle"
+packaged_metallib_candidates=("$packaged_mlx_bundle"/**/default.metallib(N))
+if [[ ! -d "$packaged_mlx_bundle" || ${#packaged_metallib_candidates} -ne 1 \
+    || ! -f "${packaged_metallib_candidates[1]}" ]]; then
+  echo "The packaged application is missing the exact MLX Metal resource." >&2
+  exit 66
+fi
+packaged_metallib="${packaged_metallib_candidates[1]}"
 
 /usr/bin/codesign \
   --force \
@@ -94,6 +139,12 @@ done
   --sign "$signing_identity" \
   --timestamp=none \
   "$contents_dir/Helpers/$endpoint_smoke_executable_name"
+
+/usr/bin/codesign \
+  --force \
+  --sign "$signing_identity" \
+  --timestamp=none \
+  "$contents_dir/Helpers/$speech_smoke_executable_name"
 
 /usr/bin/codesign \
   --force \
@@ -114,9 +165,13 @@ fi
 executable_sha256="$(/usr/bin/shasum -a 256 "$contents_dir/MacOS/$executable_name" | /usr/bin/awk '{print $1}')"
 smoke_executable_sha256="$(/usr/bin/shasum -a 256 "$contents_dir/Helpers/$smoke_executable_name" | /usr/bin/awk '{print $1}')"
 endpoint_smoke_executable_sha256="$(/usr/bin/shasum -a 256 "$contents_dir/Helpers/$endpoint_smoke_executable_name" | /usr/bin/awk '{print $1}')"
+speech_smoke_executable_sha256="$(/usr/bin/shasum -a 256 "$contents_dir/Helpers/$speech_smoke_executable_name" | /usr/bin/awk '{print $1}')"
 info_plist_sha256="$(/usr/bin/shasum -a 256 "$contents_dir/Info.plist" | /usr/bin/awk '{print $1}')"
 code_directory_hash="$(/usr/bin/codesign -dvvv "$app_dir" 2>&1 | /usr/bin/awk -F= '/^CDHash=/{print $2; exit}')"
 resource_bundle_count="$(/usr/bin/find "$contents_dir/Resources" -mindepth 1 -maxdepth 1 -type d -name '*.bundle' | /usr/bin/wc -l | /usr/bin/tr -d ' ')"
+mlx_metallib_relative_path="${packaged_metallib#$app_dir/}"
+mlx_metallib_sha256="$(/usr/bin/shasum -a 256 "$packaged_metallib" | /usr/bin/awk '{print $1}')"
+mlx_metallib_byte_count="$(/usr/bin/stat -f '%z' "$packaged_metallib")"
 signature_mode="certificate"
 if [[ "$signing_identity" == "-" ]]; then
   signature_mode="ad-hoc"
@@ -132,8 +187,12 @@ fi
   print -r -- "executable_sha256=$executable_sha256"
   print -r -- "codex_smoke_executable_sha256=$smoke_executable_sha256"
   print -r -- "endpoint_smoke_executable_sha256=$endpoint_smoke_executable_sha256"
+  print -r -- "speech_smoke_executable_sha256=$speech_smoke_executable_sha256"
   print -r -- "info_plist_sha256=$info_plist_sha256"
   print -r -- "resource_bundle_count=$resource_bundle_count"
+  print -r -- "mlx_metallib_relative_path=$mlx_metallib_relative_path"
+  print -r -- "mlx_metallib_sha256=$mlx_metallib_sha256"
+  print -r -- "mlx_metallib_byte_count=$mlx_metallib_byte_count"
 } > "$manifest_path"
 chmod 0600 "$manifest_path"
 

@@ -297,6 +297,7 @@ public struct SessionManifest: Codable, Sendable, Equatable {
     public let turns: [InterviewTurn]
     public let segments: [CandidateSegment]
     public let endpointEvaluations: [EndpointEvaluation]
+    public let interviewerUtterances: [InterviewerUtterance]
     public let revision: Int
 
     let appliedCommands: [AppliedCommandRecord]
@@ -310,6 +311,7 @@ public struct SessionManifest: Codable, Sendable, Equatable {
         turns: [InterviewTurn],
         segments: [CandidateSegment] = [],
         endpointEvaluations: [EndpointEvaluation] = [],
+        interviewerUtterances: [InterviewerUtterance] = [],
         revision: Int,
         appliedCommands: [AppliedCommandRecord]
     ) {
@@ -321,6 +323,7 @@ public struct SessionManifest: Codable, Sendable, Equatable {
         self.turns = turns
         self.segments = segments
         self.endpointEvaluations = endpointEvaluations
+        self.interviewerUtterances = interviewerUtterances
         self.revision = revision
         self.appliedCommands = appliedCommands
     }
@@ -334,6 +337,7 @@ public struct SessionManifest: Codable, Sendable, Equatable {
         case turns
         case segments
         case endpointEvaluations
+        case interviewerUtterances
         case revision
         case appliedCommands
     }
@@ -350,6 +354,10 @@ public struct SessionManifest: Codable, Sendable, Equatable {
         endpointEvaluations = try container.decodeIfPresent(
             [EndpointEvaluation].self,
             forKey: .endpointEvaluations
+        ) ?? []
+        interviewerUtterances = try container.decodeIfPresent(
+            [InterviewerUtterance].self,
+            forKey: .interviewerUtterances
         ) ?? []
         revision = try container.decode(Int.self, forKey: .revision)
         appliedCommands = try container.decode(
@@ -368,6 +376,7 @@ public struct SessionManifest: Codable, Sendable, Equatable {
         try container.encode(turns, forKey: .turns)
         try container.encode(segments, forKey: .segments)
         try container.encode(endpointEvaluations, forKey: .endpointEvaluations)
+        try container.encode(interviewerUtterances, forKey: .interviewerUtterances)
         try container.encode(revision, forKey: .revision)
         try container.encode(appliedCommands, forKey: .appliedCommands)
     }
@@ -383,6 +392,7 @@ public struct InterviewRoomSnapshot: Sendable, Equatable {
     public let turns: [InterviewTurn]
     public let segments: [CandidateSegment]
     public let endpointEvaluations: [EndpointEvaluation]
+    public let interviewerUtterances: [InterviewerUtterance]
     public let revision: Int
 
     init(manifest: SessionManifest) {
@@ -394,6 +404,7 @@ public struct InterviewRoomSnapshot: Sendable, Equatable {
         turns = manifest.turns
         segments = manifest.segments
         endpointEvaluations = manifest.endpointEvaluations
+        interviewerUtterances = manifest.interviewerUtterances
         revision = manifest.revision
     }
 }
