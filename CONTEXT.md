@@ -81,10 +81,12 @@ conversation state.
 
 ### Endpoint Evaluation
 
-One durably authorized semantic-classifier request at a specific selected
-Segment-evidence boundary. It retains stable evidence identities and a context
-fingerprint, not duplicated transcript or prompt text. An interrupted
-Evaluation is recorded without automatically replaying the provider request.
+One durably authorized semantic-classifier request triggered by one concrete
+Segment. It records that triggering Segment plus the ordered IDs of every
+selected transcript candidate in the accumulated answer. It retains those
+stable evidence identities and a context fingerprint, not duplicated
+transcript or prompt text. An interrupted Evaluation is recorded without
+automatically replaying the provider request.
 
 ### Session Manifest
 

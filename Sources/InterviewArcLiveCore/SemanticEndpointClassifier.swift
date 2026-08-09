@@ -145,7 +145,7 @@ public struct EndpointEvaluation: Codable, Sendable, Equatable {
   public let proposal: SemanticEndpointProposal?
   public let failure: EndpointEvaluationFailure?
 
-  public init(
+  internal init(
     id: EndpointEvaluationID,
     authorizationCommandID: CommandID,
     triggerSegmentID: SegmentID,
@@ -165,6 +165,67 @@ public struct EndpointEvaluation: Codable, Sendable, Equatable {
     self.lifecycle = lifecycle
     self.proposal = proposal
     self.failure = failure
+  }
+
+  public static func authorized(
+    id: EndpointEvaluationID,
+    authorizationCommandID: CommandID,
+    triggerSegmentID: SegmentID,
+    selectedCandidateIDs: [TranscriptCandidateID],
+    questionTurnID: TurnID?,
+    contextFingerprint: String
+  ) -> EndpointEvaluation {
+    EndpointEvaluation(
+      id: id,
+      authorizationCommandID: authorizationCommandID,
+      triggerSegmentID: triggerSegmentID,
+      selectedCandidateIDs: selectedCandidateIDs,
+      questionTurnID: questionTurnID,
+      contextFingerprint: contextFingerprint,
+      lifecycle: .authorized
+    )
+  }
+
+  public static func proposalStored(
+    id: EndpointEvaluationID,
+    authorizationCommandID: CommandID,
+    triggerSegmentID: SegmentID,
+    selectedCandidateIDs: [TranscriptCandidateID],
+    questionTurnID: TurnID?,
+    contextFingerprint: String,
+    proposal: SemanticEndpointProposal
+  ) -> EndpointEvaluation {
+    EndpointEvaluation(
+      id: id,
+      authorizationCommandID: authorizationCommandID,
+      triggerSegmentID: triggerSegmentID,
+      selectedCandidateIDs: selectedCandidateIDs,
+      questionTurnID: questionTurnID,
+      contextFingerprint: contextFingerprint,
+      lifecycle: .proposalStored,
+      proposal: proposal
+    )
+  }
+
+  public static func failed(
+    id: EndpointEvaluationID,
+    authorizationCommandID: CommandID,
+    triggerSegmentID: SegmentID,
+    selectedCandidateIDs: [TranscriptCandidateID],
+    questionTurnID: TurnID?,
+    contextFingerprint: String,
+    failure: EndpointEvaluationFailure
+  ) -> EndpointEvaluation {
+    EndpointEvaluation(
+      id: id,
+      authorizationCommandID: authorizationCommandID,
+      triggerSegmentID: triggerSegmentID,
+      selectedCandidateIDs: selectedCandidateIDs,
+      questionTurnID: questionTurnID,
+      contextFingerprint: contextFingerprint,
+      lifecycle: .failed,
+      failure: failure
+    )
   }
 }
 

@@ -235,17 +235,47 @@ final class SystemDesignRoomModelTests: XCTestCase {
         proposal: SemanticEndpointProposal? = nil,
         failure: EndpointEvaluationFailure? = nil
     ) -> EndpointEvaluation {
-        EndpointEvaluation(
-            id: EndpointEvaluationID(id),
-            authorizationCommandID: CommandID("authorization-\(id)"),
-            triggerSegmentID: SegmentID("trigger-segment"),
-            selectedCandidateIDs: selectedCandidateIDs,
-            questionTurnID: questionTurnID,
-            contextFingerprint: "sha256:v1:\(String(repeating: "a", count: 64))",
-            lifecycle: lifecycle,
-            proposal: proposal,
-            failure: failure
-        )
+        let endpointID = EndpointEvaluationID(id)
+        let commandID = CommandID("authorization-\(id)")
+        let triggerSegmentID = SegmentID("trigger-segment")
+        let fingerprint = "sha256:v1:\(String(repeating: "a", count: 64))"
+        switch lifecycle {
+        case .authorized:
+            return .authorized(
+                id: endpointID,
+                authorizationCommandID: commandID,
+                triggerSegmentID: triggerSegmentID,
+                selectedCandidateIDs: selectedCandidateIDs,
+                questionTurnID: questionTurnID,
+                contextFingerprint: fingerprint
+            )
+        case .proposalStored:
+            guard let proposal else {
+                preconditionFailure("A stored proposal fixture requires a proposal")
+            }
+            return .proposalStored(
+                id: endpointID,
+                authorizationCommandID: commandID,
+                triggerSegmentID: triggerSegmentID,
+                selectedCandidateIDs: selectedCandidateIDs,
+                questionTurnID: questionTurnID,
+                contextFingerprint: fingerprint,
+                proposal: proposal
+            )
+        case .failed:
+            guard let failure else {
+                preconditionFailure("A failed evaluation fixture requires a failure")
+            }
+            return .failed(
+                id: endpointID,
+                authorizationCommandID: commandID,
+                triggerSegmentID: triggerSegmentID,
+                selectedCandidateIDs: selectedCandidateIDs,
+                questionTurnID: questionTurnID,
+                contextFingerprint: fingerprint,
+                failure: failure
+            )
+        }
     }
 }
 

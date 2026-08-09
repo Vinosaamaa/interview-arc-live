@@ -85,7 +85,13 @@ struct EndpointShadowPresentation: Equatable {
             )
         }
 
-        switch currentEvaluation.lifecycle {
+        return lifecyclePresentation(for: currentEvaluation)
+    }
+
+    private static func lifecyclePresentation(
+        for evaluation: EndpointEvaluation
+    ) -> EndpointShadowPresentation {
+        switch evaluation.lifecycle {
         case .authorized:
             return EndpointShadowPresentation(
                 title: "Shadow checking this answer",
@@ -94,80 +100,92 @@ struct EndpointShadowPresentation: Equatable {
                 tone: .working
             )
         case .proposalStored:
-            guard let proposal = currentEvaluation.proposal else {
+            guard let proposal = evaluation.proposal else {
                 return invalidStatus
             }
-            switch proposal.decision {
-            case .likelyContinue:
-                return EndpointShadowPresentation(
-                    title: "Shadow: keep going",
-                    detail: "The answer may be unfinished. Advisory only; Hand off remains explicit.",
-                    systemImage: "arrow.forward.circle",
-                    tone: .advisory
-                )
-            case .likelyEnd:
-                return EndpointShadowPresentation(
-                    title: "Shadow: likely complete",
-                    detail: "This is advisory only. Nothing happens until you choose Hand off.",
-                    systemImage: "checkmark.circle",
-                    tone: .advisory
-                )
-            case .ambiguous:
-                return EndpointShadowPresentation(
-                    title: "Shadow: unclear",
-                    detail: "Keep answering or Hand off when you decide the answer is complete.",
-                    systemImage: "questionmark.circle",
-                    tone: .neutral
-                )
-            }
+            return proposalPresentation(for: proposal)
         case .failed:
-            guard let failure = currentEvaluation.failure else {
+            guard let failure = evaluation.failure else {
                 return invalidStatus
             }
-            switch failure.reason {
-            case .missingCredential:
-                return EndpointShadowPresentation(
-                    title: "Shadow needs a Groq key",
-                    detail: "The transcript is saved. Add a key before a later Segment check.",
-                    systemImage: "key.fill",
-                    tone: .warning
-                )
-            case .contextRejected:
-                return EndpointShadowPresentation(
-                    title: "Shadow skipped this answer",
-                    detail: "The complete draft exceeds its context limit. Hand off remains explicit.",
-                    systemImage: "doc.badge.ellipsis",
-                    tone: .warning
-                )
-            case .transportFailure:
-                return EndpointShadowPresentation(
-                    title: "Shadow unavailable",
-                    detail: "The transcript is saved. A later Segment can start a new check.",
-                    systemImage: "network.slash",
-                    tone: .warning
-                )
-            case .providerRejected:
-                return EndpointShadowPresentation(
-                    title: "Shadow request rejected",
-                    detail: "The transcript is saved. Check Groq access before the next Segment.",
-                    systemImage: "exclamationmark.shield.fill",
-                    tone: .warning
-                )
-            case .invalidResponse:
-                return EndpointShadowPresentation(
-                    title: "Shadow response unavailable",
-                    detail: "No advisory result was saved. Hand off remains explicit.",
-                    systemImage: "exclamationmark.bubble.fill",
-                    tone: .warning
-                )
-            case .interrupted:
-                return EndpointShadowPresentation(
-                    title: "Shadow check interrupted",
-                    detail: "It will not replay automatically. A later Segment can start a new check.",
-                    systemImage: "pause.circle.fill",
-                    tone: .warning
-                )
-            }
+            return failurePresentation(for: failure)
+        }
+    }
+
+    private static func proposalPresentation(
+        for proposal: SemanticEndpointProposal
+    ) -> EndpointShadowPresentation {
+        switch proposal.decision {
+        case .likelyContinue:
+            return EndpointShadowPresentation(
+                title: "Shadow: keep going",
+                detail: "The answer may be unfinished. Advisory only; Hand off remains explicit.",
+                systemImage: "arrow.forward.circle",
+                tone: .advisory
+            )
+        case .likelyEnd:
+            return EndpointShadowPresentation(
+                title: "Shadow: likely complete",
+                detail: "This is advisory only. Nothing happens until you choose Hand off.",
+                systemImage: "checkmark.circle",
+                tone: .advisory
+            )
+        case .ambiguous:
+            return EndpointShadowPresentation(
+                title: "Shadow: unclear",
+                detail: "Keep answering or Hand off when you decide the answer is complete.",
+                systemImage: "questionmark.circle",
+                tone: .neutral
+            )
+        }
+    }
+
+    private static func failurePresentation(
+        for failure: EndpointEvaluationFailure
+    ) -> EndpointShadowPresentation {
+        switch failure.reason {
+        case .missingCredential:
+            return EndpointShadowPresentation(
+                title: "Shadow needs a Groq key",
+                detail: "The transcript is saved. Add a key before a later Segment check.",
+                systemImage: "key.fill",
+                tone: .warning
+            )
+        case .contextRejected:
+            return EndpointShadowPresentation(
+                title: "Shadow skipped this answer",
+                detail: "The complete draft exceeds its context limit. Hand off remains explicit.",
+                systemImage: "doc.badge.ellipsis",
+                tone: .warning
+            )
+        case .transportFailure:
+            return EndpointShadowPresentation(
+                title: "Shadow unavailable",
+                detail: "The transcript is saved. A later Segment can start a new check.",
+                systemImage: "network.slash",
+                tone: .warning
+            )
+        case .providerRejected:
+            return EndpointShadowPresentation(
+                title: "Shadow request rejected",
+                detail: "The transcript is saved. Check Groq access before the next Segment.",
+                systemImage: "exclamationmark.shield.fill",
+                tone: .warning
+            )
+        case .invalidResponse:
+            return EndpointShadowPresentation(
+                title: "Shadow response unavailable",
+                detail: "No advisory result was saved. Hand off remains explicit.",
+                systemImage: "exclamationmark.bubble.fill",
+                tone: .warning
+            )
+        case .interrupted:
+            return EndpointShadowPresentation(
+                title: "Shadow check interrupted",
+                detail: "It will not replay automatically. A later Segment can start a new check.",
+                systemImage: "pause.circle.fill",
+                tone: .warning
+            )
         }
     }
 

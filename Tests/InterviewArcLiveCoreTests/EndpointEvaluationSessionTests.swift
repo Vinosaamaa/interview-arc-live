@@ -160,7 +160,7 @@ final class EndpointEvaluationSessionTests: XCTestCase {
 
         let replacement = try await restored.apply(
             .authorizeEndpointEvaluation(
-                commandID: CommandID("identity-replacement-authorize"),
+                commandID: CommandID("identity-replacement-endpoint-authorize"),
                 triggerSegmentID: initial.segmentID,
                 selectedCandidateIDs: [replacementCandidateID],
                 questionTurnID: nil,

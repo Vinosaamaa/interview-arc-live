@@ -122,6 +122,7 @@ struct SystemDesignRoomView: View {
 
     private var turnModeBar: some View {
         let presentation = model.endpointShadowPresentation
+        let statusColor = endpointShadowStatusColor(for: presentation.tone)
 
         return HStack(spacing: 14) {
             Text("Turn-taking")
@@ -146,12 +147,12 @@ struct SystemDesignRoomView: View {
                 .frame(width: 1, height: 28)
 
             Image(systemName: presentation.systemImage)
-                .foregroundStyle(endpointShadowStatusColor)
+                .foregroundStyle(statusColor)
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 2) {
                 Text(presentation.title)
                     .font(.system(.callout, design: .rounded, weight: .semibold))
-                    .foregroundStyle(endpointShadowStatusColor)
+                    .foregroundStyle(statusColor)
                 Text(presentation.detail)
                     .font(.system(.caption, design: .rounded))
                     .foregroundStyle(LivePalette.muted)
@@ -182,8 +183,10 @@ struct SystemDesignRoomView: View {
         )
     }
 
-    private var endpointShadowStatusColor: Color {
-        switch model.endpointShadowPresentation.tone {
+    private func endpointShadowStatusColor(
+        for tone: EndpointShadowPresentation.Tone
+    ) -> Color {
+        switch tone {
         case .neutral:
             return LivePalette.muted
         case .working:
