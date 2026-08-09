@@ -78,11 +78,41 @@ public struct CandidateTurn: Codable, Sendable, Equatable {
     public let id: TurnID
     public let commandID: CommandID
     public let transcript: CandidateTranscript
+    public let segmentIDs: [SegmentID]
 
-    public init(id: TurnID, commandID: CommandID, transcript: CandidateTranscript) {
+    public init(
+        id: TurnID,
+        commandID: CommandID,
+        transcript: CandidateTranscript,
+        segmentIDs: [SegmentID] = []
+    ) {
         self.id = id
         self.commandID = commandID
         self.transcript = transcript
+        self.segmentIDs = segmentIDs
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case commandID
+        case transcript
+        case segmentIDs
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(TurnID.self, forKey: .id)
+        commandID = try container.decode(CommandID.self, forKey: .commandID)
+        transcript = try container.decode(CandidateTranscript.self, forKey: .transcript)
+        segmentIDs = try container.decodeIfPresent([SegmentID].self, forKey: .segmentIDs) ?? []
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(commandID, forKey: .commandID)
+        try container.encode(transcript, forKey: .transcript)
+        try container.encode(segmentIDs, forKey: .segmentIDs)
     }
 }
 
@@ -145,6 +175,7 @@ public struct SessionManifest: Codable, Sendable, Equatable {
     public let phase: InterviewRoomPhase
     public let turnMode: TurnMode
     public let turns: [InterviewTurn]
+    public let segments: [CandidateSegment]
     public let revision: Int
 
     let appliedCommands: [AppliedCommandRecord]
@@ -155,6 +186,7 @@ public struct SessionManifest: Codable, Sendable, Equatable {
         phase: InterviewRoomPhase,
         turnMode: TurnMode,
         turns: [InterviewTurn],
+        segments: [CandidateSegment] = [],
         revision: Int,
         appliedCommands: [AppliedCommandRecord]
     ) {
@@ -163,8 +195,47 @@ public struct SessionManifest: Codable, Sendable, Equatable {
         self.phase = phase
         self.turnMode = turnMode
         self.turns = turns
+        self.segments = segments
         self.revision = revision
         self.appliedCommands = appliedCommands
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case sessionID
+        case activityID
+        case phase
+        case turnMode
+        case turns
+        case segments
+        case revision
+        case appliedCommands
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        sessionID = try container.decode(SessionID.self, forKey: .sessionID)
+        activityID = try container.decode(String.self, forKey: .activityID)
+        phase = try container.decode(InterviewRoomPhase.self, forKey: .phase)
+        turnMode = try container.decode(TurnMode.self, forKey: .turnMode)
+        turns = try container.decode([InterviewTurn].self, forKey: .turns)
+        segments = try container.decodeIfPresent([CandidateSegment].self, forKey: .segments) ?? []
+        revision = try container.decode(Int.self, forKey: .revision)
+        appliedCommands = try container.decode(
+            [AppliedCommandRecord].self,
+            forKey: .appliedCommands
+        )
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(sessionID, forKey: .sessionID)
+        try container.encode(activityID, forKey: .activityID)
+        try container.encode(phase, forKey: .phase)
+        try container.encode(turnMode, forKey: .turnMode)
+        try container.encode(turns, forKey: .turns)
+        try container.encode(segments, forKey: .segments)
+        try container.encode(revision, forKey: .revision)
+        try container.encode(appliedCommands, forKey: .appliedCommands)
     }
 }
 
@@ -175,6 +246,7 @@ public struct InterviewRoomSnapshot: Sendable, Equatable {
     public let phase: InterviewRoomPhase
     public let turnMode: TurnMode
     public let turns: [InterviewTurn]
+    public let segments: [CandidateSegment]
     public let revision: Int
 
     init(manifest: SessionManifest) {
@@ -183,6 +255,7 @@ public struct InterviewRoomSnapshot: Sendable, Equatable {
         phase = manifest.phase
         turnMode = manifest.turnMode
         turns = manifest.turns
+        segments = manifest.segments
         revision = manifest.revision
     }
 }

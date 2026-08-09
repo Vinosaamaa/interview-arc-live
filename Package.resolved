@@ -1,0 +1,40 @@
+{
+  "originHash" : "3bac04cc4c957ef4c7d5a19f1183588f5f92679393efa70e7dd709b9a04c50f6",
+  "pins" : [
+    {
+      "identity" : "argmax-oss-swift",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/argmaxinc/argmax-oss-swift.git",
+      "state" : {
+        "revision" : "25c62997041c134b03ca82731ce2f6fd2cae1eb9",
+        "version" : "1.0.0"
+      }
+    },
+    {
+      "identity" : "interview-arc-voice",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/Vinosaamaa/interview-arc-voice.git",
+      "state" : {
+        "revision" : "e68767d92431c1b909fc4c8771d79b0b0d3b1ea9"
+      }
+    },
+    {
+      "identity" : "libfvad",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/gfreezy/libfvad",
+      "state" : {
+        "revision" : "b685985209f19e9f94c04514e849089869b1d5d5"
+      }
+    },
+    {
+      "identity" : "swift-argument-parser",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/apple/swift-argument-parser.git",
+      "state" : {
+        "revision" : "6a52f3251125d74daf04fcbd5e6f08a75d074382",
+        "version" : "1.8.2"
+      }
+    }
+  ],
+  "version" : 3
+}

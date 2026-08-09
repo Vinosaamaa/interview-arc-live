@@ -51,6 +51,22 @@ One finalized candidate audio interval with stable identity, timing,
 transcription attempts, and quality. Multiple Segments may belong to one
 Candidate Turn.
 
+### Transcription Attempt
+
+One durably authorized provider request for a Segment. A retry is a new
+Attempt; replaying an existing operation ID never sends audio again.
+
+### Source Recording
+
+The private, session-owned M4A produced for one Segment. It remains canonical
+recovery evidence when transcription fails; provider upload chunks are
+temporary derivatives.
+
+### Best Transcript Candidate
+
+The deterministic selected nonempty provider result for a Segment. Quality
+controls its evidence status, never whether the text remains visible.
+
 ### Turn Mode
 
 The policy controlling Hand off: `Cue Only`, experimental `Patient Auto`, or
@@ -86,5 +102,8 @@ separate recording, model, transcript, or persistence state.
 - Accepted transitions advance the Session Manifest revision monotonically.
 - Every nonempty audio-derived transcript candidate remains visible with an
   explicit quality state.
+- A provider side effect occurs only after its exact Segment or Transcription
+  Attempt authorization is durable.
+- A failed transcription never deletes the Source Recording.
 - No client invents speech, hidden model memory, an Accepted verdict, or a
   durable write receipt.
