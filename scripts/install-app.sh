@@ -37,11 +37,29 @@ restore_previous_install() {
     echo "Refusing rollback for an unexpected destination." >&2
     return 65
   fi
+  if [[ "${previous_backup:h}" != "${failed_destination:h}"
+      || "${previous_backup:t}" != .Interview\ Arc\ Live.backup-*.app ]]; then
+    echo "Refusing rollback from an unexpected backup." >&2
+    return 65
+  fi
+  if [[ ! -d "$previous_backup" ]]; then
+    echo "The previous application backup is unavailable." >&2
+    return 66
+  fi
   if [[ -e "$failed_destination" ]]; then
     rm -rf "$failed_destination"
   fi
-  if [[ -d "$previous_backup" ]]; then
-    mv "$previous_backup" "$failed_destination"
+  mv "$previous_backup" "$failed_destination"
+}
+
+remove_unverified_install() {
+  local failed_destination="$1"
+  if [[ "${failed_destination:t}" != "$app_name" ]]; then
+    echo "Refusing cleanup for an unexpected destination." >&2
+    return 65
+  fi
+  if [[ -e "$failed_destination" ]]; then
+    rm -rf "$failed_destination"
   fi
 }
 
@@ -114,13 +132,40 @@ fi
 
 staging="$destination_directory/.Interview Arc Live.install-$$.app"
 backup="$destination_directory/.Interview Arc Live.backup-$$.app"
+install_transaction_active=0
+had_previous_install=0
+installation_verified=0
 
 cleanup() {
-  if [[ -d "$staging" ]]; then
-    rm -rf "$staging"
+  local prior_status="${1:-$?}"
+  trap - EXIT HUP INT TERM
+
+  # Restore user data before best-effort staging cleanup. Errexit must never
+  # skip rollback merely because removal of a temporary copy failed.
+  if (( install_transaction_active && ! installation_verified )); then
+    if (( had_previous_install )); then
+      if [[ -d "$backup" ]]; then
+        if ! restore_previous_install "$destination" "$backup"; then
+          echo "Installation interrupted and automatic rollback failed; backup remains at $backup." >&2
+        fi
+      elif [[ ! -e "$destination" ]]; then
+        echo "Installation interrupted after the previous application moved, but its backup is unavailable." >&2
+      fi
+    elif ! remove_unverified_install "$destination"; then
+      echo "Installation interrupted and unverified bytes could not be removed." >&2
+    fi
   fi
+
+  if [[ -d "$staging" ]] && ! rm -rf "$staging"; then
+    echo "Installation rollback completed, but staging cleanup failed at $staging." >&2
+  fi
+
+  return "$prior_status"
 }
-trap cleanup EXIT
+trap 'cleanup $?' EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 # Refuse to displace an unrelated bundle even if it occupies the expected
 # application path.
@@ -130,6 +175,13 @@ if [[ -e "$destination" ]]; then
     echo "Refusing to replace an unexpected application at $destination." >&2
     exit 65
   fi
+fi
+
+if [[ $# -ne 2
+    && ( -n "${INTERVIEW_ARC_LIVE_TEST_AFTER_BACKUP_ACTION:-}"
+      || "${INTERVIEW_ARC_LIVE_TEST_FAIL_AFTER_INSTALL_MOVE:-0}" != "0" ) ]]; then
+  echo "Installer failure injection requires an explicit test destination." >&2
+  exit 64
 fi
 
 # Stop only this executable if it is already running. Refuse a forced quit so
@@ -151,14 +203,35 @@ fi
 /usr/bin/ditto "$source_app" "$staging"
 /usr/bin/codesign --verify --deep --strict --verbose=2 "$staging"
 
+install_transaction_active=1
 if [[ -e "$destination" ]]; then
+  had_previous_install=1
   mv "$destination" "$backup"
 fi
 
+case "${INTERVIEW_ARC_LIVE_TEST_AFTER_BACKUP_ACTION:-}" in
+  "") ;;
+  fail) false ;;
+  terminate) kill -TERM $$ ;;
+  *)
+    echo "Unknown installer test action." >&2
+    exit 64
+    ;;
+esac
+
 if ! mv "$staging" "$destination"; then
-  restore_previous_install "$destination" "$backup"
+  if (( had_previous_install )); then
+    restore_previous_install "$destination" "$backup"
+  else
+    remove_unverified_install "$destination"
+  fi
+  install_transaction_active=0
   echo "Installation failed; the previous application was restored." >&2
   exit 1
+fi
+
+if [[ "${INTERVIEW_ARC_LIVE_TEST_FAIL_AFTER_INSTALL_MOVE:-0}" == "1" ]]; then
+  false
 fi
 
 installed_details=""
@@ -170,14 +243,21 @@ else
 fi
 
 if [[ -z "$installed_cdhash" || "$installed_cdhash" != "$source_cdhash" ]]; then
-  restore_previous_install "$destination" "$backup"
+  if (( had_previous_install )); then
+    restore_previous_install "$destination" "$backup"
+  else
+    remove_unverified_install "$destination"
+  fi
+  install_transaction_active=0
   echo "Installed bytes did not match the packaged application; the previous application was restored." >&2
   exit 1
 fi
 
+installation_verified=1
 if [[ -d "$backup" ]]; then
   rm -rf "$backup"
 fi
+install_transaction_active=0
 
 if [[ "${INTERVIEW_ARC_LIVE_SKIP_LAUNCH:-0}" != "1" ]]; then
   /usr/bin/open "$destination"

@@ -134,6 +134,78 @@ final class LiveGroqCredentialStoreTests: XCTestCase {
         }
     }
 
+    func testThrownReadbackRestoresPreviousKeychainValue() async throws {
+        let fixture = TransactionCredentialFixture(
+            value: "previous-test-key",
+            failingReadCalls: [2]
+        )
+        let store = LiveGroqCredentialStore(backend: fixture.backend)
+
+        do {
+            try await store.saveAndVerify("submitted-test-key")
+            XCTFail("Expected verification readback to fail")
+        } catch let error as LiveGroqCredentialStoreError {
+            XCTAssertEqual(error, .keychainUnavailable)
+        }
+
+        XCTAssertEqual(fixture.value, "previous-test-key")
+        XCTAssertEqual(fixture.saveCount, 2)
+    }
+
+    func testMismatchedReadbackRestoresPreviousKeychainValue() async throws {
+        let fixture = TransactionCredentialFixture(
+            value: "previous-test-key",
+            mismatchedReadCalls: [2: "different-test-key"]
+        )
+        let store = LiveGroqCredentialStore(backend: fixture.backend)
+
+        do {
+            try await store.saveAndVerify("submitted-test-key")
+            XCTFail("Expected verification mismatch")
+        } catch let error as LiveGroqCredentialStoreError {
+            XCTAssertEqual(error, .verificationFailed)
+        }
+
+        XCTAssertEqual(fixture.value, "previous-test-key")
+        XCTAssertEqual(fixture.saveCount, 2)
+    }
+
+    func testMismatchedReadbackRemovesNewlyInsertedKeychainValue() async throws {
+        let fixture = TransactionCredentialFixture(
+            value: nil,
+            mismatchedReadCalls: [2: "different-test-key"]
+        )
+        let store = LiveGroqCredentialStore(backend: fixture.backend)
+
+        do {
+            try await store.saveAndVerify("submitted-test-key")
+            XCTFail("Expected verification mismatch")
+        } catch let error as LiveGroqCredentialStoreError {
+            XCTAssertEqual(error, .verificationFailed)
+        }
+
+        XCTAssertNil(fixture.value)
+    }
+
+    func testFailedRollbackReportsSafePossibleSubmittedValue() async throws {
+        let fixture = TransactionCredentialFixture(
+            value: nil,
+            failingReadCalls: [2],
+            removeFails: true
+        )
+        let store = LiveGroqCredentialStore(backend: fixture.backend)
+
+        do {
+            try await store.saveAndVerify("submitted-test-key")
+            XCTFail("Expected rollback failure")
+        } catch let error as LiveGroqCredentialStoreError {
+            XCTAssertEqual(error, .rollbackFailed)
+            XCTAssertTrue(error.localizedDescription.contains("may still contain"))
+            XCTAssertFalse(error.localizedDescription.contains("submitted-test-key"))
+        }
+        XCTAssertEqual(fixture.value, "submitted-test-key")
+    }
+
     func testKeychainWriteFailureReturnsSafeUnavailableError() async throws {
         let fixture = CredentialMemoryFixture(keychainAvailable: false)
         let store = LiveGroqCredentialStore(backend: fixture.backend)
@@ -211,4 +283,62 @@ private final class CredentialMemoryFixture: @unchecked Sendable {
 
 private enum CredentialFixtureError: Error {
     case unavailable
+}
+
+private final class TransactionCredentialFixture: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storedValue: String?
+    private var reads = 0
+    private var saves = 0
+    private let failingReadCalls: Set<Int>
+    private let mismatchedReadCalls: [Int: String]
+    private let removeFails: Bool
+
+    init(
+        value: String?,
+        failingReadCalls: Set<Int> = [],
+        mismatchedReadCalls: [Int: String] = [:],
+        removeFails: Bool = false
+    ) {
+        storedValue = value
+        self.failingReadCalls = failingReadCalls
+        self.mismatchedReadCalls = mismatchedReadCalls
+        self.removeFails = removeFails
+    }
+
+    var value: String? {
+        lock.withLock { storedValue }
+    }
+
+    var saveCount: Int {
+        lock.withLock { saves }
+    }
+
+    var backend: LiveGroqCredentialBackend {
+        LiveGroqCredentialBackend(
+            read: { [self] in
+                try lock.withLock {
+                    reads += 1
+                    if failingReadCalls.contains(reads) {
+                        throw CredentialFixtureError.unavailable
+                    }
+                    return mismatchedReadCalls[reads] ?? storedValue
+                }
+            },
+            save: { [self] value in
+                lock.withLock {
+                    saves += 1
+                    storedValue = value
+                }
+            },
+            remove: { [self] in
+                try lock.withLock {
+                    if removeFails {
+                        throw CredentialFixtureError.unavailable
+                    }
+                    storedValue = nil
+                }
+            }
+        )
+    }
 }

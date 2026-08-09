@@ -23,6 +23,15 @@ assert_equal() {
   [[ "$actual" == "$expected" ]] || fail "$label: expected '$expected', got '$actual'"
 }
 
+assert_no_transaction_residue() {
+  local directory="$1"
+  if find "$directory" -maxdepth 1 \
+    \( -name '.Interview Arc Live.backup-*.app' -o -name '.Interview Arc Live.install-*.app' \) \
+    | grep -q .; then
+    fail "installer transaction residue remained in $directory"
+  fi
+}
+
 make_signed_bundle() {
   local bundle="$1"
   local identifier="$2"
@@ -102,9 +111,43 @@ INTERVIEW_ARC_LIVE_SKIP_LAUNCH=1 \
 replacement_cdhash="$(/usr/bin/codesign -dvvv "$replacement_bundle" 2>&1 | /usr/bin/awk -F= '/^CDHash=/{print $2; exit}')"
 installed_cdhash="$(/usr/bin/codesign -dvvv "$installed_bundle" 2>&1 | /usr/bin/awk -F= '/^CDHash=/{print $2; exit}')"
 assert_equal "$replacement_cdhash" "$installed_cdhash" "replacement code-directory hash"
-if find "$install_directory" -maxdepth 1 -name '.Interview Arc Live.backup-*.app' | grep -q .; then
-  fail "successful replacement left a rollback bundle behind"
+assert_no_transaction_residue "$install_directory"
+
+failed_replacement="$test_root/failed-replacement/Interview Arc Live.app"
+make_signed_bundle "$failed_replacement" "app.interviewarc.live" "must-not-install"
+if INTERVIEW_ARC_LIVE_ALLOW_ADHOC_INSTALL=1 \
+  INTERVIEW_ARC_LIVE_SKIP_LAUNCH=1 \
+  INTERVIEW_ARC_LIVE_TEST_AFTER_BACKUP_ACTION=fail \
+  "$installer" "$failed_replacement" "$installed_bundle" >/dev/null 2>&1; then
+  fail "injected post-backup failure unexpectedly succeeded"
 fi
+installed_cdhash="$(/usr/bin/codesign -dvvv "$installed_bundle" 2>&1 | /usr/bin/awk -F= '/^CDHash=/{print $2; exit}')"
+assert_equal "$replacement_cdhash" "$installed_cdhash" "set-e rollback after backup"
+assert_no_transaction_residue "$install_directory"
+
+interrupted_replacement="$test_root/interrupted-replacement/Interview Arc Live.app"
+make_signed_bundle "$interrupted_replacement" "app.interviewarc.live" "must-not-survive-signal"
+if INTERVIEW_ARC_LIVE_ALLOW_ADHOC_INSTALL=1 \
+  INTERVIEW_ARC_LIVE_SKIP_LAUNCH=1 \
+  INTERVIEW_ARC_LIVE_TEST_AFTER_BACKUP_ACTION=terminate \
+  "$installer" "$interrupted_replacement" "$installed_bundle" >/dev/null 2>&1; then
+  fail "injected post-backup termination unexpectedly succeeded"
+fi
+installed_cdhash="$(/usr/bin/codesign -dvvv "$installed_bundle" 2>&1 | /usr/bin/awk -F= '/^CDHash=/{print $2; exit}')"
+assert_equal "$replacement_cdhash" "$installed_cdhash" "signal rollback after backup"
+assert_no_transaction_residue "$install_directory"
+
+first_install_directory="$test_root/unverified-first-install"
+first_install_destination="$first_install_directory/Interview Arc Live.app"
+mkdir -p "$first_install_directory"
+if INTERVIEW_ARC_LIVE_ALLOW_ADHOC_INSTALL=1 \
+  INTERVIEW_ARC_LIVE_SKIP_LAUNCH=1 \
+  INTERVIEW_ARC_LIVE_TEST_FAIL_AFTER_INSTALL_MOVE=1 \
+  "$installer" "$source_bundle" "$first_install_destination" >/dev/null 2>&1; then
+  fail "injected unverified first install unexpectedly succeeded"
+fi
+[[ ! -e "$first_install_destination" ]] || fail "unverified first install was not removed"
+assert_no_transaction_residue "$first_install_directory"
 
 unrelated_directory="$test_root/unrelated"
 unrelated_destination="$unrelated_directory/Interview Arc Live.app"
@@ -121,4 +164,4 @@ actual_identifier="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' \
   "$unrelated_destination/Contents/Info.plist")"
 assert_equal "example.unrelated" "$actual_identifier" "unrelated bundle preservation"
 
-echo "Installer destination, exact-bundle, CDHash, replacement, and rollback tests passed."
+echo "Installer destination, exact-bundle, CDHash, replacement, interruption, and rollback tests passed."

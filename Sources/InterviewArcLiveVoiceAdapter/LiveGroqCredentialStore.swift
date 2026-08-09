@@ -17,6 +17,7 @@ public enum LiveGroqCredentialStoreError: Error, Equatable, LocalizedError, Send
     case missingCredential
     case keychainUnavailable
     case verificationFailed
+    case rollbackFailed
 
     public var errorDescription: String? {
         switch self {
@@ -28,6 +29,8 @@ public enum LiveGroqCredentialStoreError: Error, Equatable, LocalizedError, Send
             "macOS Keychain is unavailable. Use a key until quit or try again."
         case .verificationFailed:
             "Interview Arc Live could not verify the saved Groq API key."
+        case .rollbackFailed:
+            "Keychain may still contain the submitted Groq API key. Remove or replace it before retrying."
         }
     }
 }
@@ -80,17 +83,26 @@ public actor LiveGroqCredentialStore: GroqCredentialReading {
             throw LiveGroqCredentialStoreError.emptyCredential
         }
 
+        let previousValue: String?
+        do {
+            previousValue = try backend.read()
+        } catch {
+            throw LiveGroqCredentialStoreError.keychainUnavailable
+        }
+
         let retrieved: String?
         do {
             try backend.save(normalized)
             retrieved = try backend.read()
         } catch {
+            try restoreKeychain(previousValue)
             throw LiveGroqCredentialStoreError.keychainUnavailable
         }
         guard verificationPolicy.isVerified(
             submittedValue: normalized,
             retrievedValue: retrieved
         ) else {
+            try restoreKeychain(previousValue)
             throw LiveGroqCredentialStoreError.verificationFailed
         }
         credentialUntilQuit = nil
@@ -132,6 +144,30 @@ public actor LiveGroqCredentialStore: GroqCredentialReading {
         guard let value else { return nil }
         let normalized = value.trimmingCharacters(in: .whitespacesAndNewlines)
         return normalized.isEmpty ? nil : normalized
+    }
+
+    private func restoreKeychain(_ previousValue: String?) throws {
+        do {
+            if let previousValue {
+                try backend.save(previousValue)
+                guard verificationPolicy.isVerified(
+                    submittedValue: previousValue,
+                    retrievedValue: try backend.read(),
+                    permitsEmpty: true
+                ) else {
+                    throw LiveGroqCredentialStoreError.rollbackFailed
+                }
+            } else {
+                try backend.remove()
+                guard normalized(try backend.read()) == nil else {
+                    throw LiveGroqCredentialStoreError.rollbackFailed
+                }
+            }
+        } catch let error as LiveGroqCredentialStoreError {
+            throw error
+        } catch {
+            throw LiveGroqCredentialStoreError.rollbackFailed
+        }
     }
 }
 
