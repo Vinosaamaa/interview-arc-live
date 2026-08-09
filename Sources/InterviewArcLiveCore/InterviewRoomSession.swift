@@ -424,17 +424,25 @@ public actor InterviewRoomSession {
 
         case .finalized(let capture):
             guard segment.lifecycle == .finalizationAuthorized,
-                  capture.isPlayable,
-                  capture.byteCount > 0,
+                  capture.byteCount >= 0,
                   capture.startedAtMilliseconds >= 0,
                   capture.endedAtMilliseconds >= capture.startedAtMilliseconds,
                   capture.durationMilliseconds >= 0,
-                  capture.decodedDurationMilliseconds > 0 else {
+                  capture.decodedDurationMilliseconds >= 0 else {
                 throw InterviewRoomSessionError.invalidCapturedAudio
             }
             segment.capturedAudio = capture
-            segment.captureFailureReason = nil
-            segment.lifecycle = .audioReady
+            if capture.isPlayable {
+                guard capture.byteCount > 0,
+                      capture.decodedDurationMilliseconds > 0 else {
+                    throw InterviewRoomSessionError.invalidCapturedAudio
+                }
+                segment.captureFailureReason = nil
+                segment.lifecycle = .audioReady
+            } else {
+                segment.captureFailureReason = .noPlayableAudio
+                segment.lifecycle = .failed
+            }
 
         case .failed(let reason):
             guard segment.lifecycle == .captureAuthorized

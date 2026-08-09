@@ -647,6 +647,48 @@ final class SegmentLifecycleTests: XCTestCase {
         XCTAssertEqual(recorder.finishCount(), 2)
     }
 
+    func testNonPlayableFinalizationPreservesEvidenceAndAllowsNewSegmentWithoutRelaunch() async throws {
+        let nonPlayable = try capturedAudio(
+            fileName: "non-playable-source.m4a",
+            isPlayable: false,
+            byteCount: 0,
+            decodedDurationMilliseconds: 0
+        )
+        let store = InMemorySessionManifestStore()
+        let recorder = StubSegmentRecorder(capture: nonPlayable)
+        let transcriber = SequencedSegmentTranscriber(results: [])
+        let coordinator = try await SegmentSpeechCoordinator.open(
+            sessionID: SessionID("non-playable-session"),
+            activityID: "non-playable-activity",
+            manifestStore: store,
+            interviewerRuntime: fixtureRuntime(),
+            recording: recorder,
+            transcriber: transcriber,
+            credentialReader: FixedCredentialReader(value: "credential")
+        )
+        _ = try await coordinator.giveCandidateFloor(commandID: CommandID("non-playable-floor"))
+        _ = try await coordinator.beginSegment(commandID: CommandID("non-playable-begin"))
+
+        let finalized = try await coordinator.finalizeSegment(
+            commandID: CommandID("non-playable-finalize")
+        )
+        let failed = try XCTUnwrap(finalized.segments.first)
+        XCTAssertEqual(failed.lifecycle, .failed)
+        XCTAssertEqual(failed.captureFailureReason, .noPlayableAudio)
+        XCTAssertEqual(failed.capturedAudio, nonPlayable)
+        let durable = try await store.load(sessionID: finalized.sessionID)
+        XCTAssertEqual(durable?.segments.first?.capturedAudio, nonPlayable)
+
+        let next = try await coordinator.beginSegment(
+            commandID: CommandID("non-playable-next-begin")
+        )
+        XCTAssertEqual(next.segments.count, 2)
+        XCTAssertEqual(next.segments[0].lifecycle, .failed)
+        XCTAssertEqual(next.segments[1].lifecycle, .recording)
+        let providerCalls = await transcriber.invocationCount()
+        XCTAssertEqual(providerCalls, 0)
+    }
+
     func testCompatibilityFinishTranscribesTheActiveSegmentNotOlderAudio() async throws {
         let recorder = StubSegmentRecorder(
             capture: try capturedAudio(fileName: "compatibility-active.m4a")
@@ -933,16 +975,19 @@ final class SegmentLifecycleTests: XCTestCase {
     private func capturedAudio(
         fileName: String,
         isPartial: Bool = false,
-        integrityReasons: [SegmentIntegrityReason] = []
+        integrityReasons: [SegmentIntegrityReason] = [],
+        isPlayable: Bool = true,
+        byteCount: Int64 = 4_096,
+        decodedDurationMilliseconds: Int64 = 1_000
     ) throws -> CapturedAudioSegment {
         CapturedAudioSegment(
             audioIdentity: try SegmentAudioIdentity(validating: fileName),
             startedAtMilliseconds: 1_000,
             endedAtMilliseconds: 2_000,
             durationMilliseconds: 1_000,
-            decodedDurationMilliseconds: 1_000,
-            byteCount: 4_096,
-            isPlayable: true,
+            decodedDurationMilliseconds: decodedDurationMilliseconds,
+            byteCount: byteCount,
+            isPlayable: isPlayable,
             isPartial: isPartial,
             integrityReasons: integrityReasons
         )

@@ -173,16 +173,18 @@ final class VoiceCoreSegmentRecorderTests: XCTestCase {
             driver: RecordingDriverSpy(finalFileName: "unused.m4a"),
             applicationSupportRoot: fixture.root,
             inspect: { capture in
-                RecordingIntegrityEvidence(
+                let isRecovered = capture.url.lastPathComponent
+                    == recoveredURL.lastPathComponent
+                return RecordingIntegrityEvidence(
                     wallDurationSeconds: 0,
                     decodedDurationSeconds:
-                        capture.url == recoveredURL ? 4 : 3,
+                        isRecovered ? 4 : 3,
                     fileSizeBytes:
-                        capture.url == recoveredURL ? 4_096 : 2_048,
+                        isRecovered ? 4_096 : 2_048,
                     decodedFrameCount: 192_000,
                     writeErrorDescription: nil,
                     peakPowerDecibels:
-                        capture.url == recoveredURL ? -70 : -12
+                        isRecovered ? -70 : -12
                 )
             }
         )

@@ -5,6 +5,7 @@ import InterviewArcLiveCore
 enum LiveVoicePathError: Error, Equatable, Sendable {
     case sourceAudioMissing
     case sourceAudioIsNotRegularFile
+    case privateDirectoryIsUnsafe
     case authoritativeCaptureOutsideSessionRoot
     case invalidAuthoritativeAudioIdentity
     case destinationAlreadyExists
@@ -262,11 +263,25 @@ struct LiveVoicePaths: Sendable {
         _ url: URL,
         fileManager: FileManager
     ) throws {
-        try fileManager.createDirectory(
-            at: url,
-            withIntermediateDirectories: false,
-            attributes: [.posixPermissions: 0o700]
-        )
+        do {
+            try fileManager.createDirectory(
+                at: url,
+                withIntermediateDirectories: false,
+                attributes: [.posixPermissions: 0o700]
+            )
+        } catch let error as CocoaError where error.code == .fileWriteFileExists {
+            // The app revisits these roots for every Segment. Existing safe
+            // directories are expected; validate them before chmod instead
+            // of depending on Foundation's platform-specific mkdir behavior.
+        }
+        let values = try url.resourceValues(forKeys: [
+            .isDirectoryKey,
+            .isSymbolicLinkKey,
+        ])
+        guard values.isDirectory == true,
+              values.isSymbolicLink != true else {
+            throw LiveVoicePathError.privateDirectoryIsUnsafe
+        }
         try fileManager.setAttributes(
             [.posixPermissions: 0o700],
             ofItemAtPath: url.path
