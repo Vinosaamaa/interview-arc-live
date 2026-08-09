@@ -238,7 +238,7 @@ final class SessionManifestStoreTests: XCTestCase {
             turns = []
         }
 
-        SessionManifest(
+        return SessionManifest(
             sessionID: sessionID,
             activityID: "public-test-activity",
             phase: phase,
