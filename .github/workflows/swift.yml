@@ -1,0 +1,21 @@
+name: Swift
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: macos-15
+    timeout-minutes: 15
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+      - name: Report Swift toolchain
+        run: swift --version
+      - name: Test package
+        run: swift test
