@@ -3,16 +3,67 @@
 set -euo pipefail
 
 bundle_identifier="app.interviewarc.live"
-destination="/Applications/Interview Arc Live.app"
+app_name="Interview Arc Live.app"
+system_applications_directory="/Applications"
 allow_adhoc_install="${INTERVIEW_ARC_LIVE_ALLOW_ADHOC_INSTALL:-0}"
 
-if [[ $# -ne 1 ]]; then
-  echo "Usage: $0 '/path/to/Interview Arc Live.app'" >&2
+select_install_destination() {
+  local system_directory="$1"
+  local user_directory="$2"
+  local explicit_destination="${3:-}"
+
+  if [[ -n "$explicit_destination" ]]; then
+    local resolved_destination="${explicit_destination:A}"
+    if [[ "${resolved_destination:t}" != "$app_name" ]]; then
+      echo "An explicit destination must end with '$app_name'." >&2
+      return 65
+    fi
+    print -r -- "$resolved_destination"
+    return
+  fi
+
+  if [[ -d "$system_directory" && -w "$system_directory" ]]; then
+    print -r -- "$system_directory/$app_name"
+  else
+    print -r -- "$user_directory/$app_name"
+  fi
+}
+
+restore_previous_install() {
+  local failed_destination="$1"
+  local previous_backup="$2"
+
+  if [[ "${failed_destination:t}" != "$app_name" ]]; then
+    echo "Refusing rollback for an unexpected destination." >&2
+    return 65
+  fi
+  if [[ -e "$failed_destination" ]]; then
+    rm -rf "$failed_destination"
+  fi
+  if [[ -d "$previous_backup" ]]; then
+    mv "$previous_backup" "$failed_destination"
+  fi
+}
+
+# Focused shell tests source these two path/rollback functions without running
+# installation side effects. This switch cannot weaken a real installation.
+if [[ "${INTERVIEW_ARC_LIVE_INSTALLER_SOURCE_ONLY:-0}" == "1" ]]; then
+  return 0 2>/dev/null || exit 0
+fi
+
+if [[ $# -lt 1 || $# -gt 2 ]]; then
+  echo "Usage: $0 '/path/to/Interview Arc Live.app' ['/install/path/Interview Arc Live.app']" >&2
   exit 64
 fi
 
 source_app="${1:A}"
 source_info="$source_app/Contents/Info.plist"
+current_user_applications_directory="${HOME:?Current user home directory is unavailable.}/Applications"
+destination="$(select_install_destination \
+  "$system_applications_directory" \
+  "$current_user_applications_directory" \
+  "${2:-}")"
+destination_directory="${destination:h}"
 
 if [[ ! -d "$source_app" || ! -f "$source_info" ]]; then
   echo "Expected a packaged Interview Arc Live application bundle." >&2
@@ -47,8 +98,22 @@ if [[ -z "$source_cdhash" ]]; then
   exit 65
 fi
 
-staging="/Applications/.Interview Arc Live.install-$$.app"
-backup="/Applications/.Interview Arc Live.backup-$$.app"
+# Validate the package before creating a missing per-user Applications
+# directory. An invalid source must not mutate the destination filesystem.
+if [[ ! -e "$destination_directory" ]]; then
+  if [[ "$destination_directory" != "$current_user_applications_directory" ]]; then
+    echo "The explicit installation directory does not exist: $destination_directory" >&2
+    exit 73
+  fi
+  mkdir -p "$destination_directory"
+fi
+if [[ ! -d "$destination_directory" || ! -w "$destination_directory" ]]; then
+  echo "The installation directory is not writable: $destination_directory" >&2
+  exit 73
+fi
+
+staging="$destination_directory/.Interview Arc Live.install-$$.app"
+backup="$destination_directory/.Interview Arc Live.backup-$$.app"
 
 cleanup() {
   if [[ -d "$staging" ]]; then
@@ -91,9 +156,7 @@ if [[ -e "$destination" ]]; then
 fi
 
 if ! mv "$staging" "$destination"; then
-  if [[ -d "$backup" ]]; then
-    mv "$backup" "$destination"
-  fi
+  restore_previous_install "$destination" "$backup"
   echo "Installation failed; the previous application was restored." >&2
   exit 1
 fi
@@ -107,10 +170,7 @@ else
 fi
 
 if [[ -z "$installed_cdhash" || "$installed_cdhash" != "$source_cdhash" ]]; then
-  rm -rf "$destination"
-  if [[ -d "$backup" ]]; then
-    mv "$backup" "$destination"
-  fi
+  restore_previous_install "$destination" "$backup"
   echo "Installed bytes did not match the packaged application; the previous application was restored." >&2
   exit 1
 fi
@@ -119,6 +179,10 @@ if [[ -d "$backup" ]]; then
   rm -rf "$backup"
 fi
 
-/usr/bin/open "$destination"
-echo "Installed and launched exact package: $destination"
+if [[ "${INTERVIEW_ARC_LIVE_SKIP_LAUNCH:-0}" != "1" ]]; then
+  /usr/bin/open "$destination"
+  echo "Installed and launched exact package: $destination"
+else
+  echo "Installed exact package: $destination"
+fi
 echo "Code-directory hash: $installed_cdhash"

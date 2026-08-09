@@ -28,7 +28,8 @@ struct SystemDesignRoomView: View {
             GroqCredentialSetupView(
                 isSaving: model.isSavingCredential,
                 errorMessage: model.credentialErrorMessage,
-                onSave: model.saveGroqCredential
+                onSaveToKeychain: model.saveGroqCredential,
+                onUseUntilQuit: model.useGroqCredentialUntilQuit
             )
         }
     }

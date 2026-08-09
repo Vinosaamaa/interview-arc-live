@@ -3,13 +3,19 @@ import InterviewArcLiveCore
 import InterviewArcVoiceCore
 
 public enum LiveGroqCredentialReadiness: Equatable, Sendable {
+    /// A durable Keychain credential is available.
     case ready
+    /// The explicit process-memory credential is active and will disappear
+    /// when this app process exits.
+    case readyUntilQuit
     case missing
+    case keychainUnavailable
 }
 
 public enum LiveGroqCredentialStoreError: Error, Equatable, LocalizedError, Sendable {
     case emptyCredential
     case missingCredential
+    case keychainUnavailable
     case verificationFailed
 
     public var errorDescription: String? {
@@ -17,7 +23,9 @@ public enum LiveGroqCredentialStoreError: Error, Equatable, LocalizedError, Send
         case .emptyCredential:
             "Enter a Groq API key before saving."
         case .missingCredential:
-            "Interview Arc Live does not have a Groq API key in Keychain."
+            "Interview Arc Live does not have a Groq API key."
+        case .keychainUnavailable:
+            "macOS Keychain is unavailable. Use a key until quit or try again."
         case .verificationFailed:
             "Interview Arc Live could not verify the saved Groq API key."
         }
@@ -29,6 +37,9 @@ public actor LiveGroqCredentialStore: GroqCredentialReading {
 
     private let backend: LiveGroqCredentialBackend
     private let verificationPolicy = CredentialSaveVerificationPolicy()
+    /// Intentionally actor-local and non-Codable. This value has no Adapter
+    /// capable of writing it to disk, diagnostics, manifests, or preferences.
+    private var credentialUntilQuit: String?
 
     public init() {
         let keychain = KeychainStore(service: Self.keychainService)
@@ -44,7 +55,17 @@ public actor LiveGroqCredentialStore: GroqCredentialReading {
     }
 
     public func read() throws -> String? {
-        try backend.read()
+        if let credentialUntilQuit {
+            return credentialUntilQuit
+        }
+        do {
+            if let keychainCredential = normalized(try backend.read()) {
+                return keychainCredential
+            }
+            return nil
+        } catch {
+            throw LiveGroqCredentialStoreError.keychainUnavailable
+        }
     }
 
     public func readGroqCredential() throws -> String {
@@ -55,30 +76,62 @@ public actor LiveGroqCredentialStore: GroqCredentialReading {
     }
 
     public func saveAndVerify(_ value: String) throws {
-        let normalized = value.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !normalized.isEmpty else {
+        guard let normalized = normalized(value) else {
             throw LiveGroqCredentialStoreError.emptyCredential
         }
 
-        try backend.save(normalized)
+        let retrieved: String?
+        do {
+            try backend.save(normalized)
+            retrieved = try backend.read()
+        } catch {
+            throw LiveGroqCredentialStoreError.keychainUnavailable
+        }
         guard verificationPolicy.isVerified(
             submittedValue: normalized,
-            retrievedValue: try backend.read()
+            retrievedValue: retrieved
         ) else {
             throw LiveGroqCredentialStoreError.verificationFailed
         }
+        credentialUntilQuit = nil
+    }
+
+    /// Uses a credential only in this actor's process memory. It never calls
+    /// the Keychain backend or any serialization/logging Adapter.
+    public func useUntilQuit(_ value: String) throws {
+        guard let normalized = normalized(value) else {
+            throw LiveGroqCredentialStoreError.emptyCredential
+        }
+        credentialUntilQuit = normalized
     }
 
     public func remove() throws {
-        try backend.remove()
+        credentialUntilQuit = nil
+        do {
+            try backend.remove()
+        } catch {
+            throw LiveGroqCredentialStoreError.keychainUnavailable
+        }
     }
 
     public func readiness() throws -> LiveGroqCredentialReadiness {
-        guard let value = try read(),
-              !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            return .missing
+        if credentialUntilQuit != nil {
+            return .readyUntilQuit
         }
-        return .ready
+        do {
+            if normalized(try backend.read()) != nil {
+                return .ready
+            }
+            return .missing
+        } catch {
+            return .keychainUnavailable
+        }
+    }
+
+    private func normalized(_ value: String?) -> String? {
+        guard let value else { return nil }
+        let normalized = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return normalized.isEmpty ? nil : normalized
     }
 }
 

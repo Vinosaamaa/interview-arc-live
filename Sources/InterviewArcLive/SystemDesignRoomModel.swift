@@ -20,7 +20,8 @@ final class SystemDesignRoomModel: ObservableObject {
     private enum CredentialState {
         case checking
         case missing
-        case ready
+        case readyFromKeychain
+        case readyUntilQuit
         case unusable
     }
 
@@ -36,6 +37,11 @@ final class SystemDesignRoomModel: ObservableObject {
 
     var needsGroqCredential: Bool {
         credentialState == .missing || credentialState == .unusable
+    }
+
+    private var hasUsableGroqCredential: Bool {
+        credentialState == .readyFromKeychain
+            || credentialState == .readyUntilQuit
     }
 
     var canStopRecording: Bool {
@@ -60,7 +66,7 @@ final class SystemDesignRoomModel: ObservableObject {
 
     var canRecordSegment: Bool {
         guard !isWorking,
-              credentialState == .ready,
+              hasUsableGroqCredential,
               snapshot?.phase == .candidateFloor else {
             return false
         }
@@ -165,7 +171,7 @@ final class SystemDesignRoomModel: ObservableObject {
 
     func recordSegment() async {
         guard let coordinator else { return }
-        guard credentialState == .ready else {
+        guard hasUsableGroqCredential else {
             presentCredentialSetup()
             return
         }
@@ -228,8 +234,8 @@ final class SystemDesignRoomModel: ObservableObject {
 
     func transcribeSegment(id: String) async {
         guard let coordinator, !isWorking else { return }
-        guard credentialState == .ready else {
-            credentialErrorMessage = "Save a Groq API key before retrying this transcript."
+        guard hasUsableGroqCredential else {
+            credentialErrorMessage = "Add a Groq API key before retrying this transcript."
             presentCredentialSetup()
             return
         }
@@ -360,9 +366,9 @@ final class SystemDesignRoomModel: ObservableObject {
 
         do {
             try await credentialStore.saveAndVerify(value)
-            credentialState = .ready
+            credentialState = .readyFromKeychain
             statusMessage = segments.contains(where: { $0.transcriptionAction != nil })
-                ? "Groq key saved · transcribe the affected segment"
+                ? "Groq key saved to Keychain · transcribe the affected segment"
                 : status(for: snapshot)
             return true
         } catch let error as LiveGroqCredentialStoreError {
@@ -372,6 +378,28 @@ final class SystemDesignRoomModel: ObservableObject {
         } catch {
             credentialState = .unusable
             credentialErrorMessage = "macOS Keychain could not save the Groq API key."
+            return false
+        }
+    }
+
+    func useGroqCredentialUntilQuit(_ value: String) async -> Bool {
+        guard !isSavingCredential else { return false }
+        isSavingCredential = true
+        credentialErrorMessage = nil
+        defer { isSavingCredential = false }
+
+        do {
+            try await credentialStore.useUntilQuit(value)
+            credentialState = .readyUntilQuit
+            statusMessage = segments.contains(where: { $0.transcriptionAction != nil })
+                ? "Groq key available until quit · transcribe the affected segment"
+                : status(for: snapshot)
+            return true
+        } catch let error as LiveGroqCredentialStoreError {
+            credentialErrorMessage = error.localizedDescription
+            return false
+        } catch {
+            credentialErrorMessage = "The Groq API key could not be used for this app session."
             return false
         }
     }
@@ -403,9 +431,17 @@ final class SystemDesignRoomModel: ObservableObject {
         do {
             switch try await credentialStore.readiness() {
             case .ready:
-                credentialState = .ready
+                credentialState = .readyFromKeychain
+            case .readyUntilQuit:
+                credentialState = .readyUntilQuit
             case .missing:
                 credentialState = .missing
+                if presentWhenMissing {
+                    isCredentialSetupPresented = true
+                }
+            case .keychainUnavailable:
+                credentialState = .unusable
+                credentialErrorMessage = "macOS Keychain is unavailable. Use the key until quit to record in this app session."
                 if presentWhenMissing {
                     isCredentialSetupPresented = true
                 }
@@ -438,7 +474,7 @@ final class SystemDesignRoomModel: ObservableObject {
 
         switch snapshot.phase {
         case .candidateFloor:
-            if credentialState != .ready {
+            if !hasUsableGroqCredential {
                 return "Groq key required"
             }
             if draft.contains(where: {
@@ -454,9 +490,12 @@ final class SystemDesignRoomModel: ObservableObject {
             let selectedCount = draft.filter {
                 $0.lifecycle != .excluded && $0.selectedCandidate != nil
             }.count
-            return selectedCount == 0
-                ? "Ready to record"
-                : "\(selectedCount) segment\(selectedCount == 1 ? "" : "s") ready"
+            if selectedCount == 0 {
+                return credentialState == .readyUntilQuit
+                    ? "Ready to record · key available until quit"
+                    : "Ready to record"
+            }
+            return "\(selectedCount) segment\(selectedCount == 1 ? "" : "s") ready"
         case .interviewerProcessing:
             return "Answer saved · interviewer retry available"
         case .interviewerTurn:
