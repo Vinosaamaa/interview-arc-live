@@ -596,7 +596,7 @@ public final class SegmentSpeechCoordinator {
               recordedSegment.selectedCandidateID != previouslySelectedCandidateID else {
             return recorded
         }
-        return try await evaluateEndpointIfNeeded(
+        return await evaluateEndpointIfNeeded(
             triggerSegmentID: segmentID,
             sourceCommandID: commandID
         )
@@ -608,7 +608,7 @@ public final class SegmentSpeechCoordinator {
     private func evaluateEndpointIfNeeded(
         triggerSegmentID: SegmentID,
         sourceCommandID: CommandID
-    ) async throws -> InterviewRoomSnapshot {
+    ) async -> InterviewRoomSnapshot {
         guard snapshot.phase == .candidateFloor,
               snapshot.turnMode == .patientAuto else {
             return snapshot
@@ -664,12 +664,19 @@ public final class SegmentSpeechCoordinator {
             explicitCue: false,
             workspaceActivity: []
         )
-        let contextFingerprint = try InterviewRoomSession.endpointContextFingerprint(
-            context,
-            triggerSegmentID: triggerSegmentID,
-            selectedCandidateIDs: selectedCandidateIDs,
-            questionTurnID: questionTurnID
-        )
+        let contextFingerprint: String
+        do {
+            contextFingerprint = try InterviewRoomSession.endpointContextFingerprint(
+                context,
+                triggerSegmentID: triggerSegmentID,
+                selectedCandidateIDs: selectedCandidateIDs,
+                questionTurnID: questionTurnID
+            )
+        } catch {
+            // Shadow work is advisory. The selected transcript is already
+            // durable and remains the successful result of this operation.
+            return snapshot
+        }
         let authorizationCommandID = InterviewRoomSession.derivedCommandID(
             source: sourceCommandID,
             operation: "endpoint-evaluation-authorization"
@@ -685,17 +692,11 @@ public final class SegmentSpeechCoordinator {
                     contextFingerprint: contextFingerprint
                 )
             )
-        } catch let sessionError as InterviewRoomSessionError {
-            switch sessionError {
-            case .endpointEvidenceMismatch,
-                 .endpointEvaluationAlreadyInProgress:
-                // Transcript persistence succeeded. Concurrent or unresolved
-                // evidence makes Shadow ineligible, never a transcription
-                // failure and never permission to call the classifier.
-                return snapshot
-            default:
-                throw sessionError
-            }
+        } catch {
+            // Authorization persistence and concurrent ineligibility never
+            // relabel a durably successful transcription as failed.
+            publish(await session.snapshot())
+            return snapshot
         }
         guard authorization.disposition == .accepted else {
             return authorization.snapshot
@@ -703,9 +704,7 @@ public final class SegmentSpeechCoordinator {
         guard let evaluation = authorization.snapshot.endpointEvaluations.first(where: {
             $0.authorizationCommandID == authorizationCommandID
         }) else {
-            throw InterviewRoomSessionError.invalidManifest(
-                reason: "endpoint evaluation authorization is missing"
-            )
+            return authorization.snapshot
         }
 
         let outcome: EndpointEvaluationOutcome
@@ -714,16 +713,47 @@ public final class SegmentSpeechCoordinator {
         } catch {
             outcome = .failed(Self.endpointFailure(for: error))
         }
-        return try await applyAndPublish(
-            .recordEndpointEvaluationOutcome(
-                commandID: InterviewRoomSession.derivedCommandID(
-                    source: authorizationCommandID,
-                    operation: "endpoint-evaluation-outcome"
-                ),
-                evaluationID: evaluation.id,
-                outcome: outcome
+        do {
+            return try await applyAndPublish(
+                .recordEndpointEvaluationOutcome(
+                    commandID: InterviewRoomSession.derivedCommandID(
+                        source: authorizationCommandID,
+                        operation: "endpoint-evaluation-outcome"
+                    ),
+                    evaluationID: evaluation.id,
+                    outcome: outcome
+                )
+            ).snapshot
+        } catch {
+            return await reconcileEndpointEvaluation(
+                evaluation,
+                authorizationCommandID: authorizationCommandID
             )
-        ).snapshot
+        }
+    }
+
+    /// Once provider work was durably authorized, an outcome-write failure is
+    /// reconciled independently from transcription. A persistent store outage
+    /// leaves the authorization recoverable by `resumePendingWork` rather than
+    /// reporting the already-stored transcript as failed.
+    private func reconcileEndpointEvaluation(
+        _ evaluation: EndpointEvaluation,
+        authorizationCommandID: CommandID
+    ) async -> InterviewRoomSnapshot {
+        do {
+            return try await applyAndPublish(
+                .reconcileInterruptedEndpointEvaluation(
+                    commandID: InterviewRoomSession.derivedCommandID(
+                        source: authorizationCommandID,
+                        operation: "endpoint-evaluation-outcome-recovery"
+                    ),
+                    evaluationID: evaluation.id
+                )
+            ).snapshot
+        } catch {
+            publish(await session.snapshot())
+            return snapshot
+        }
     }
 
     private static func endpointFailure(for error: Error) -> EndpointEvaluationFailure {

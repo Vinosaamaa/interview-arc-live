@@ -227,6 +227,38 @@ final class SystemDesignRoomModelTests: XCTestCase {
         )
     }
 
+    func testRemovingAllSelectedEvidenceKeepsLatestEvaluationVisiblyStale() {
+        let latestEvaluation = endpointEvaluation(
+            selectedCandidateIDs: [TranscriptCandidateID("candidate-a")],
+            lifecycle: .proposalStored,
+            proposal: SemanticEndpointProposal(
+                decision: .likelyEnd,
+                reasonCode: .answerResolvesQuestion
+            )
+        )
+        let evaluations = [latestEvaluation]
+        let currentEvaluation = EndpointShadowPresentation.currentEvaluation(
+            in: evaluations,
+            selectedCandidateIDs: [],
+            questionTurnID: nil,
+            hasUnresolvedDraft: false
+        )
+
+        XCTAssertNil(currentEvaluation)
+        let presentation = EndpointShadowPresentation.make(
+            turnMode: .patientAuto,
+            phase: .candidateFloor,
+            currentEvaluation: currentEvaluation,
+            hasSelectedDraft: false,
+            hasUnresolvedDraft: false,
+            hasStaleEvaluation: evaluations.last != nil
+                && currentEvaluation == nil
+        )
+
+        XCTAssertEqual(presentation.title, "Evidence changed · Shadow waiting")
+        XCTAssertFalse(presentation.detail.contains("likely complete"))
+    }
+
     private func endpointEvaluation(
         id: String = "endpoint-evaluation",
         selectedCandidateIDs: [TranscriptCandidateID],

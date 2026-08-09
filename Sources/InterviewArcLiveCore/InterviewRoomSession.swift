@@ -508,8 +508,27 @@ public actor InterviewRoomSession {
                 )
             }
             try Self.validateEndpointEvaluationOutcome(outcome)
+            let recordedOutcome: EndpointEvaluationOutcome
+            if case .proposal = outcome,
+               !Self.isCurrentEndpointEvaluation(
+                   endpointEvaluations[index],
+                   phase: phase,
+                   mode: mode,
+                   turns: manifest.turns,
+                   segments: segments
+               ) {
+                // The classifier completed, but its authorization no longer
+                // describes the current Candidate Floor. Consume this result
+                // atomically as interrupted so it can never surface as a
+                // proposal for stale evidence or strand the authorization.
+                recordedOutcome = .failed(
+                    EndpointEvaluationFailure(reason: .interrupted)
+                )
+            } else {
+                recordedOutcome = outcome
+            }
             endpointEvaluations[index] = Self.recordingEndpointOutcome(
-                outcome,
+                recordedOutcome,
                 for: endpointEvaluations[index]
             )
 
@@ -960,6 +979,35 @@ public actor InterviewRoomSession {
             }
         }
         return nil
+    }
+
+    /// Revalidates the durable authorization against the exact current draft
+    /// immediately before a classifier proposal becomes canonical Shadow
+    /// state. This check stays in the Session Module so phase, evidence, and
+    /// question identity are observed atomically with outcome persistence.
+    private static func isCurrentEndpointEvaluation(
+        _ evaluation: EndpointEvaluation,
+        phase: InterviewRoomPhase,
+        mode: TurnMode,
+        turns: [InterviewTurn],
+        segments: [CandidateSegment]
+    ) -> Bool {
+        guard phase == .candidateFloor,
+              mode == .patientAuto,
+              (try? validateEndpointContextFingerprint(evaluation.contextFingerprint)) != nil,
+              latestInterviewerTurnID(in: turns) == evaluation.questionTurnID,
+              let currentCandidateIDs = try? currentEndpointCandidateIDs(in: segments),
+              currentCandidateIDs == evaluation.selectedCandidateIDs,
+              let triggerSegment = segments.first(where: {
+                  $0.id == evaluation.triggerSegmentID
+              }),
+              triggerSegment.committedTurnID == nil,
+              triggerSegment.lifecycle != .excluded,
+              let triggerCandidateID = triggerSegment.selectedCandidateID,
+              evaluation.selectedCandidateIDs.contains(triggerCandidateID) else {
+            return false
+        }
+        return true
     }
 
     private static func recordingEndpointOutcome(
@@ -1435,9 +1483,19 @@ public actor InterviewRoomSession {
         let evaluationFingerprints = manifest.endpointEvaluations.map(
             \.contextFingerprint
         )
-        let allCandidateIDs = Set(
-            manifest.segments.flatMap { $0.transcriptCandidates.map(\.id) }
-        )
+        var candidateOrdinalByID: [TranscriptCandidateID: Int] = [:]
+        var hasDuplicateCandidateIdentity = false
+        for segment in manifest.segments {
+            for candidate in segment.transcriptCandidates {
+                if candidateOrdinalByID.updateValue(
+                    segment.ordinal,
+                    forKey: candidate.id
+                ) != nil {
+                    hasDuplicateCandidateIdentity = true
+                }
+            }
+        }
+        let allCandidateIDs = Set(candidateOrdinalByID.keys)
         let interviewerTurnIDs: Set<TurnID> = Set(manifest.turns.compactMap { turn in
             guard case .interviewer(let interviewer) = turn else { return nil }
             return interviewer.id
@@ -1445,6 +1503,7 @@ public actor InterviewRoomSession {
         guard Set(evaluationIDs).count == evaluationIDs.count,
               Set(evaluationAuthorizationIDs).count == evaluationAuthorizationIDs.count,
               Set(evaluationFingerprints).count == evaluationFingerprints.count,
+              !hasDuplicateCandidateIdentity,
               manifest.endpointEvaluations.filter({ $0.lifecycle == .authorized }).count <= 1
         else {
             throw InterviewRoomSessionError.invalidManifest(
@@ -1483,14 +1542,12 @@ public actor InterviewRoomSession {
 
             let evidenceOrdinals = try evaluation.selectedCandidateIDs.map {
                 candidateID -> Int in
-                guard let segment = manifest.segments.first(where: { segment in
-                    segment.transcriptCandidates.contains(where: { $0.id == candidateID })
-                }) else {
+                guard let ordinal = candidateOrdinalByID[candidateID] else {
                     throw InterviewRoomSessionError.invalidManifest(
                         reason: "endpoint evaluation candidate is missing"
                     )
                 }
-                return segment.ordinal
+                return ordinal
             }
             guard evidenceOrdinals == evidenceOrdinals.sorted(),
                   Set(evidenceOrdinals).count == evidenceOrdinals.count else {

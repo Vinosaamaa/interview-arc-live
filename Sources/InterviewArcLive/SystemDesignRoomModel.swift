@@ -196,7 +196,6 @@ final class SystemDesignRoomModel: ObservableObject {
             hasUnresolvedDraft: hasUnresolvedDraft,
             hasStaleEvaluation: latestEvaluation != nil
                 && currentEvaluation == nil
-                && !selectedCandidateIDs.isEmpty
         )
     }
 
