@@ -14,7 +14,6 @@ jobs:
     timeout-minutes: 90
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
-      INTERVIEW_ARC_LIVE_DERIVED_DATA_PATH: ${{ runner.temp }}/InterviewArcLiveDerivedData
     steps:
       - name: Check out source
         uses: actions/checkout@v4
@@ -38,6 +37,8 @@ jobs:
           if-no-files-found: error
           retention-days: 2
       - name: Build package and tests with Metal
+        env:
+          INTERVIEW_ARC_LIVE_DERIVED_DATA_PATH: ${{ runner.temp }}/InterviewArcLiveDerivedData
         run: |
           xcodebuild build-for-testing \
             -scheme InterviewArcLive-Package \
@@ -47,6 +48,8 @@ jobs:
             MACOSX_DEPLOYMENT_TARGET=14.0 \
             CODE_SIGNING_ALLOWED=NO
       - name: Test package
+        env:
+          INTERVIEW_ARC_LIVE_DERIVED_DATA_PATH: ${{ runner.temp }}/InterviewArcLiveDerivedData
         run: |
           xcodebuild test-without-building \
             -scheme InterviewArcLive-Package \
@@ -66,6 +69,8 @@ jobs:
         run: Tests/ScriptTests/speech-smoke-tests.zsh
       - name: Package merged application
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          INTERVIEW_ARC_LIVE_DERIVED_DATA_PATH: ${{ runner.temp }}/InterviewArcLiveDerivedData
         run: scripts/package-app.sh release
       - name: Upload merged application
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
