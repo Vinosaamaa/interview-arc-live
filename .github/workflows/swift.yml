@@ -19,14 +19,6 @@ jobs:
         run: swift --version
       - name: Resolve dependency graph
         run: swift package resolve
-      - name: Export generated dependency lockfile
-        if: github.event_name == 'pull_request'
-        uses: actions/upload-artifact@v4
-        with:
-          name: Package-resolved-${{ github.sha }}
-          path: Package.resolved
-          if-no-files-found: error
-          retention-days: 1
       - name: Test package
         run: swift test
       - name: Package merged application

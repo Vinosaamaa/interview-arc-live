@@ -343,6 +343,7 @@ private struct RecordingFixture {
     }
 }
 
+@MainActor
 private func XCTAssertThrowsErrorAsync(
     _ expression: () async throws -> Void,
     file: StaticString = #filePath,
