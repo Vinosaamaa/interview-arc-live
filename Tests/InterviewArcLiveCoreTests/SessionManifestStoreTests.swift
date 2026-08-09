@@ -86,6 +86,25 @@ final class SessionManifestStoreTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: manifestURL), legacyData)
     }
 
+    func testLegacyManifestWithoutEndpointEvaluationsDecodesEmptyHistory() throws {
+        let current = try manifest(
+            sessionID: SessionID("public-legacy-endpoint-history"),
+            revision: 0
+        )
+        let currentData = try JSONEncoder().encode(current)
+        var object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: currentData) as? [String: Any]
+        )
+        object.removeValue(forKey: "endpointEvaluations")
+        let legacyData = try JSONSerialization.data(withJSONObject: object)
+
+        let decoded = try JSONDecoder().decode(SessionManifest.self, from: legacyData)
+
+        XCTAssertTrue(decoded.endpointEvaluations.isEmpty)
+        XCTAssertEqual(decoded.sessionID, current.sessionID)
+        XCTAssertEqual(decoded.revision, current.revision)
+    }
+
     func testFileAdapterForcesPrivateDirectoryAndManifestModes() async throws {
         let temporaryRoot = makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: temporaryRoot) }

@@ -11,6 +11,10 @@ let package = Package(
             name: "InterviewArcLiveCodexSmoke",
             targets: ["InterviewArcLiveCodexSmoke"]
         ),
+        .executable(
+            name: "InterviewArcLiveEndpointSmoke",
+            targets: ["InterviewArcLiveEndpointSmoke"]
+        ),
     ],
     dependencies: [
         .package(
@@ -47,6 +51,13 @@ let package = Package(
             dependencies: [
                 "InterviewArcLiveCore",
                 "InterviewArcLiveCodexAdapter",
+            ]
+        ),
+        .executableTarget(
+            name: "InterviewArcLiveEndpointSmoke",
+            dependencies: [
+                "InterviewArcLiveCore",
+                "InterviewArcLiveVoiceAdapter",
             ]
         ),
         .testTarget(

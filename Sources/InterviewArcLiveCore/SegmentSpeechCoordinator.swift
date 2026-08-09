@@ -20,6 +20,7 @@ public final class SegmentSpeechCoordinator {
     private let recording: any SegmentRecording
     private let transcriber: any SegmentTranscribing
     private let credentialReader: any GroqCredentialReading
+    private let semanticEndpointClassifier: any SemanticEndpointClassifying
     private var snapshotHandler: (@MainActor @Sendable (InterviewRoomSnapshot) -> Void)?
     private var isFinalizing = false
 
@@ -28,13 +29,21 @@ public final class SegmentSpeechCoordinator {
         initialSnapshot: InterviewRoomSnapshot,
         recording: any SegmentRecording,
         transcriber: any SegmentTranscribing,
-        credentialReader: any GroqCredentialReading
+        credentialReader: any GroqCredentialReading,
+        semanticEndpointClassifier: (any SemanticEndpointClassifying)?
     ) {
         self.session = session
         snapshot = initialSnapshot
         self.recording = recording
         self.transcriber = transcriber
         self.credentialReader = credentialReader
+        if let semanticEndpointClassifier {
+            self.semanticEndpointClassifier = semanticEndpointClassifier
+        } else {
+            self.semanticEndpointClassifier = GroqEndpointClassifier(
+                credentialReader: credentialReader
+            )
+        }
         installUnexpectedTerminationHandler()
     }
 
@@ -59,7 +68,8 @@ public final class SegmentSpeechCoordinator {
         interviewerRuntime: any InterviewerRuntime,
         recording: any SegmentRecording,
         transcriber: any SegmentTranscribing,
-        credentialReader: any GroqCredentialReading
+        credentialReader: any GroqCredentialReading,
+        semanticEndpointClassifier: (any SemanticEndpointClassifying)? = nil
     ) async throws -> SegmentSpeechCoordinator {
         let session: InterviewRoomSession
         if try await manifestStore.load(sessionID: sessionID) == nil {
@@ -84,7 +94,8 @@ public final class SegmentSpeechCoordinator {
             initialSnapshot: await session.snapshot(),
             recording: recording,
             transcriber: transcriber,
-            credentialReader: credentialReader
+            credentialReader: credentialReader,
+            semanticEndpointClassifier: semanticEndpointClassifier
         )
     }
 
@@ -98,7 +109,8 @@ public final class SegmentSpeechCoordinator {
         interviewerRuntime: any InterviewerRuntime,
         recording: any SegmentRecording,
         transcriber: any SegmentTranscribing,
-        credentialReader: any GroqCredentialReading
+        credentialReader: any GroqCredentialReading,
+        semanticEndpointClassifier: (any SemanticEndpointClassifying)? = nil
     ) async throws -> SegmentSpeechCoordinator {
         try await open(
             sessionID: sessionID,
@@ -109,7 +121,8 @@ public final class SegmentSpeechCoordinator {
             interviewerRuntime: interviewerRuntime,
             recording: recording,
             transcriber: transcriber,
-            credentialReader: credentialReader
+            credentialReader: credentialReader,
+            semanticEndpointClassifier: semanticEndpointClassifier
         )
     }
 
@@ -323,6 +336,21 @@ public final class SegmentSpeechCoordinator {
             )
         }
 
+        let interruptedEvaluations = snapshot.endpointEvaluations.filter {
+            $0.lifecycle == .authorized
+        }
+        for evaluation in interruptedEvaluations {
+            _ = try await applyAndPublish(
+                .reconcileInterruptedEndpointEvaluation(
+                    commandID: InterviewRoomSession.derivedCommandID(
+                        source: evaluation.authorizationCommandID,
+                        operation: "interrupted-endpoint-evaluation"
+                    ),
+                    evaluationID: evaluation.id
+                )
+            )
+        }
+
         let pending = snapshot.segments.filter {
             $0.lifecycle == .captureAuthorized
                 || $0.lifecycle == .recording
@@ -509,6 +537,7 @@ public final class SegmentSpeechCoordinator {
               }) else {
             throw SegmentSpeechCoordinatorError.segmentAudioUnavailable(segmentID)
         }
+        let previouslySelectedCandidateID = segment.selectedCandidateID
 
         let request = SegmentTranscriptionRequest(
             sessionID: authorization.snapshot.sessionID,
@@ -562,7 +591,160 @@ public final class SegmentSpeechCoordinator {
         if case .failed(let failure) = outcome {
             throw SegmentSpeechCoordinatorError.transcriptionFailed(failure.reason)
         }
-        return recorded
+        guard case .candidate = outcome,
+              let recordedSegment = recorded.segments.first(where: { $0.id == segmentID }),
+              recordedSegment.selectedCandidateID != previouslySelectedCandidateID else {
+            return recorded
+        }
+        return try await evaluateEndpointIfNeeded(
+            triggerSegmentID: segmentID,
+            sourceCommandID: commandID
+        )
+    }
+
+    /// Patient Auto is intentionally a Shadow policy in this slice. It stores
+    /// one proposal at an explicit transcript boundary but never commits a
+    /// Candidate Turn, starts grace, or invokes the interviewer runtime.
+    private func evaluateEndpointIfNeeded(
+        triggerSegmentID: SegmentID,
+        sourceCommandID: CommandID
+    ) async throws -> InterviewRoomSnapshot {
+        guard snapshot.phase == .candidateFloor,
+              snapshot.turnMode == .patientAuto else {
+            return snapshot
+        }
+
+        let draftSegments = snapshot.segments.filter { $0.committedTurnID == nil }
+        let unresolvedDraft = draftSegments.contains {
+            $0.lifecycle != .excluded
+                && ($0.lifecycle == .captureAuthorized
+                    || $0.lifecycle == .recording
+                    || $0.lifecycle == .finalizationAuthorized
+                    || $0.lifecycle == .transcribing
+                    || $0.selectedCandidate == nil)
+        }
+        guard !unresolvedDraft else { return snapshot }
+
+        let selectedSegments = draftSegments
+            .filter { $0.lifecycle != .excluded && $0.selectedCandidate != nil }
+            .sorted { $0.ordinal < $1.ordinal }
+        guard let triggerSegment = selectedSegments.first(where: { $0.id == triggerSegmentID }),
+              let triggerBody = triggerSegment.selectedCandidate?.body else {
+            return snapshot
+        }
+        let latestSegment = triggerBody.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        let selectedCandidateIDs = selectedSegments.compactMap(\.selectedCandidateID)
+        let accumulatedBodies = selectedSegments.compactMap {
+            $0.selectedCandidate?.body.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        guard selectedCandidateIDs.count == selectedSegments.count,
+              accumulatedBodies.count == selectedSegments.count,
+              !latestSegment.isEmpty,
+              accumulatedBodies.allSatisfy({ !$0.isEmpty }) else {
+            return snapshot
+        }
+
+        let latestQuestionTurn: InterviewerTurn? = snapshot.turns.reversed().lazy.compactMap {
+            guard case .interviewer(let turn) = $0 else { return nil }
+            return turn
+        }.first
+        let questionTurnID = latestQuestionTurn?.id
+        let context = SemanticEndpointContext(
+            interviewerQuestion: latestQuestionTurn?.displayMarkdown
+                ?? snapshot.activityPrompt.question,
+            requestedParts: questionTurnID == nil
+                ? snapshot.activityPrompt.requestedParts
+                : [],
+            accumulatedAnswer: accumulatedBodies.joined(separator: "\n\n"),
+            latestSegment: latestSegment,
+            silenceDurationMilliseconds: 0,
+            specialty: snapshot.activityPrompt.specialty.rawValue,
+            stage: snapshot.activityPrompt.stage,
+            explicitCue: false,
+            workspaceActivity: []
+        )
+        let contextFingerprint = try InterviewRoomSession.endpointContextFingerprint(
+            context,
+            triggerSegmentID: triggerSegmentID,
+            selectedCandidateIDs: selectedCandidateIDs,
+            questionTurnID: questionTurnID
+        )
+        let authorizationCommandID = InterviewRoomSession.derivedCommandID(
+            source: sourceCommandID,
+            operation: "endpoint-evaluation-authorization"
+        )
+        let authorization: InterviewRoomCommandApplication
+        do {
+            authorization = try await applyAndPublish(
+                .authorizeEndpointEvaluation(
+                    commandID: authorizationCommandID,
+                    triggerSegmentID: triggerSegmentID,
+                    selectedCandidateIDs: selectedCandidateIDs,
+                    questionTurnID: questionTurnID,
+                    contextFingerprint: contextFingerprint
+                )
+            )
+        } catch let sessionError as InterviewRoomSessionError {
+            switch sessionError {
+            case .endpointEvidenceMismatch,
+                 .endpointEvaluationAlreadyInProgress:
+                // Transcript persistence succeeded. Concurrent or unresolved
+                // evidence makes Shadow ineligible, never a transcription
+                // failure and never permission to call the classifier.
+                return snapshot
+            default:
+                throw sessionError
+            }
+        }
+        guard authorization.disposition == .accepted else {
+            return authorization.snapshot
+        }
+        guard let evaluation = authorization.snapshot.endpointEvaluations.first(where: {
+            $0.authorizationCommandID == authorizationCommandID
+        }) else {
+            throw InterviewRoomSessionError.invalidManifest(
+                reason: "endpoint evaluation authorization is missing"
+            )
+        }
+
+        let outcome: EndpointEvaluationOutcome
+        do {
+            outcome = .proposal(try await semanticEndpointClassifier.classify(context))
+        } catch {
+            outcome = .failed(Self.endpointFailure(for: error))
+        }
+        return try await applyAndPublish(
+            .recordEndpointEvaluationOutcome(
+                commandID: InterviewRoomSession.derivedCommandID(
+                    source: authorizationCommandID,
+                    operation: "endpoint-evaluation-outcome"
+                ),
+                evaluationID: evaluation.id,
+                outcome: outcome
+            )
+        ).snapshot
+    }
+
+    private static func endpointFailure(for error: Error) -> EndpointEvaluationFailure {
+        guard let classifierError = error as? GroqEndpointClassifierError else {
+            return EndpointEvaluationFailure(reason: .transportFailure)
+        }
+        switch classifierError {
+        case .missingCredential:
+            return EndpointEvaluationFailure(reason: .missingCredential)
+        case .invalidContext, .contextLimitExceeded:
+            return EndpointEvaluationFailure(reason: .contextRejected)
+        case .transportFailure, .invalidHTTPResponse:
+            return EndpointEvaluationFailure(reason: .transportFailure)
+        case .rejected(let statusCode):
+            return EndpointEvaluationFailure(
+                reason: .providerRejected,
+                providerStatusCode: statusCode
+            )
+        case .malformedResponse, .invalidClassification:
+            return EndpointEvaluationFailure(reason: .invalidResponse)
+        }
     }
 
     private func recordUnavailableCredential(

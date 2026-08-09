@@ -23,6 +23,22 @@ public enum InterviewRoomCommand: Codable, Sendable, Equatable {
         attemptID: TranscriptionAttemptID,
         outcome: SegmentTranscriptionOutcome
     )
+    case authorizeEndpointEvaluation(
+        commandID: CommandID,
+        triggerSegmentID: SegmentID,
+        selectedCandidateIDs: [TranscriptCandidateID],
+        questionTurnID: TurnID?,
+        contextFingerprint: String
+    )
+    case recordEndpointEvaluationOutcome(
+        commandID: CommandID,
+        evaluationID: EndpointEvaluationID,
+        outcome: EndpointEvaluationOutcome
+    )
+    case reconcileInterruptedEndpointEvaluation(
+        commandID: CommandID,
+        evaluationID: EndpointEvaluationID
+    )
     case excludeSegment(
         commandID: CommandID,
         segmentID: SegmentID,
@@ -42,6 +58,9 @@ public enum InterviewRoomCommand: Codable, Sendable, Equatable {
              .recordSegmentCaptureOutcome(let commandID, _, _),
              .authorizeSegmentTranscription(let commandID, _, _, _),
              .recordSegmentTranscriptionOutcome(let commandID, _, _, _),
+             .authorizeEndpointEvaluation(let commandID, _, _, _, _),
+             .recordEndpointEvaluationOutcome(let commandID, _, _),
+             .reconcileInterruptedEndpointEvaluation(let commandID, _),
              .excludeSegment(let commandID, _, _),
              .handOffSegments(let commandID),
              .handOff(let commandID, _),
@@ -50,6 +69,13 @@ public enum InterviewRoomCommand: Codable, Sendable, Equatable {
             commandID
         }
     }
+}
+
+private struct EndpointContextFingerprintEnvelope: Encodable {
+    let context: SemanticEndpointContext
+    let triggerSegmentID: SegmentID
+    let selectedCandidateIDs: [TranscriptCandidateID]
+    let questionTurnID: TurnID?
 }
 
 public enum InterviewRoomCommandDisposition: Sendable, Equatable {
@@ -82,6 +108,7 @@ public enum InterviewRoomSessionError: Error, Sendable, Equatable {
     case commandIDReused(CommandID)
     case commandInProgress
     case commandEncodingFailed
+    case endpointContextEncodingFailed
     case segmentAlreadyActive(SegmentID)
     case segmentNotFound(SegmentID)
     case invalidSegmentTransition(segmentID: SegmentID, lifecycle: CandidateSegmentLifecycle)
@@ -93,6 +120,16 @@ public enum InterviewRoomSessionError: Error, Sendable, Equatable {
     case rejectedCredentialUnchanged
     case segmentHasInsufficientSignal(SegmentID)
     case invalidTranscriptionOutcome
+    case endpointEvaluationNotFound(EndpointEvaluationID)
+    case endpointEvaluationAlreadyInProgress(EndpointEvaluationID)
+    case endpointEvidenceMismatch
+    case invalidEndpointContextFingerprint
+    case endpointContextFingerprintReused
+    case invalidEndpointEvaluationOutcome
+    case invalidEndpointEvaluationTransition(
+        evaluationID: EndpointEvaluationID,
+        lifecycle: EndpointEvaluationLifecycle
+    )
     case noTranscribedSegments
     case unresolvedSegmentsPreventHandOff([SegmentID])
     case uncommittedSegmentsRequireSegmentHandOff
@@ -211,6 +248,37 @@ public actor InterviewRoomSession {
             )
         }
 
+        if case .authorizeEndpointEvaluation(
+            _,
+            let triggerSegmentID,
+            let selectedCandidateIDs,
+            let questionTurnID,
+            let contextFingerprint
+        ) = command,
+           let existing = manifest.endpointEvaluations.first(where: {
+               $0.contextFingerprint == contextFingerprint
+           }) {
+            guard existing.triggerSegmentID == triggerSegmentID,
+                  existing.selectedCandidateIDs == selectedCandidateIDs,
+                  existing.questionTurnID == questionTurnID else {
+                throw InterviewRoomSessionError.endpointContextFingerprintReused
+            }
+            let deduplicated = appendingReceipt(
+                command: command,
+                fingerprint: fingerprint,
+                phase: manifest.phase,
+                turnMode: manifest.turnMode,
+                turns: manifest.turns,
+                segments: manifest.segments,
+                endpointEvaluations: manifest.endpointEvaluations
+            )
+            try await persist(deduplicated)
+            return InterviewRoomCommandApplication(
+                snapshot: InterviewRoomSnapshot(manifest: deduplicated),
+                disposition: .alreadyApplied
+            )
+        }
+
         let snapshot: InterviewRoomSnapshot
         switch command {
         case .handOff(let commandID, let transcript):
@@ -252,6 +320,7 @@ public actor InterviewRoomSession {
         var phase = manifest.phase
         var mode = manifest.turnMode
         var segments = manifest.segments
+        var endpointEvaluations = manifest.endpointEvaluations
 
         switch command {
         case .giveCandidateFloor:
@@ -378,6 +447,88 @@ public actor InterviewRoomSession {
                 to: &segments[index]
             )
 
+        case .authorizeEndpointEvaluation(
+            let commandID,
+            let triggerSegmentID,
+            let selectedCandidateIDs,
+            let questionTurnID,
+            let contextFingerprint
+        ):
+            guard phase == .candidateFloor, mode == .patientAuto else {
+                throw invalidTransition("authorizeEndpointEvaluation")
+            }
+            try Self.validateEndpointContextFingerprint(contextFingerprint)
+            if let activeEvaluation = endpointEvaluations.first(where: {
+                $0.lifecycle == .authorized
+            }) {
+                throw InterviewRoomSessionError.endpointEvaluationAlreadyInProgress(
+                    activeEvaluation.id
+                )
+            }
+            let expectedCandidateIDs = try Self.currentEndpointCandidateIDs(
+                in: segments
+            )
+            guard selectedCandidateIDs == expectedCandidateIDs,
+                  Set(selectedCandidateIDs).count == selectedCandidateIDs.count,
+                  let triggerSegment = segments.first(where: {
+                      $0.id == triggerSegmentID
+                  }),
+                  triggerSegment.committedTurnID == nil,
+                  triggerSegment.lifecycle != .excluded,
+                  let triggerCandidateID = triggerSegment.selectedCandidateID,
+                  selectedCandidateIDs.contains(triggerCandidateID),
+                  questionTurnID == Self.latestInterviewerTurnID(in: manifest.turns) else {
+                throw InterviewRoomSessionError.endpointEvidenceMismatch
+            }
+
+            endpointEvaluations.append(
+                EndpointEvaluation(
+                    id: Self.endpointEvaluationID(
+                        sessionID: manifest.sessionID,
+                        commandID: commandID
+                    ),
+                    authorizationCommandID: commandID,
+                    triggerSegmentID: triggerSegmentID,
+                    selectedCandidateIDs: selectedCandidateIDs,
+                    questionTurnID: questionTurnID,
+                    contextFingerprint: contextFingerprint,
+                    lifecycle: .authorized
+                )
+            )
+
+        case .recordEndpointEvaluationOutcome(_, let evaluationID, let outcome):
+            let index = try endpointEvaluationIndex(
+                evaluationID,
+                in: endpointEvaluations
+            )
+            guard endpointEvaluations[index].lifecycle == .authorized else {
+                throw InterviewRoomSessionError.invalidEndpointEvaluationTransition(
+                    evaluationID: evaluationID,
+                    lifecycle: endpointEvaluations[index].lifecycle
+                )
+            }
+            try Self.validateEndpointEvaluationOutcome(outcome)
+            endpointEvaluations[index] = Self.recordingEndpointOutcome(
+                outcome,
+                for: endpointEvaluations[index]
+            )
+
+        case .reconcileInterruptedEndpointEvaluation(_, let evaluationID):
+            let index = try endpointEvaluationIndex(
+                evaluationID,
+                in: endpointEvaluations
+            )
+            guard endpointEvaluations[index].lifecycle == .authorized else {
+                throw InterviewRoomSessionError.invalidEndpointEvaluationTransition(
+                    evaluationID: evaluationID,
+                    lifecycle: endpointEvaluations[index].lifecycle
+                )
+            }
+            endpointEvaluations[index] = Self.recordingEndpointOutcome(
+                .failed(EndpointEvaluationFailure(reason: .interrupted)),
+                for: endpointEvaluations[index]
+            )
+
         case .excludeSegment(_, let segmentID, let reason):
             let index = try segmentIndex(segmentID, in: segments)
             guard segments[index].committedTurnID == nil,
@@ -407,7 +558,8 @@ public actor InterviewRoomSession {
             phase: phase,
             turnMode: mode,
             turns: manifest.turns,
-            segments: segments
+            segments: segments,
+            endpointEvaluations: endpointEvaluations
         )
     }
 
@@ -639,6 +791,7 @@ public actor InterviewRoomSession {
             turnMode: manifest.turnMode,
             turns: manifest.turns + [.candidate(candidate)],
             segments: segments,
+            endpointEvaluations: manifest.endpointEvaluations,
             revision: candidateRevision,
             appliedCommands: manifest.appliedCommands + [receipt]
         )
@@ -668,6 +821,7 @@ public actor InterviewRoomSession {
             turnMode: manifest.turnMode,
             turns: manifest.turns,
             segments: manifest.segments,
+            endpointEvaluations: manifest.endpointEvaluations,
             revision: manifest.revision + 1,
             appliedCommands: manifest.appliedCommands + [receipt]
         )
@@ -718,6 +872,7 @@ public actor InterviewRoomSession {
             turnMode: manifest.turnMode,
             turns: manifest.turns + [.interviewer(interviewer)],
             segments: manifest.segments,
+            endpointEvaluations: manifest.endpointEvaluations,
             revision: manifest.revision + 1,
             appliedCommands: manifest.appliedCommands
         )
@@ -731,7 +886,8 @@ public actor InterviewRoomSession {
         phase: InterviewRoomPhase,
         turnMode: TurnMode,
         turns: [InterviewTurn],
-        segments: [CandidateSegment]
+        segments: [CandidateSegment],
+        endpointEvaluations: [EndpointEvaluation]
     ) -> SessionManifest {
         let nextRevision = manifest.revision + 1
         let applied = AppliedCommandRecord(
@@ -747,6 +903,7 @@ public actor InterviewRoomSession {
             turnMode: turnMode,
             turns: turns,
             segments: segments,
+            endpointEvaluations: endpointEvaluations,
             revision: nextRevision,
             appliedCommands: manifest.appliedCommands + [applied]
         )
@@ -765,6 +922,102 @@ public actor InterviewRoomSession {
             throw InterviewRoomSessionError.segmentNotFound(segmentID)
         }
         return index
+    }
+
+    private func endpointEvaluationIndex(
+        _ evaluationID: EndpointEvaluationID,
+        in evaluations: [EndpointEvaluation]
+    ) throws -> Int {
+        guard let index = evaluations.firstIndex(where: { $0.id == evaluationID }) else {
+            throw InterviewRoomSessionError.endpointEvaluationNotFound(evaluationID)
+        }
+        return index
+    }
+
+    private static func currentEndpointCandidateIDs(
+        in segments: [CandidateSegment]
+    ) throws -> [TranscriptCandidateID] {
+        let draftSegments = segments
+            .filter { $0.committedTurnID == nil && $0.lifecycle != .excluded }
+            .sorted { $0.ordinal < $1.ordinal }
+        guard !draftSegments.isEmpty,
+              draftSegments.allSatisfy({
+                  !isActiveSegment($0)
+                      && $0.lifecycle != .transcribing
+                      && $0.selectedCandidateID != nil
+              }) else {
+            throw InterviewRoomSessionError.endpointEvidenceMismatch
+        }
+        return draftSegments.compactMap(\.selectedCandidateID)
+    }
+
+    private static func latestInterviewerTurnID(
+        in turns: [InterviewTurn]
+    ) -> TurnID? {
+        for turn in turns.reversed() {
+            if case .interviewer(let interviewer) = turn {
+                return interviewer.id
+            }
+        }
+        return nil
+    }
+
+    private static func recordingEndpointOutcome(
+        _ outcome: EndpointEvaluationOutcome,
+        for evaluation: EndpointEvaluation
+    ) -> EndpointEvaluation {
+        switch outcome {
+        case .proposal(let proposal):
+            return EndpointEvaluation(
+                id: evaluation.id,
+                authorizationCommandID: evaluation.authorizationCommandID,
+                triggerSegmentID: evaluation.triggerSegmentID,
+                selectedCandidateIDs: evaluation.selectedCandidateIDs,
+                questionTurnID: evaluation.questionTurnID,
+                contextFingerprint: evaluation.contextFingerprint,
+                lifecycle: .proposalStored,
+                proposal: proposal
+            )
+        case .failed(let failure):
+            return EndpointEvaluation(
+                id: evaluation.id,
+                authorizationCommandID: evaluation.authorizationCommandID,
+                triggerSegmentID: evaluation.triggerSegmentID,
+                selectedCandidateIDs: evaluation.selectedCandidateIDs,
+                questionTurnID: evaluation.questionTurnID,
+                contextFingerprint: evaluation.contextFingerprint,
+                lifecycle: .failed,
+                failure: failure
+            )
+        }
+    }
+
+    private static func validateEndpointEvaluationOutcome(
+        _ outcome: EndpointEvaluationOutcome
+    ) throws {
+        switch outcome {
+        case .proposal(let proposal):
+            let isConsistent: Bool
+            switch proposal.reasonCode {
+            case .explicitHandoffCue, .answerResolvesQuestion:
+                isConsistent = proposal.decision == .likelyEnd
+            case .unfinishedThought, .requestedPartUnanswered, .recentWorkspaceActivity:
+                isConsistent = proposal.decision == .likelyContinue
+            case .insufficientEvidence:
+                isConsistent = proposal.decision == .ambiguous
+            }
+            guard isConsistent else {
+                throw InterviewRoomSessionError.invalidEndpointEvaluationOutcome
+            }
+
+        case .failed(let failure):
+            if let statusCode = failure.providerStatusCode {
+                guard failure.reason == .providerRejected,
+                      (100...599).contains(statusCode) else {
+                    throw InterviewRoomSessionError.invalidEndpointEvaluationOutcome
+                }
+            }
+        }
     }
 
     private func invalidTransition(_ command: String) -> InterviewRoomSessionError {
@@ -878,6 +1131,34 @@ public actor InterviewRoomSession {
         return digest(versionedPayload, namespace: "command")
     }
 
+    /// Stable identity for the exact classifier request and its durable
+    /// evidence references. Candidate identity is deliberately part of the
+    /// envelope: a newly selected candidate may contain byte-identical text
+    /// while still representing a distinct authorized evaluation.
+    public static func endpointContextFingerprint(
+        _ context: SemanticEndpointContext,
+        triggerSegmentID: SegmentID,
+        selectedCandidateIDs: [TranscriptCandidateID],
+        questionTurnID: TurnID?
+    ) throws -> String {
+        let envelope = EndpointContextFingerprintEnvelope(
+            context: context,
+            triggerSegmentID: triggerSegmentID,
+            selectedCandidateIDs: selectedCandidateIDs,
+            questionTurnID: questionTurnID
+        )
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        do {
+            return digest(
+                try encoder.encode(envelope),
+                namespace: "semantic-endpoint-context"
+            )
+        } catch {
+            throw InterviewRoomSessionError.endpointContextEncodingFailed
+        }
+    }
+
     static func credentialFingerprint(_ credential: String) -> String {
         digest(Data(credential.utf8), namespace: "groq-credential")
     }
@@ -925,6 +1206,16 @@ public actor InterviewRoomSession {
         TranscriptCandidateID(stableIdentity(
             namespace: "transcript-candidate",
             fields: [attemptID.rawValue]
+        ))
+    }
+
+    private static func endpointEvaluationID(
+        sessionID: SessionID,
+        commandID: CommandID
+    ) -> EndpointEvaluationID {
+        EndpointEvaluationID(stableIdentity(
+            namespace: "endpoint-evaluation",
+            fields: [sessionID.rawValue, commandID.rawValue]
         ))
     }
 
@@ -985,6 +1276,16 @@ public actor InterviewRoomSession {
               suffix.count == 64,
               suffix.allSatisfy({ $0.isHexDigit }) else {
             throw InterviewRoomSessionError.invalidCredentialFingerprint
+        }
+    }
+
+    private static func validateEndpointContextFingerprint(_ value: String) throws {
+        let prefix = "sha256:v1:"
+        let suffix = value.dropFirst(prefix.count)
+        guard value.hasPrefix(prefix),
+              suffix.count == 64,
+              suffix.allSatisfy({ $0.isHexDigit }) else {
+            throw InterviewRoomSessionError.invalidEndpointContextFingerprint
         }
     }
 
@@ -1124,6 +1425,115 @@ public actor InterviewRoomSession {
                 throw InterviewRoomSessionError.invalidManifest(
                     reason: "uncommitted Segment is referenced by a Candidate Turn"
                 )
+            }
+        }
+
+        let evaluationIDs = manifest.endpointEvaluations.map(\.id)
+        let evaluationAuthorizationIDs = manifest.endpointEvaluations.map(
+            \.authorizationCommandID
+        )
+        let evaluationFingerprints = manifest.endpointEvaluations.map(
+            \.contextFingerprint
+        )
+        let allCandidateIDs = Set(
+            manifest.segments.flatMap { $0.transcriptCandidates.map(\.id) }
+        )
+        let interviewerTurnIDs: Set<TurnID> = Set(manifest.turns.compactMap { turn in
+            guard case .interviewer(let interviewer) = turn else { return nil }
+            return interviewer.id
+        })
+        guard Set(evaluationIDs).count == evaluationIDs.count,
+              Set(evaluationAuthorizationIDs).count == evaluationAuthorizationIDs.count,
+              Set(evaluationFingerprints).count == evaluationFingerprints.count,
+              manifest.endpointEvaluations.filter({ $0.lifecycle == .authorized }).count <= 1
+        else {
+            throw InterviewRoomSessionError.invalidManifest(
+                reason: "invalid endpoint evaluation history"
+            )
+        }
+
+        for evaluation in manifest.endpointEvaluations {
+            do {
+                try validateEndpointContextFingerprint(evaluation.contextFingerprint)
+            } catch {
+                throw InterviewRoomSessionError.invalidManifest(
+                    reason: "invalid endpoint context fingerprint"
+                )
+            }
+            guard evaluation.id == endpointEvaluationID(
+                sessionID: manifest.sessionID,
+                commandID: evaluation.authorizationCommandID
+            ),
+                  commandIDs.contains(evaluation.authorizationCommandID),
+                  !evaluation.selectedCandidateIDs.isEmpty,
+                  Set(evaluation.selectedCandidateIDs).count
+                    == evaluation.selectedCandidateIDs.count,
+                  evaluation.selectedCandidateIDs.allSatisfy(allCandidateIDs.contains),
+                  evaluation.questionTurnID.map({
+                      interviewerTurnIDs.contains($0)
+                  }) ?? true,
+                  let triggerSegment = segmentByID[evaluation.triggerSegmentID],
+                  triggerSegment.transcriptCandidates.contains(where: {
+                      evaluation.selectedCandidateIDs.contains($0.id)
+                  }) else {
+                throw InterviewRoomSessionError.invalidManifest(
+                    reason: "endpoint evaluation evidence is inconsistent"
+                )
+            }
+
+            let evidenceOrdinals = try evaluation.selectedCandidateIDs.map {
+                candidateID -> Int in
+                guard let segment = manifest.segments.first(where: { segment in
+                    segment.transcriptCandidates.contains(where: { $0.id == candidateID })
+                }) else {
+                    throw InterviewRoomSessionError.invalidManifest(
+                        reason: "endpoint evaluation candidate is missing"
+                    )
+                }
+                return segment.ordinal
+            }
+            guard evidenceOrdinals == evidenceOrdinals.sorted(),
+                  Set(evidenceOrdinals).count == evidenceOrdinals.count else {
+                throw InterviewRoomSessionError.invalidManifest(
+                    reason: "endpoint evaluation evidence is out of order"
+                )
+            }
+
+            switch evaluation.lifecycle {
+            case .authorized:
+                guard evaluation.proposal == nil, evaluation.failure == nil else {
+                    throw InterviewRoomSessionError.invalidManifest(
+                        reason: "authorized endpoint evaluation has an outcome"
+                    )
+                }
+            case .proposalStored:
+                guard let proposal = evaluation.proposal,
+                      evaluation.failure == nil else {
+                    throw InterviewRoomSessionError.invalidManifest(
+                        reason: "stored endpoint proposal is incomplete"
+                    )
+                }
+                do {
+                    try validateEndpointEvaluationOutcome(.proposal(proposal))
+                } catch {
+                    throw InterviewRoomSessionError.invalidManifest(
+                        reason: "stored endpoint proposal is invalid"
+                    )
+                }
+            case .failed:
+                guard let failure = evaluation.failure,
+                      evaluation.proposal == nil else {
+                    throw InterviewRoomSessionError.invalidManifest(
+                        reason: "failed endpoint evaluation is incomplete"
+                    )
+                }
+                do {
+                    try validateEndpointEvaluationOutcome(.failed(failure))
+                } catch {
+                    throw InterviewRoomSessionError.invalidManifest(
+                        reason: "stored endpoint failure is invalid"
+                    )
+                }
             }
         }
 

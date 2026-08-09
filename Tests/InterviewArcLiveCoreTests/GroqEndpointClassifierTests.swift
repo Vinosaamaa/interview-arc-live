@@ -14,7 +14,10 @@ final class GroqEndpointClassifierTests: XCTestCase {
       statusCode: 200,
       body: responseBody(decision: "likely_continue", reason: "requested_part_unanswered")
     )
-    let classifier = GroqEndpointClassifier(apiKey: "private-test-key", transport: transport)
+    let classifier = GroqEndpointClassifier(
+      credentialReader: FixedEndpointCredentialReader("private-test-key"),
+      transport: transport
+    )
     let context = SemanticEndpointContext(
       interviewerQuestion: "How are you, and why did you choose BFS?",
       requestedParts: ["Describe how you are", "Explain the BFS choice"],
@@ -108,7 +111,10 @@ final class GroqEndpointClassifierTests: XCTestCase {
         statusCode: 200,
         body: responseBody(decision: decision, reason: reason)
       )
-      let classifier = GroqEndpointClassifier(apiKey: "test-key", transport: transport)
+      let classifier = GroqEndpointClassifier(
+        credentialReader: FixedEndpointCredentialReader("test-key"),
+        transport: transport
+      )
       let actual = try await classifier.classify(validContext)
       XCTAssertEqual(actual, expected)
     }
@@ -122,7 +128,10 @@ final class GroqEndpointClassifierTests: XCTestCase {
       statusCode: 200,
       body: chatResponse(content: content)
     )
-    let classifier = GroqEndpointClassifier(apiKey: "test-key", transport: transport)
+    let classifier = GroqEndpointClassifier(
+      credentialReader: FixedEndpointCredentialReader("test-key"),
+      transport: transport
+    )
 
     await assertClassifierError(.invalidClassification) {
       try await classifier.classify(validContext)
@@ -134,7 +143,10 @@ final class GroqEndpointClassifierTests: XCTestCase {
       statusCode: 200,
       body: responseBody(decision: "done", reason: "answer_resolves_question")
     )
-    let classifier = GroqEndpointClassifier(apiKey: "test-key", transport: transport)
+    let classifier = GroqEndpointClassifier(
+      credentialReader: FixedEndpointCredentialReader("test-key"),
+      transport: transport
+    )
 
     await assertClassifierError(.invalidClassification) {
       try await classifier.classify(validContext)
@@ -146,7 +158,10 @@ final class GroqEndpointClassifierTests: XCTestCase {
       statusCode: 200,
       body: responseBody(decision: "likely_end", reason: "unfinished_thought")
     )
-    let classifier = GroqEndpointClassifier(apiKey: "test-key", transport: transport)
+    let classifier = GroqEndpointClassifier(
+      credentialReader: FixedEndpointCredentialReader("test-key"),
+      transport: transport
+    )
 
     await assertClassifierError(.invalidClassification) {
       try await classifier.classify(validContext)
@@ -158,7 +173,10 @@ final class GroqEndpointClassifierTests: XCTestCase {
       statusCode: 200,
       body: responseBody(decision: "ambiguous", reason: "insufficient_evidence")
     )
-    let classifier = GroqEndpointClassifier(apiKey: "test-key", transport: transport)
+    let classifier = GroqEndpointClassifier(
+      credentialReader: FixedEndpointCredentialReader("test-key"),
+      transport: transport
+    )
     let context = SemanticEndpointContext(
       interviewerQuestion: String(repeating: "q", count: 16 * 1_024 + 1),
       requestedParts: [],
@@ -181,7 +199,7 @@ final class GroqEndpointClassifierTests: XCTestCase {
   func testTransportAndProviderErrorsExposeNoPayloadOrCredential() async throws {
     let failingTransport = RecordingGroqTransport(failure: true)
     let transportClassifier = GroqEndpointClassifier(
-      apiKey: "must-never-appear",
+      credentialReader: FixedEndpointCredentialReader("must-never-appear"),
       transport: failingTransport
     )
 
@@ -194,12 +212,65 @@ final class GroqEndpointClassifierTests: XCTestCase {
       body: Data("provider diagnostic containing request data".utf8)
     )
     let rejectedClassifier = GroqEndpointClassifier(
-      apiKey: "must-never-appear",
+      credentialReader: FixedEndpointCredentialReader("must-never-appear"),
       transport: rejectedTransport
     )
     await assertClassifierError(.rejected(statusCode: 429)) {
       try await rejectedClassifier.classify(validContext)
     }
+  }
+
+  func testReadsTheCurrentCredentialForEveryRequest() async throws {
+    let credentialReader = RotatingEndpointCredentialReader([
+      "first-private-key",
+      "second-private-key",
+    ])
+    let transport = RecordingGroqTransport(
+      statusCode: 200,
+      body: responseBody(decision: "ambiguous", reason: "insufficient_evidence")
+    )
+    let classifier = GroqEndpointClassifier(
+      credentialReader: credentialReader,
+      transport: transport
+    )
+
+    _ = try await classifier.classify(validContext)
+    _ = try await classifier.classify(validContext)
+
+    let requests = await transport.recordedRequests()
+    XCTAssertEqual(requests.count, 2)
+    XCTAssertEqual(
+      requests[0].value(forHTTPHeaderField: "Authorization"),
+      "Bearer first-private-key"
+    )
+    XCTAssertEqual(
+      requests[1].value(forHTTPHeaderField: "Authorization"),
+      "Bearer second-private-key"
+    )
+    let credentialReadCount = await credentialReader.readCount()
+    XCTAssertEqual(credentialReadCount, 2)
+  }
+
+  func testMissingOrUnreadableCurrentCredentialFailsBeforeTransport() async {
+    let transport = RecordingGroqTransport()
+    let missingClassifier = GroqEndpointClassifier(
+      credentialReader: FixedEndpointCredentialReader("  \n"),
+      transport: transport
+    )
+    await assertClassifierError(.missingCredential) {
+      try await missingClassifier.classify(validContext)
+    }
+
+    let unreadableClassifier = GroqEndpointClassifier(
+      credentialReader: FailingEndpointCredentialReader(),
+      transport: transport
+    )
+    await assertClassifierError(.missingCredential) {
+      try await unreadableClassifier.classify(validContext)
+    }
+
+    let requests = await transport.recordedRequests()
+    XCTAssertTrue(requests.isEmpty)
   }
 
   func testDeterministicAdapterUsesTheSameClassifierSeam() async throws {
@@ -264,7 +335,7 @@ private actor RecordingGroqTransport: GroqEndpointTransport {
   private let statusCode: Int
   private let body: Data
   private let failure: Bool
-  private var request: URLRequest?
+  private var requests: [URLRequest] = []
 
   init(statusCode: Int = 200, body: Data = Data(), failure: Bool = false) {
     self.statusCode = statusCode
@@ -273,7 +344,7 @@ private actor RecordingGroqTransport: GroqEndpointTransport {
   }
 
   func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
-    self.request = request
+    requests.append(request)
     if failure {
       throw RecordingTransportError.failure
     }
@@ -287,8 +358,55 @@ private actor RecordingGroqTransport: GroqEndpointTransport {
   }
 
   func recordedRequest() -> URLRequest? {
-    request
+    requests.last
   }
+
+  func recordedRequests() -> [URLRequest] {
+    requests
+  }
+}
+
+private struct FixedEndpointCredentialReader: GroqCredentialReading {
+  private let value: String
+
+  init(_ value: String) {
+    self.value = value
+  }
+
+  func readGroqCredential() -> String {
+    value
+  }
+}
+
+private actor RotatingEndpointCredentialReader: GroqCredentialReading {
+  private let values: [String]
+  private var index = 0
+
+  init(_ values: [String]) {
+    self.values = values
+  }
+
+  func readGroqCredential() throws -> String {
+    guard index < values.count else {
+      throw EndpointCredentialReaderError.unavailable
+    }
+    defer { index += 1 }
+    return values[index]
+  }
+
+  func readCount() -> Int {
+    index
+  }
+}
+
+private struct FailingEndpointCredentialReader: GroqCredentialReading {
+  func readGroqCredential() throws -> String {
+    throw EndpointCredentialReaderError.unavailable
+  }
+}
+
+private enum EndpointCredentialReaderError: Error {
+  case unavailable
 }
 
 private enum RecordingTransportError: Error {

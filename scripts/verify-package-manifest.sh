@@ -11,9 +11,11 @@ app_dir="${1:A}"
 manifest_path="${2:A}"
 executable="$app_dir/Contents/MacOS/InterviewArcLive"
 smoke_executable="$app_dir/Contents/Helpers/InterviewArcLiveCodexSmoke"
+endpoint_smoke_executable="$app_dir/Contents/Helpers/InterviewArcLiveEndpointSmoke"
 info_plist="$app_dir/Contents/Info.plist"
 
 if [[ ! -x "$executable" || ! -x "$smoke_executable" \
+    || ! -x "$endpoint_smoke_executable" \
     || ! -f "$info_plist" || ! -f "$manifest_path" ]]; then
   echo "Package manifest verification requires a complete application bundle and manifest." >&2
   exit 66
@@ -37,6 +39,7 @@ actual_identifier="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$in
 actual_cdhash="$(/usr/bin/codesign -dvvv "$app_dir" 2>&1 | /usr/bin/awk -F= '/^CDHash=/{print $2; exit}')"
 actual_executable_sha="$(/usr/bin/shasum -a 256 "$executable" | /usr/bin/awk '{print $1}')"
 actual_smoke_sha="$(/usr/bin/shasum -a 256 "$smoke_executable" | /usr/bin/awk '{print $1}')"
+actual_endpoint_smoke_sha="$(/usr/bin/shasum -a 256 "$endpoint_smoke_executable" | /usr/bin/awk '{print $1}')"
 actual_info_sha="$(/usr/bin/shasum -a 256 "$info_plist" | /usr/bin/awk '{print $1}')"
 actual_bundle_count="$(/usr/bin/find "$app_dir/Contents/Resources" -mindepth 1 -maxdepth 1 -type d -name '*.bundle' | /usr/bin/wc -l | /usr/bin/tr -d ' ')"
 
@@ -48,9 +51,11 @@ actual_bundle_count="$(/usr/bin/find "$app_dir/Contents/Resources" -mindepth 1 -
   || { echo "Package manifest application executable mismatch." >&2; exit 65; }
 [[ "$(manifest_value codex_smoke_executable_sha256)" == "$actual_smoke_sha" ]] \
   || { echo "Package manifest Codex smoke helper mismatch." >&2; exit 65; }
+[[ "$(manifest_value endpoint_smoke_executable_sha256)" == "$actual_endpoint_smoke_sha" ]] \
+  || { echo "Package manifest endpoint smoke helper mismatch." >&2; exit 65; }
 [[ "$(manifest_value info_plist_sha256)" == "$actual_info_sha" ]] \
   || { echo "Package manifest Info.plist mismatch." >&2; exit 65; }
 [[ "$(manifest_value resource_bundle_count)" == "$actual_bundle_count" ]] \
   || { echo "Package manifest resource-bundle count mismatch." >&2; exit 65; }
 
-echo "Package manifest application and Codex smoke hashes verified."
+echo "Package manifest application and installed-smoke hashes verified."

@@ -79,6 +79,13 @@ A non-authoritative semantic result—`likely_continue`, `likely_end`, or
 It may start a cancellable grace period but does not itself mutate durable
 conversation state.
 
+### Endpoint Evaluation
+
+One durably authorized semantic-classifier request at a specific selected
+Segment-evidence boundary. It retains stable evidence identities and a context
+fingerprint, not duplicated transcript or prompt text. An interrupted
+Evaluation is recorded without automatically replaying the provider request.
+
 ### Session Manifest
 
 The canonical, monotonically revisioned recovery record for an Interview Room
