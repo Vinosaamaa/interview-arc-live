@@ -42,6 +42,119 @@ public struct TurnID: RawRepresentable, Codable, Hashable, Sendable, CustomStrin
     public var description: String { rawValue }
 }
 
+/// The specialty contract selected by the owning Interview Arc Activity.
+/// Additional specialties belong here only after their prompt contract exists.
+public enum ActivitySpecialty: String, Codable, Sendable, Equatable {
+    case systemDesign = "system_design"
+}
+
+public enum ActivityPromptValidationError: Error, Sendable, Equatable {
+    case emptyStage
+    case stageTooLong(maximumUTF8Bytes: Int)
+    case emptyQuestion
+    case questionTooLong(maximumUTF8Bytes: Int)
+    case tooManyRequestedParts(maximum: Int)
+    case emptyRequestedPart(index: Int)
+    case requestedPartTooLong(index: Int, maximumUTF8Bytes: Int)
+}
+
+/// Durable interviewer context bound to a Session Manifest.
+///
+/// Validation preserves every accepted string verbatim while bounding the
+/// provider-neutral prompt shape independently of presentation copy.
+public struct ActivityPrompt: Codable, Sendable, Equatable {
+    public static let maximumStageUTF8Bytes = 256
+    public static let maximumQuestionUTF8Bytes = 16 * 1_024
+    public static let maximumRequestedParts = 24
+    public static let maximumRequestedPartUTF8Bytes = 4 * 1_024
+
+    public let specialty: ActivitySpecialty
+    public let stage: String
+    public let question: String
+    public let requestedParts: [String]
+
+    public init(
+        specialty: ActivitySpecialty,
+        stage: String,
+        question: String,
+        requestedParts: [String]
+    ) throws {
+        try Self.validate(
+            stage: stage,
+            question: question,
+            requestedParts: requestedParts
+        )
+        self.specialty = specialty
+        self.stage = stage
+        self.question = question
+        self.requestedParts = requestedParts
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case specialty
+        case stage
+        case question
+        case requestedParts
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        try self.init(
+            specialty: container.decode(ActivitySpecialty.self, forKey: .specialty),
+            stage: container.decode(String.self, forKey: .stage),
+            question: container.decode(String.self, forKey: .question),
+            requestedParts: container.decode([String].self, forKey: .requestedParts)
+        )
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(specialty, forKey: .specialty)
+        try container.encode(stage, forKey: .stage)
+        try container.encode(question, forKey: .question)
+        try container.encode(requestedParts, forKey: .requestedParts)
+    }
+
+    private static func validate(
+        stage: String,
+        question: String,
+        requestedParts: [String]
+    ) throws {
+        guard !stage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw ActivityPromptValidationError.emptyStage
+        }
+        guard stage.utf8.count <= maximumStageUTF8Bytes else {
+            throw ActivityPromptValidationError.stageTooLong(
+                maximumUTF8Bytes: maximumStageUTF8Bytes
+            )
+        }
+        guard !question.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw ActivityPromptValidationError.emptyQuestion
+        }
+        guard question.utf8.count <= maximumQuestionUTF8Bytes else {
+            throw ActivityPromptValidationError.questionTooLong(
+                maximumUTF8Bytes: maximumQuestionUTF8Bytes
+            )
+        }
+        guard requestedParts.count <= maximumRequestedParts else {
+            throw ActivityPromptValidationError.tooManyRequestedParts(
+                maximum: maximumRequestedParts
+            )
+        }
+        for (index, requestedPart) in requestedParts.enumerated() {
+            guard !requestedPart.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                throw ActivityPromptValidationError.emptyRequestedPart(index: index)
+            }
+            guard requestedPart.utf8.count <= maximumRequestedPartUTF8Bytes else {
+                throw ActivityPromptValidationError.requestedPartTooLong(
+                    index: index,
+                    maximumUTF8Bytes: maximumRequestedPartUTF8Bytes
+                )
+            }
+        }
+    }
+}
+
 public enum InterviewRoomPhase: String, Codable, Sendable, Equatable {
     case ready
     case candidateFloor
@@ -65,6 +178,9 @@ public enum TranscriptQuality: String, Codable, Sendable, Equatable {
 /// The best nonempty transcript candidate and the quality label attached to it.
 /// The body is retained verbatim; the session Module never rewrites speech.
 public struct CandidateTranscript: Codable, Sendable, Equatable {
+    /// Generous safety ceiling for one exact logical Candidate answer.
+    public static let maximumBodyUTF8Bytes = 256 * 1_024
+
     public let body: String
     public let quality: TranscriptQuality
 
@@ -119,6 +235,9 @@ public struct CandidateTurn: Codable, Sendable, Equatable {
 /// The canonical response value returned by an Interviewer Runtime Adapter.
 /// Both representations must be generated together and remain one identity.
 public struct CanonicalInterviewerResponse: Codable, Sendable, Equatable {
+    public static let maximumDisplayMarkdownUTF8Bytes = 128 * 1_024
+    public static let maximumSpokenTextUTF8Bytes = 64 * 1_024
+
     public let displayMarkdown: String
     public let spokenText: String
 
@@ -172,6 +291,7 @@ struct AppliedCommandRecord: Codable, Sendable, Equatable {
 public struct SessionManifest: Codable, Sendable, Equatable {
     public let sessionID: SessionID
     public let activityID: String
+    public let activityPrompt: ActivityPrompt
     public let phase: InterviewRoomPhase
     public let turnMode: TurnMode
     public let turns: [InterviewTurn]
@@ -183,6 +303,7 @@ public struct SessionManifest: Codable, Sendable, Equatable {
     init(
         sessionID: SessionID,
         activityID: String,
+        activityPrompt: ActivityPrompt,
         phase: InterviewRoomPhase,
         turnMode: TurnMode,
         turns: [InterviewTurn],
@@ -192,6 +313,7 @@ public struct SessionManifest: Codable, Sendable, Equatable {
     ) {
         self.sessionID = sessionID
         self.activityID = activityID
+        self.activityPrompt = activityPrompt
         self.phase = phase
         self.turnMode = turnMode
         self.turns = turns
@@ -203,6 +325,7 @@ public struct SessionManifest: Codable, Sendable, Equatable {
     private enum CodingKeys: String, CodingKey {
         case sessionID
         case activityID
+        case activityPrompt
         case phase
         case turnMode
         case turns
@@ -215,6 +338,7 @@ public struct SessionManifest: Codable, Sendable, Equatable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         sessionID = try container.decode(SessionID.self, forKey: .sessionID)
         activityID = try container.decode(String.self, forKey: .activityID)
+        activityPrompt = try container.decode(ActivityPrompt.self, forKey: .activityPrompt)
         phase = try container.decode(InterviewRoomPhase.self, forKey: .phase)
         turnMode = try container.decode(TurnMode.self, forKey: .turnMode)
         turns = try container.decode([InterviewTurn].self, forKey: .turns)
@@ -230,6 +354,7 @@ public struct SessionManifest: Codable, Sendable, Equatable {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(sessionID, forKey: .sessionID)
         try container.encode(activityID, forKey: .activityID)
+        try container.encode(activityPrompt, forKey: .activityPrompt)
         try container.encode(phase, forKey: .phase)
         try container.encode(turnMode, forKey: .turnMode)
         try container.encode(turns, forKey: .turns)
@@ -243,6 +368,7 @@ public struct SessionManifest: Codable, Sendable, Equatable {
 public struct InterviewRoomSnapshot: Sendable, Equatable {
     public let sessionID: SessionID
     public let activityID: String
+    public let activityPrompt: ActivityPrompt
     public let phase: InterviewRoomPhase
     public let turnMode: TurnMode
     public let turns: [InterviewTurn]
@@ -252,6 +378,7 @@ public struct InterviewRoomSnapshot: Sendable, Equatable {
     init(manifest: SessionManifest) {
         sessionID = manifest.sessionID
         activityID = manifest.activityID
+        activityPrompt = manifest.activityPrompt
         phase = manifest.phase
         turnMode = manifest.turnMode
         turns = manifest.turns

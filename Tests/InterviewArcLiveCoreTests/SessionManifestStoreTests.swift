@@ -8,8 +8,8 @@ final class SessionManifestStoreTests: XCTestCase {
     func testInMemoryAdapterComparesExpectedRevisionAndRestoresLatestManifest() async throws {
         let sessionID = SessionID("public-test-session")
         let store = InMemorySessionManifestStore()
-        let initial = manifest(sessionID: sessionID, revision: 0)
-        let next = manifest(sessionID: sessionID, revision: 1, phase: .candidateFloor)
+        let initial = try manifest(sessionID: sessionID, revision: 0)
+        let next = try manifest(sessionID: sessionID, revision: 1, phase: .candidateFloor)
 
         try await store.save(initial, expectedRevision: nil)
         try await store.save(next, expectedRevision: 0)
@@ -19,7 +19,7 @@ final class SessionManifestStoreTests: XCTestCase {
 
         do {
             try await store.save(
-                manifest(sessionID: sessionID, revision: 2, phase: .completed),
+                try manifest(sessionID: sessionID, revision: 2, phase: .completed),
                 expectedRevision: 0
             )
             XCTFail("Expected a stale revision to be rejected")
@@ -40,8 +40,8 @@ final class SessionManifestStoreTests: XCTestCase {
 
         let sessionID = SessionID("public-file-round-trip")
         let store = FileSessionManifestStore(directoryURL: directory)
-        let initial = manifest(sessionID: sessionID, revision: 0)
-        let next = manifest(sessionID: sessionID, revision: 1, phase: .candidateFloor)
+        let initial = try manifest(sessionID: sessionID, revision: 0)
+        let next = try manifest(sessionID: sessionID, revision: 1, phase: .candidateFloor)
 
         try await store.save(initial, expectedRevision: nil)
         try await store.save(next, expectedRevision: 0)
@@ -49,6 +49,41 @@ final class SessionManifestStoreTests: XCTestCase {
         let relaunchedStore = FileSessionManifestStore(directoryURL: directory)
         let restored = try await relaunchedStore.load(sessionID: sessionID)
         XCTAssertEqual(restored, next)
+    }
+
+    func testLegacyManifestWithoutActivityPromptFailsSafelyAndRemainsUntouched() async throws {
+        let directory = makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let sessionID = SessionID("public-legacy-missing-prompt")
+        let store = FileSessionManifestStore(directoryURL: directory)
+        try await store.save(
+            try manifest(sessionID: sessionID, revision: 0),
+            expectedRevision: nil
+        )
+        let manifestURL = try XCTUnwrap(
+            FileManager.default.contentsOfDirectory(
+                at: directory,
+                includingPropertiesForKeys: nil
+            ).first { $0.pathExtension == "json" }
+        )
+        let currentData = try Data(contentsOf: manifestURL)
+        var object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: currentData) as? [String: Any]
+        )
+        object.removeValue(forKey: "activityPrompt")
+        let legacyData = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+        try legacyData.write(to: manifestURL, options: [.atomic])
+
+        do {
+            _ = try await store.load(sessionID: sessionID)
+            XCTFail("Expected a legacy unbound prompt to fail closed")
+        } catch DecodingError.keyNotFound(let key, _) {
+            XCTAssertEqual(key.stringValue, "activityPrompt")
+        }
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: manifestURL.path))
+        XCTAssertEqual(try Data(contentsOf: manifestURL), legacyData)
     }
 
     func testFileAdapterForcesPrivateDirectoryAndManifestModes() async throws {
@@ -83,7 +118,7 @@ final class SessionManifestStoreTests: XCTestCase {
             privateDirectoryHierarchy: [liveRoot, manifestsDirectory]
         )
         try await store.save(
-            manifest(sessionID: sessionID, revision: 0),
+            try manifest(sessionID: sessionID, revision: 0),
             expectedRevision: nil
         )
 
@@ -124,7 +159,7 @@ final class SessionManifestStoreTests: XCTestCase {
         )
 
         try await store.save(
-            manifest(
+            try manifest(
                 sessionID: sessionID,
                 revision: 1,
                 phase: .candidateFloor
@@ -144,15 +179,15 @@ final class SessionManifestStoreTests: XCTestCase {
 
         let sessionID = SessionID("public-stale-writer")
         let store = FileSessionManifestStore(directoryURL: directory)
-        let initial = manifest(sessionID: sessionID, revision: 0)
-        let durable = manifest(sessionID: sessionID, revision: 1, phase: .candidateFloor)
+        let initial = try manifest(sessionID: sessionID, revision: 0)
+        let durable = try manifest(sessionID: sessionID, revision: 1, phase: .candidateFloor)
 
         try await store.save(initial, expectedRevision: nil)
         try await store.save(durable, expectedRevision: 0)
 
         do {
             try await store.save(
-                manifest(sessionID: sessionID, revision: 2, phase: .completed),
+                try manifest(sessionID: sessionID, revision: 2, phase: .completed),
                 expectedRevision: 0
             )
             XCTFail("Expected a stale writer conflict")
@@ -172,7 +207,7 @@ final class SessionManifestStoreTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: directory) }
 
         let sessionID = SessionID("public-failed-replacement")
-        let initial = manifest(sessionID: sessionID, revision: 0)
+        let initial = try manifest(sessionID: sessionID, revision: 0)
         let durableStore = FileSessionManifestStore(directoryURL: directory)
         try await durableStore.save(initial, expectedRevision: nil)
 
@@ -183,7 +218,7 @@ final class SessionManifestStoreTests: XCTestCase {
 
         do {
             try await failingStore.save(
-                manifest(sessionID: sessionID, revision: 1, phase: .completed),
+                try manifest(sessionID: sessionID, revision: 1, phase: .completed),
                 expectedRevision: 0
             )
             XCTFail("Expected replacement to fail")
@@ -201,14 +236,14 @@ final class SessionManifestStoreTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: directory) }
 
         let sessionID = SessionID("public-concurrent-writers")
-        let initial = manifest(sessionID: sessionID, revision: 0)
-        let firstCandidate = manifest(
+        let initial = try manifest(sessionID: sessionID, revision: 0)
+        let firstCandidate = try manifest(
             sessionID: sessionID,
             revision: 1,
             phase: .interviewerProcessing,
             candidateBody: "Candidate A"
         )
-        let secondCandidate = manifest(
+        let secondCandidate = try manifest(
             sessionID: sessionID,
             revision: 1,
             phase: .interviewerProcessing,
@@ -283,7 +318,7 @@ final class SessionManifestStoreTests: XCTestCase {
     func testReplacementMustAdvanceRevision() async throws {
         let store = InMemorySessionManifestStore()
         let sessionID = SessionID("public-monotonic-revision")
-        let initial = manifest(sessionID: sessionID, revision: 0)
+        let initial = try manifest(sessionID: sessionID, revision: 0)
         try await store.save(initial, expectedRevision: nil)
 
         do {
@@ -305,7 +340,7 @@ final class SessionManifestStoreTests: XCTestCase {
         revision: Int,
         phase: InterviewRoomPhase = .ready,
         candidateBody: String? = nil
-    ) -> SessionManifest {
+    ) throws -> SessionManifest {
         let turns: [InterviewTurn]
         if let candidateBody {
             let commandID = CommandID("public-concurrent-candidate")
@@ -328,6 +363,12 @@ final class SessionManifestStoreTests: XCTestCase {
         return SessionManifest(
             sessionID: sessionID,
             activityID: "public-test-activity",
+            activityPrompt: try ActivityPrompt(
+                specialty: .systemDesign,
+                stage: "High-level design",
+                question: "Design a global notification system.",
+                requestedParts: ["Explain delivery reliability and tradeoffs."]
+            ),
             phase: phase,
             turnMode: .manual,
             turns: turns,

@@ -7,6 +7,10 @@ let package = Package(
     products: [
         .library(name: "InterviewArcLiveCore", targets: ["InterviewArcLiveCore"]),
         .executable(name: "InterviewArcLive", targets: ["InterviewArcLive"]),
+        .executable(
+            name: "InterviewArcLiveCodexSmoke",
+            targets: ["InterviewArcLiveCodexSmoke"]
+        ),
     ],
     dependencies: [
         .package(
@@ -26,11 +30,23 @@ let package = Package(
                 ),
             ]
         ),
+        .target(
+            name: "InterviewArcLiveCodexAdapter",
+            dependencies: ["InterviewArcLiveCore"]
+        ),
         .executableTarget(
             name: "InterviewArcLive",
             dependencies: [
                 "InterviewArcLiveCore",
+                "InterviewArcLiveCodexAdapter",
                 "InterviewArcLiveVoiceAdapter",
+            ]
+        ),
+        .executableTarget(
+            name: "InterviewArcLiveCodexSmoke",
+            dependencies: [
+                "InterviewArcLiveCore",
+                "InterviewArcLiveCodexAdapter",
             ]
         ),
         .testTarget(
@@ -46,6 +62,21 @@ let package = Package(
                     name: "InterviewArcVoiceCore",
                     package: "interview-arc-voice"
                 ),
+            ]
+        ),
+        .testTarget(
+            name: "InterviewArcLiveCodexAdapterTests",
+            dependencies: [
+                "InterviewArcLiveCore",
+                "InterviewArcLiveCodexAdapter",
+            ]
+        ),
+        .testTarget(
+            name: "InterviewArcLiveTests",
+            dependencies: [
+                "InterviewArcLive",
+                "InterviewArcLiveCore",
+                "InterviewArcLiveCodexAdapter",
             ]
         ),
     ]

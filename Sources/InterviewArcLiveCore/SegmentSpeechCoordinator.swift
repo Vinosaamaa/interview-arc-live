@@ -53,6 +53,7 @@ public final class SegmentSpeechCoordinator {
     public static func open(
         sessionID: SessionID,
         activityID: String,
+        activityPrompt: ActivityPrompt,
         turnMode: TurnMode = .manual,
         manifestStore: any SessionManifestStore,
         interviewerRuntime: any InterviewerRuntime,
@@ -65,6 +66,7 @@ public final class SegmentSpeechCoordinator {
             session = try await InterviewRoomSession.start(
                 sessionID: sessionID,
                 activityID: activityID,
+                activityPrompt: activityPrompt,
                 turnMode: turnMode,
                 manifestStore: manifestStore,
                 interviewerRuntime: interviewerRuntime
@@ -91,6 +93,7 @@ public final class SegmentSpeechCoordinator {
     public static func openLocal(
         sessionID: SessionID,
         activityID: String,
+        activityPrompt: ActivityPrompt,
         turnMode: TurnMode = .manual,
         interviewerRuntime: any InterviewerRuntime,
         recording: any SegmentRecording,
@@ -100,6 +103,7 @@ public final class SegmentSpeechCoordinator {
         try await open(
             sessionID: sessionID,
             activityID: activityID,
+            activityPrompt: activityPrompt,
             turnMode: turnMode,
             manifestStore: FileSessionManifestStore(),
             interviewerRuntime: interviewerRuntime,

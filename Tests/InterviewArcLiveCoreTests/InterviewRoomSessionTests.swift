@@ -16,6 +16,7 @@ final class InterviewRoomSessionTests: XCTestCase {
         let session = try await InterviewRoomSession.start(
             sessionID: sessionID,
             activityID: "activity-system-design-1",
+            activityPrompt: try fixtureActivityPrompt(),
             manifestStore: store,
             interviewerRuntime: runtime
         )
@@ -57,6 +58,12 @@ final class InterviewRoomSessionTests: XCTestCase {
         XCTAssertEqual(interviewer.spokenText, "Compare availability and consistency.")
         let invocationCount = await runtime.invocationCount()
         XCTAssertEqual(invocationCount, 1)
+        let requests = await runtime.requests()
+        let request = try XCTUnwrap(requests.first)
+        XCTAssertEqual(request.activityPrompt, try fixtureActivityPrompt())
+        XCTAssertEqual(request.candidateTurn, candidate)
+        XCTAssertTrue(request.priorVisibleTurns.isEmpty)
+        XCTAssertEqual(request.responseTurnID, interviewer.id)
 
         let restored = try await InterviewRoomSession.restore(
             sessionID: sessionID,
@@ -149,6 +156,212 @@ final class InterviewRoomSessionTests: XCTestCase {
         XCTAssertEqual(try decoder.decode(TranscriptQuality.self, from: encoded), .bestAvailable)
     }
 
+    func testActivityPromptValidationAndDecodingPreserveAcceptedCopyVerbatim() throws {
+        let prompt = try ActivityPrompt(
+            specialty: .systemDesign,
+            stage: "  High-level design  ",
+            question: "  Design a globally distributed queue.\n",
+            requestedParts: ["  Clarify durability.  ", "Discuss failover.\n"]
+        )
+        let encoded = try JSONEncoder().encode(prompt)
+
+        XCTAssertEqual(try JSONDecoder().decode(ActivityPrompt.self, from: encoded), prompt)
+        XCTAssertEqual(prompt.specialty.rawValue, "system_design")
+        XCTAssertEqual(prompt.stage, "  High-level design  ")
+        XCTAssertEqual(prompt.question, "  Design a globally distributed queue.\n")
+        XCTAssertEqual(prompt.requestedParts[0], "  Clarify durability.  ")
+
+        XCTAssertThrowsError(
+            try ActivityPrompt(
+                specialty: .systemDesign,
+                stage: " \n",
+                question: "Question",
+                requestedParts: []
+            )
+        ) { error in
+            XCTAssertEqual(error as? ActivityPromptValidationError, .emptyStage)
+        }
+        XCTAssertThrowsError(
+            try ActivityPrompt(
+                specialty: .systemDesign,
+                stage: "Stage",
+                question: " \n",
+                requestedParts: []
+            )
+        ) { error in
+            XCTAssertEqual(error as? ActivityPromptValidationError, .emptyQuestion)
+        }
+        XCTAssertThrowsError(
+            try ActivityPrompt(
+                specialty: .systemDesign,
+                stage: "Stage",
+                question: "Question",
+                requestedParts: ["One", " \n"]
+            )
+        ) { error in
+            XCTAssertEqual(
+                error as? ActivityPromptValidationError,
+                .emptyRequestedPart(index: 1)
+            )
+        }
+        XCTAssertThrowsError(
+            try ActivityPrompt(
+                specialty: .systemDesign,
+                stage: "Stage",
+                question: "Question",
+                requestedParts: Array(
+                    repeating: "Part",
+                    count: ActivityPrompt.maximumRequestedParts + 1
+                )
+            )
+        ) { error in
+            XCTAssertEqual(
+                error as? ActivityPromptValidationError,
+                .tooManyRequestedParts(maximum: ActivityPrompt.maximumRequestedParts)
+            )
+        }
+
+        let unknownSpecialty = Data(
+            #"{"specialty":"behavioral","stage":"Stage","question":"Question","requestedParts":[]}"#.utf8
+        )
+        XCTAssertThrowsError(
+            try JSONDecoder().decode(ActivityPrompt.self, from: unknownSpecialty)
+        )
+    }
+
+    func testRuntimeRequestUsesExactCandidateBoundPromptAndBoundedRecentVisibleHistory() async throws {
+        let store = InMemorySessionManifestStore()
+        let prompt = try fixtureActivityPrompt()
+        let runtime = CountingInterviewerRuntime(
+            response: CanonicalInterviewerResponse(
+                displayMarkdown: "Follow up.",
+                spokenText: "Follow up."
+            )
+        )
+        let session = try await InterviewRoomSession.start(
+            sessionID: SessionID("bounded-visible-history"),
+            activityID: "activity-bounded-visible-history",
+            activityPrompt: prompt,
+            manifestStore: store,
+            interviewerRuntime: runtime
+        )
+        var snapshot = try await session.execute(
+            .giveCandidateFloor(commandID: CommandID("history-floor-0"))
+        )
+
+        for index in 0..<7 {
+            snapshot = try await session.execute(
+                .handOff(
+                    commandID: CommandID("history-handoff-\(index)"),
+                    transcript: CandidateTranscript(
+                        body: "Prior candidate answer \(index).",
+                        quality: .verified
+                    )
+                )
+            )
+            snapshot = try await session.execute(
+                .giveCandidateFloor(commandID: CommandID("history-floor-\(index + 1)"))
+            )
+        }
+
+        let visibleBeforeFinalHandOff = snapshot.turns
+        let exactCandidate = "  Exact durable answer.\nSecond line.  "
+        let completed = try await session.execute(
+            .handOff(
+                commandID: CommandID("history-final-handoff"),
+                transcript: CandidateTranscript(
+                    body: exactCandidate,
+                    quality: .bestAvailable
+                )
+            )
+        )
+
+        let requests = await runtime.requests()
+        let finalRequest = try XCTUnwrap(requests.last)
+        XCTAssertEqual(finalRequest.activityPrompt, prompt)
+        XCTAssertEqual(finalRequest.candidateTurn.transcript.body, exactCandidate)
+        XCTAssertEqual(
+            finalRequest.priorVisibleTurns,
+            Array(visibleBeforeFinalHandOff.suffix(InterviewerRequest.maximumPriorVisibleTurns))
+        )
+        XCTAssertEqual(
+            finalRequest.priorVisibleTurns.count,
+            InterviewerRequest.maximumPriorVisibleTurns
+        )
+        guard case .interviewer(let interviewer) = completed.turns.last else {
+            return XCTFail("Expected persisted Interviewer Turn")
+        }
+        XCTAssertEqual(finalRequest.responseTurnID, interviewer.id)
+    }
+
+    func testVisibleHistoryByteBudgetDropsWholeOldPairsAndCountsEveryCarriedString() async throws {
+        XCTAssertEqual(
+            InterviewerRequest.maximumPriorVisibleHistoryUTF8Bytes,
+            256 * 1_024
+        )
+        let runtime = CountingInterviewerRuntime(
+            response: CanonicalInterviewerResponse(
+                displayMarkdown: String(repeating: "D", count: 10 * 1_024),
+                spokenText: String(repeating: "S", count: 40 * 1_024)
+            )
+        )
+        let session = try await InterviewRoomSession.start(
+            sessionID: SessionID("byte-bounded-visible-history"),
+            activityID: "activity-byte-bounded-visible-history",
+            activityPrompt: try fixtureActivityPrompt(),
+            manifestStore: InMemorySessionManifestStore(),
+            interviewerRuntime: runtime
+        )
+        var snapshot = try await session.execute(
+            .giveCandidateFloor(commandID: CommandID("byte-history-floor-0"))
+        )
+
+        for index in 0..<3 {
+            snapshot = try await session.execute(
+                .handOff(
+                    commandID: CommandID("byte-history-handoff-\(index)"),
+                    transcript: CandidateTranscript(
+                        body: "\(index)" + String(repeating: "C", count: 70 * 1_024 - 1),
+                        quality: .verified
+                    )
+                )
+            )
+            snapshot = try await session.execute(
+                .giveCandidateFloor(commandID: CommandID("byte-history-floor-\(index + 1)"))
+            )
+        }
+
+        let priorTurns = snapshot.turns
+        _ = try await session.execute(
+            .handOff(
+                commandID: CommandID("byte-history-final-handoff"),
+                transcript: CandidateTranscript(body: "Current answer.", quality: .verified)
+            )
+        )
+
+        let requests = await runtime.requests()
+        let request = try XCTUnwrap(requests.last)
+        XCTAssertEqual(request.priorVisibleTurns, Array(priorTurns.suffix(4)))
+        XCTAssertEqual(request.priorVisibleTurns.count, 4)
+        let selectedByteCount = request.priorVisibleTurns.reduce(into: 0) { total, turn in
+            switch turn {
+            case .candidate(let candidate):
+                total += candidate.transcript.body.utf8.count
+            case .interviewer(let interviewer):
+                total += interviewer.displayMarkdown.utf8.count
+                    + interviewer.spokenText.utf8.count
+            }
+        }
+        XCTAssertLessThanOrEqual(
+            selectedByteCount,
+            InterviewerRequest.maximumPriorVisibleHistoryUTF8Bytes
+        )
+        guard case .candidate(let oldestSelected) = request.priorVisibleTurns.first else {
+            return XCTFail("Expected history to start on a complete Candidate/Interviewer pair")
+        }
+        XCTAssertTrue(oldestSelected.transcript.body.hasPrefix("1"))
+    }
+
     func testInvalidTransitionAndEmptyTranscriptLeaveDurableStateUnchanged() async throws {
         let store = InMemorySessionManifestStore()
         let runtime = DeterministicInterviewerRuntime(
@@ -161,6 +374,7 @@ final class InterviewRoomSessionTests: XCTestCase {
         let session = try await InterviewRoomSession.start(
             sessionID: sessionID,
             activityID: "activity-fixture",
+            activityPrompt: try fixtureActivityPrompt(),
             manifestStore: store,
             interviewerRuntime: runtime
         )
@@ -207,6 +421,60 @@ final class InterviewRoomSessionTests: XCTestCase {
         XCTAssertEqual(durableAfterEmptyTranscript?.revision, 1)
     }
 
+    func testOversizedCandidateIsRejectedBeforeTurnPersistenceOrRuntimeInvocation() async throws {
+        XCTAssertEqual(CandidateTranscript.maximumBodyUTF8Bytes, 256 * 1_024)
+        let store = InMemorySessionManifestStore()
+        let runtime = CountingInterviewerRuntime(
+            response: CanonicalInterviewerResponse(
+                displayMarkdown: "Must remain unused.",
+                spokenText: "Must remain unused."
+            )
+        )
+        let sessionID = SessionID("oversized-pending-candidate")
+        let session = try await InterviewRoomSession.start(
+            sessionID: sessionID,
+            activityID: "activity-oversized-pending-candidate",
+            activityPrompt: try fixtureActivityPrompt(),
+            manifestStore: store,
+            interviewerRuntime: runtime
+        )
+        let candidateFloor = try await session.execute(
+            .giveCandidateFloor(commandID: CommandID("oversized-candidate-floor"))
+        )
+
+        do {
+            _ = try await session.execute(
+                .handOff(
+                    commandID: CommandID("oversized-candidate-handoff"),
+                    transcript: CandidateTranscript(
+                        body: String(
+                            repeating: "C",
+                            count: CandidateTranscript.maximumBodyUTF8Bytes + 1
+                        ),
+                        quality: .verified
+                    )
+                )
+            )
+            XCTFail("Expected oversized Candidate transcript to fail closed")
+        } catch {
+            XCTAssertEqual(
+                error as? InterviewRoomSessionError,
+                .candidateTranscriptTooLong(
+                    maximumUTF8Bytes: CandidateTranscript.maximumBodyUTF8Bytes
+                )
+            )
+        }
+
+        let current = await session.snapshot()
+        XCTAssertEqual(current, candidateFloor)
+        XCTAssertTrue(current.turns.isEmpty)
+        let durable = try await store.load(sessionID: sessionID)
+        XCTAssertEqual(durable?.revision, candidateFloor.revision)
+        XCTAssertTrue(durable?.turns.isEmpty == true)
+        let invocationCount = await runtime.invocationCount()
+        XCTAssertEqual(invocationCount, 0)
+    }
+
     func testProviderFailurePersistsCandidateAndRetryAuthorizationBeforeEachAttempt() async throws {
         let store = InMemorySessionManifestStore()
         let sessionID = SessionID("session-provider-failure")
@@ -214,6 +482,7 @@ final class InterviewRoomSessionTests: XCTestCase {
         let session = try await InterviewRoomSession.start(
             sessionID: sessionID,
             activityID: "activity-provider-failure",
+            activityPrompt: try fixtureActivityPrompt(),
             manifestStore: store,
             interviewerRuntime: failingRuntime
         )
@@ -277,6 +546,8 @@ final class InterviewRoomSessionTests: XCTestCase {
             manifestStore: store,
             interviewerRuntime: retryRuntime
         )
+        let callsBeforeExplicitRetry = await retryRuntime.invocationCount()
+        XCTAssertEqual(callsBeforeExplicitRetry, 0)
 
         let firstRetry = InterviewRoomCommand.retryInterviewerResponse(
             commandID: CommandID("retry-response-1")
@@ -318,6 +589,338 @@ final class InterviewRoomSessionTests: XCTestCase {
         XCTAssertEqual(recoveredInterviewer.response, recoveredResponse)
         let totalRetryCalls = await retryRuntime.invocationCount()
         XCTAssertEqual(totalRetryCalls, 2)
+        let retryRequests = await retryRuntime.requests()
+        XCTAssertEqual(retryRequests.count, 2)
+        XCTAssertEqual(retryRequests[0].candidateTurn, preservedCandidate)
+        XCTAssertEqual(retryRequests[1].candidateTurn, preservedCandidate)
+        XCTAssertEqual(retryRequests[0].responseTurnID, retryRequests[1].responseTurnID)
+        XCTAssertEqual(retryRequests[1].responseTurnID, recoveredInterviewer.id)
+        XCTAssertEqual(retryRequests[0].activityPrompt, try fixtureActivityPrompt())
+    }
+
+    func testOversizedCanonicalResponseStaysUnpublishedUntilFreshValidRetry() async throws {
+        XCTAssertEqual(
+            CanonicalInterviewerResponse.maximumDisplayMarkdownUTF8Bytes,
+            128 * 1_024
+        )
+        XCTAssertEqual(
+            CanonicalInterviewerResponse.maximumSpokenTextUTF8Bytes,
+            64 * 1_024
+        )
+        let store = InMemorySessionManifestStore()
+        let runtime = SequencedInterviewerRuntime(
+            results: [
+                .success(
+                    CanonicalInterviewerResponse(
+                        displayMarkdown: String(
+                            repeating: "D",
+                            count: CanonicalInterviewerResponse
+                                .maximumDisplayMarkdownUTF8Bytes + 1
+                        ),
+                        spokenText: "Oversized display response."
+                    )
+                ),
+                .success(
+                    CanonicalInterviewerResponse(
+                        displayMarkdown: "Oversized spoken response.",
+                        spokenText: String(
+                            repeating: "S",
+                            count: CanonicalInterviewerResponse
+                                .maximumSpokenTextUTF8Bytes + 1
+                        )
+                    )
+                ),
+                .success(
+                    CanonicalInterviewerResponse(
+                        displayMarkdown: "Valid **bounded** response.",
+                        spokenText: "Valid bounded response."
+                    )
+                ),
+            ]
+        )
+        let sessionID = SessionID("oversized-canonical-response")
+        let session = try await InterviewRoomSession.start(
+            sessionID: sessionID,
+            activityID: "activity-oversized-canonical-response",
+            activityPrompt: try fixtureActivityPrompt(),
+            manifestStore: store,
+            interviewerRuntime: runtime
+        )
+        _ = try await session.execute(
+            .giveCandidateFloor(commandID: CommandID("oversized-response-floor"))
+        )
+
+        do {
+            _ = try await session.execute(
+                .handOff(
+                    commandID: CommandID("oversized-response-handoff"),
+                    transcript: CandidateTranscript(body: "Durable answer.", quality: .verified)
+                )
+            )
+            XCTFail("Expected oversized display Markdown to remain unpublished")
+        } catch {
+            XCTAssertEqual(error as? InterviewRoomSessionError, .invalidInterviewerResponse)
+        }
+        let afterDisplayFailure = await session.snapshot()
+        XCTAssertEqual(afterDisplayFailure.phase, .interviewerProcessing)
+        XCTAssertEqual(afterDisplayFailure.revision, 2)
+        XCTAssertEqual(afterDisplayFailure.turns.count, 1)
+
+        do {
+            _ = try await session.execute(
+                .retryInterviewerResponse(commandID: CommandID("oversized-spoken-retry"))
+            )
+            XCTFail("Expected oversized spoken text to remain unpublished")
+        } catch {
+            XCTAssertEqual(error as? InterviewRoomSessionError, .invalidInterviewerResponse)
+        }
+        let afterSpokenFailure = await session.snapshot()
+        XCTAssertEqual(afterSpokenFailure.phase, .interviewerProcessing)
+        XCTAssertEqual(afterSpokenFailure.revision, 3)
+        XCTAssertEqual(afterSpokenFailure.turns.count, 1)
+        let durablePending = try await store.load(sessionID: sessionID)
+        XCTAssertEqual(durablePending?.turns, afterSpokenFailure.turns)
+
+        let completed = try await session.execute(
+            .retryInterviewerResponse(commandID: CommandID("bounded-response-retry"))
+        )
+        XCTAssertEqual(completed.phase, .interviewerTurn)
+        XCTAssertEqual(completed.revision, 5)
+        XCTAssertEqual(completed.turns.count, 2)
+        let invocationCount = await runtime.invocationCount()
+        XCTAssertEqual(invocationCount, 3)
+    }
+
+    func testMalformedResponseStaysProcessingAndRequiresFreshExplicitRetryAfterRestore() async throws {
+        let store = InMemorySessionManifestStore()
+        let runtime = SequencedInterviewerRuntime(
+            results: [
+                .success(
+                    CanonicalInterviewerResponse(
+                        displayMarkdown: " \n",
+                        spokenText: "Malformed output must not publish."
+                    )
+                ),
+                .success(
+                    CanonicalInterviewerResponse(
+                        displayMarkdown: "Persisted **canonical** response.",
+                        spokenText: "Persisted canonical response."
+                    )
+                ),
+            ]
+        )
+        let sessionID = SessionID("malformed-runtime-response")
+        let session = try await InterviewRoomSession.start(
+            sessionID: sessionID,
+            activityID: "activity-malformed-runtime-response",
+            activityPrompt: try fixtureActivityPrompt(),
+            manifestStore: store,
+            interviewerRuntime: runtime
+        )
+        _ = try await session.execute(
+            .giveCandidateFloor(commandID: CommandID("malformed-floor"))
+        )
+        let handOff = InterviewRoomCommand.handOff(
+            commandID: CommandID("malformed-handoff"),
+            transcript: CandidateTranscript(
+                body: "Keep this candidate answer exactly.",
+                quality: .verified
+            )
+        )
+
+        do {
+            _ = try await session.execute(handOff)
+            XCTFail("Expected whitespace display Markdown to be rejected")
+        } catch {
+            XCTAssertEqual(error as? InterviewRoomSessionError, .invalidInterviewerResponse)
+        }
+        let pending = await session.snapshot()
+        XCTAssertEqual(pending.phase, .interviewerProcessing)
+        XCTAssertEqual(pending.turns.count, 1)
+        let callsAfterMalformedResponse = await runtime.invocationCount()
+        XCTAssertEqual(callsAfterMalformedResponse, 1)
+
+        let restored = try await InterviewRoomSession.restore(
+            sessionID: sessionID,
+            manifestStore: store,
+            interviewerRuntime: runtime
+        )
+        let callsAfterRestore = await runtime.invocationCount()
+        XCTAssertEqual(callsAfterRestore, 1, "restore must not replay provider work")
+
+        let duplicate = try await restored.execute(handOff)
+        XCTAssertEqual(duplicate, pending)
+        let callsAfterDuplicateHandOff = await runtime.invocationCount()
+        XCTAssertEqual(
+            callsAfterDuplicateHandOff,
+            1,
+            "the accepted Hand off identity cannot authorize another runtime turn"
+        )
+
+        let completed = try await restored.execute(
+            .retryInterviewerResponse(commandID: CommandID("malformed-explicit-retry"))
+        )
+        XCTAssertEqual(completed.phase, .interviewerTurn)
+        XCTAssertEqual(completed.revision, 4)
+        let callsAfterFreshRetry = await runtime.invocationCount()
+        XCTAssertEqual(callsAfterFreshRetry, 2)
+        guard case .candidate(let candidate) = completed.turns[0],
+              case .interviewer(let interviewer) = completed.turns[1] else {
+            return XCTFail("Expected one canonical persisted turn pair")
+        }
+        XCTAssertEqual(candidate.transcript.body, "Keep this candidate answer exactly.")
+        XCTAssertFalse(
+            interviewer.displayMarkdown.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        )
+        XCTAssertFalse(
+            interviewer.spokenText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        )
+
+        let requests = await runtime.requests()
+        XCTAssertEqual(requests.count, 2)
+        XCTAssertEqual(requests[0].candidateTurn, requests[1].candidateTurn)
+        XCTAssertEqual(requests[0].responseTurnID, requests[1].responseTurnID)
+        XCTAssertEqual(requests[1].responseTurnID, interviewer.id)
+    }
+
+    func testRestoreRejectsDurableTurnWithEmptyCanonicalResponse() async throws {
+        let candidate = CandidateTurn(
+            id: TurnID("restore-malformed-candidate"),
+            commandID: CommandID("restore-malformed-handoff"),
+            transcript: CandidateTranscript(body: "Durable candidate.", quality: .verified)
+        )
+        let manifest = SessionManifest(
+            sessionID: SessionID("restore-malformed-response"),
+            activityID: "activity-restore-malformed-response",
+            activityPrompt: try fixtureActivityPrompt(),
+            phase: .interviewerTurn,
+            turnMode: .manual,
+            turns: [
+                .candidate(candidate),
+                .interviewer(
+                    InterviewerTurn(
+                        id: TurnID("restore-malformed-interviewer"),
+                        commandID: candidate.commandID,
+                        replyToTurnID: candidate.id,
+                        response: CanonicalInterviewerResponse(
+                            displayMarkdown: "Valid display copy.",
+                            spokenText: " \n"
+                        )
+                    )
+                ),
+            ],
+            revision: 1,
+            appliedCommands: []
+        )
+
+        do {
+            _ = try await InterviewRoomSession.restore(
+                sessionID: manifest.sessionID,
+                manifestStore: InMemorySessionManifestStore(manifests: [manifest]),
+                interviewerRuntime: DeterministicInterviewerRuntime(
+                    response: CanonicalInterviewerResponse(
+                        displayMarkdown: "Unused.",
+                        spokenText: "Unused."
+                    )
+                )
+            )
+            XCTFail("Expected malformed durable response to be rejected")
+        } catch let error as InterviewRoomSessionError {
+            guard case .invalidManifest = error else {
+                return XCTFail("Expected invalidManifest, received \(error)")
+            }
+        }
+    }
+
+    func testRestoreRejectsOversizedDurableCandidateAndCanonicalFields() async throws {
+        let prompt = try fixtureActivityPrompt()
+        let oversizedCandidate = CandidateTurn(
+            id: TurnID("restore-oversized-candidate"),
+            commandID: CommandID("restore-oversized-candidate-command"),
+            transcript: CandidateTranscript(
+                body: String(
+                    repeating: "C",
+                    count: CandidateTranscript.maximumBodyUTF8Bytes + 1
+                ),
+                quality: .verified
+            )
+        )
+        try await assertRestoreRejects(
+            SessionManifest(
+                sessionID: SessionID("restore-oversized-candidate-session"),
+                activityID: "activity-restore-oversized-candidate",
+                activityPrompt: prompt,
+                phase: .interviewerProcessing,
+                turnMode: .manual,
+                turns: [.candidate(oversizedCandidate)],
+                revision: 1,
+                appliedCommands: []
+            )
+        )
+
+        let validCandidate = CandidateTurn(
+            id: TurnID("restore-bounded-candidate"),
+            commandID: CommandID("restore-bounded-candidate-command"),
+            transcript: CandidateTranscript(body: "Bounded candidate.", quality: .verified)
+        )
+        try await assertRestoreRejects(
+            SessionManifest(
+                sessionID: SessionID("restore-oversized-display-session"),
+                activityID: "activity-restore-oversized-display",
+                activityPrompt: prompt,
+                phase: .interviewerTurn,
+                turnMode: .manual,
+                turns: [
+                    .candidate(validCandidate),
+                    .interviewer(
+                        InterviewerTurn(
+                            id: TurnID("restore-oversized-display"),
+                            commandID: validCandidate.commandID,
+                            replyToTurnID: validCandidate.id,
+                            response: CanonicalInterviewerResponse(
+                                displayMarkdown: String(
+                                    repeating: "D",
+                                    count: CanonicalInterviewerResponse
+                                        .maximumDisplayMarkdownUTF8Bytes + 1
+                                ),
+                                spokenText: "Bounded spoken text."
+                            )
+                        )
+                    ),
+                ],
+                revision: 1,
+                appliedCommands: []
+            )
+        )
+        try await assertRestoreRejects(
+            SessionManifest(
+                sessionID: SessionID("restore-oversized-spoken-session"),
+                activityID: "activity-restore-oversized-spoken",
+                activityPrompt: prompt,
+                phase: .interviewerTurn,
+                turnMode: .manual,
+                turns: [
+                    .candidate(validCandidate),
+                    .interviewer(
+                        InterviewerTurn(
+                            id: TurnID("restore-oversized-spoken"),
+                            commandID: validCandidate.commandID,
+                            replyToTurnID: validCandidate.id,
+                            response: CanonicalInterviewerResponse(
+                                displayMarkdown: "Bounded display Markdown.",
+                                spokenText: String(
+                                    repeating: "S",
+                                    count: CanonicalInterviewerResponse
+                                        .maximumSpokenTextUTF8Bytes + 1
+                                )
+                            )
+                        )
+                    ),
+                ],
+                revision: 1,
+                appliedCommands: []
+            )
+        )
     }
 
     func testPersistenceFailureDoesNotPublishAcceptedTransition() async throws {
@@ -333,6 +936,7 @@ final class InterviewRoomSessionTests: XCTestCase {
         let session = try await InterviewRoomSession.start(
             sessionID: sessionID,
             activityID: "activity-save-failure",
+            activityPrompt: try fixtureActivityPrompt(),
             manifestStore: store,
             interviewerRuntime: runtime
         )
@@ -359,6 +963,7 @@ final class InterviewRoomSessionTests: XCTestCase {
         let session = try await InterviewRoomSession.start(
             sessionID: SessionID("session-idempotency"),
             activityID: "activity-idempotency",
+            activityPrompt: try fixtureActivityPrompt(),
             manifestStore: store,
             interviewerRuntime: runtime
         )
@@ -382,6 +987,7 @@ final class InterviewRoomSessionTests: XCTestCase {
         let session = try await InterviewRoomSession.start(
             sessionID: sessionID,
             activityID: "activity-turn-id-fixture",
+            activityPrompt: try fixtureActivityPrompt(),
             manifestStore: store,
             interviewerRuntime: runtime
         )
@@ -400,6 +1006,47 @@ final class InterviewRoomSessionTests: XCTestCase {
         }
         return candidate.id
     }
+
+    private func fixtureActivityPrompt() throws -> ActivityPrompt {
+        try ActivityPrompt(
+            specialty: .systemDesign,
+            stage: "High-level design",
+            question: "Design a global notification system.",
+            requestedParts: [
+                "Clarify scope and requirements.",
+                "Propose the high-level architecture and data flow.",
+                "Explain delivery reliability and tradeoffs.",
+            ]
+        )
+    }
+
+    private func assertRestoreRejects(
+        _ manifest: SessionManifest,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) async throws {
+        do {
+            _ = try await InterviewRoomSession.restore(
+                sessionID: manifest.sessionID,
+                manifestStore: InMemorySessionManifestStore(manifests: [manifest]),
+                interviewerRuntime: DeterministicInterviewerRuntime(
+                    response: CanonicalInterviewerResponse(
+                        displayMarkdown: "Unused.",
+                        spokenText: "Unused."
+                    )
+                )
+            )
+            XCTFail("Expected oversized durable content to be rejected", file: file, line: line)
+        } catch let error as InterviewRoomSessionError {
+            guard case .invalidManifest = error else {
+                return XCTFail(
+                    "Expected invalidManifest, received \(error)",
+                    file: file,
+                    line: line
+                )
+            }
+        }
+    }
 }
 
 private enum TurnIDFixtureError: Error {
@@ -409,6 +1056,7 @@ private enum TurnIDFixtureError: Error {
 private actor CountingInterviewerRuntime: InterviewerRuntime {
     private let responseValue: CanonicalInterviewerResponse
     private var calls = 0
+    private var recordedRequests: [InterviewerRequest] = []
 
     init(response: CanonicalInterviewerResponse) {
         responseValue = response
@@ -416,10 +1064,12 @@ private actor CountingInterviewerRuntime: InterviewerRuntime {
 
     func respond(to request: InterviewerRequest) -> CanonicalInterviewerResponse {
         calls += 1
+        recordedRequests.append(request)
         return responseValue
     }
 
     func invocationCount() -> Int { calls }
+    func requests() -> [InterviewerRequest] { recordedRequests }
 }
 
 private enum RuntimeFixtureError: Error, Equatable, Sendable {
@@ -440,6 +1090,7 @@ private actor CountingFailingInterviewerRuntime: InterviewerRuntime {
 private actor SequencedInterviewerRuntime: InterviewerRuntime {
     private var results: [Result<CanonicalInterviewerResponse, RuntimeFixtureError>]
     private var calls = 0
+    private var recordedRequests: [InterviewerRequest] = []
 
     init(results: [Result<CanonicalInterviewerResponse, RuntimeFixtureError>]) {
         self.results = results
@@ -447,6 +1098,7 @@ private actor SequencedInterviewerRuntime: InterviewerRuntime {
 
     func respond(to request: InterviewerRequest) throws -> CanonicalInterviewerResponse {
         calls += 1
+        recordedRequests.append(request)
         guard !results.isEmpty else {
             throw RuntimeFixtureError.unavailable
         }
@@ -454,6 +1106,7 @@ private actor SequencedInterviewerRuntime: InterviewerRuntime {
     }
 
     func invocationCount() -> Int { calls }
+    func requests() -> [InterviewerRequest] { recordedRequests }
 }
 
 private enum StoreFixtureError: Error, Equatable {
