@@ -77,6 +77,7 @@ public enum InterviewRoomSessionError: Error, Sendable, Equatable {
     case invalidManifest(reason: String)
     case invalidTransition(command: String, phase: InterviewRoomPhase)
     case emptyCandidateTranscript
+    case candidateTranscriptTooLong(maximumUTF8Bytes: Int)
     case invalidInterviewerResponse
     case commandIDReused(CommandID)
     case commandInProgress
@@ -121,6 +122,7 @@ public actor InterviewRoomSession {
     public static func start(
         sessionID: SessionID,
         activityID: String,
+        activityPrompt: ActivityPrompt,
         turnMode: TurnMode = .manual,
         manifestStore: any SessionManifestStore,
         interviewerRuntime: any InterviewerRuntime
@@ -135,6 +137,7 @@ public actor InterviewRoomSession {
         let manifest = SessionManifest(
             sessionID: sessionID,
             activityID: activityID,
+            activityPrompt: activityPrompt,
             phase: .ready,
             turnMode: turnMode,
             turns: [],
@@ -591,6 +594,11 @@ public actor InterviewRoomSession {
         guard !transcript.body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw InterviewRoomSessionError.emptyCandidateTranscript
         }
+        guard transcript.body.utf8.count <= CandidateTranscript.maximumBodyUTF8Bytes else {
+            throw InterviewRoomSessionError.candidateTranscriptTooLong(
+                maximumUTF8Bytes: CandidateTranscript.maximumBodyUTF8Bytes
+            )
+        }
         if segmentIDs.isEmpty,
            manifest.segments.contains(where: { $0.committedTurnID == nil }) {
             throw InterviewRoomSessionError.uncommittedSegmentsRequireSegmentHandOff
@@ -626,6 +634,7 @@ public actor InterviewRoomSession {
         let awaitingResponse = SessionManifest(
             sessionID: manifest.sessionID,
             activityID: manifest.activityID,
+            activityPrompt: manifest.activityPrompt,
             phase: .interviewerProcessing,
             turnMode: manifest.turnMode,
             turns: manifest.turns + [.candidate(candidate)],
@@ -654,6 +663,7 @@ public actor InterviewRoomSession {
         let pendingRetry = SessionManifest(
             sessionID: manifest.sessionID,
             activityID: manifest.activityID,
+            activityPrompt: manifest.activityPrompt,
             phase: .interviewerProcessing,
             turnMode: manifest.turnMode,
             turns: manifest.turns,
@@ -669,24 +679,33 @@ public actor InterviewRoomSession {
     private func completeInterviewerResponse(
         for candidate: CandidateTurn
     ) async throws -> InterviewRoomSnapshot {
+        let responseTurnID = Self.turnID(
+            sessionID: manifest.sessionID,
+            commandID: candidate.commandID,
+            role: "interviewer"
+        )
         let request = InterviewerRequest(
             sessionID: manifest.sessionID,
             activityID: manifest.activityID,
+            activityPrompt: manifest.activityPrompt,
             candidateTurn: candidate,
-            precedingTurns: Array(manifest.turns.dropLast())
+            priorVisibleTurns: Self.boundedPriorVisibleTurns(
+                Array(manifest.turns.dropLast())
+            ),
+            responseTurnID: responseTurnID
         )
         let response = try await interviewerRuntime.respond(to: request)
         guard !response.displayMarkdown.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-              !response.spokenText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+              !response.spokenText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              response.displayMarkdown.utf8.count
+                <= CanonicalInterviewerResponse.maximumDisplayMarkdownUTF8Bytes,
+              response.spokenText.utf8.count
+                <= CanonicalInterviewerResponse.maximumSpokenTextUTF8Bytes else {
             throw InterviewRoomSessionError.invalidInterviewerResponse
         }
 
         let interviewer = InterviewerTurn(
-            id: Self.turnID(
-                sessionID: manifest.sessionID,
-                commandID: candidate.commandID,
-                role: "interviewer"
-            ),
+            id: responseTurnID,
             commandID: candidate.commandID,
             replyToTurnID: candidate.id,
             response: response
@@ -694,6 +713,7 @@ public actor InterviewRoomSession {
         let completed = SessionManifest(
             sessionID: manifest.sessionID,
             activityID: manifest.activityID,
+            activityPrompt: manifest.activityPrompt,
             phase: .interviewerTurn,
             turnMode: manifest.turnMode,
             turns: manifest.turns + [.interviewer(interviewer)],
@@ -722,6 +742,7 @@ public actor InterviewRoomSession {
         return SessionManifest(
             sessionID: manifest.sessionID,
             activityID: manifest.activityID,
+            activityPrompt: manifest.activityPrompt,
             phase: phase,
             turnMode: turnMode,
             turns: turns,
@@ -754,6 +775,42 @@ public actor InterviewRoomSession {
         segment.lifecycle == .captureAuthorized
             || segment.lifecycle == .recording
             || segment.lifecycle == .finalizationAuthorized
+    }
+
+    /// Returns a contiguous recent suffix so the runtime receives bounded,
+    /// canonical visible history without truncating any individual Turn.
+    private static func boundedPriorVisibleTurns(
+        _ turns: [InterviewTurn]
+    ) -> [InterviewTurn] {
+        let maximumTurnCount = InterviewerRequest.maximumPriorVisibleTurns
+            - InterviewerRequest.maximumPriorVisibleTurns % 2
+        let maximumByteCount = InterviewerRequest.maximumPriorVisibleHistoryUTF8Bytes
+        var selectedReversed: [InterviewTurn] = []
+        var selectedByteCount = 0
+        var pairEnd = turns.endIndex
+
+        while pairEnd >= 2, selectedReversed.count + 2 <= maximumTurnCount {
+            let candidateIndex = turns.index(pairEnd, offsetBy: -2)
+            let interviewerIndex = turns.index(before: pairEnd)
+            guard case .candidate(let candidate) = turns[candidateIndex],
+                  case .interviewer(let interviewer) = turns[interviewerIndex] else {
+                break
+            }
+
+            let pairByteCount = candidate.transcript.body.utf8.count
+                + interviewer.displayMarkdown.utf8.count
+                + interviewer.spokenText.utf8.count
+            guard pairByteCount <= maximumByteCount - selectedByteCount else {
+                break
+            }
+
+            selectedReversed.append(turns[interviewerIndex])
+            selectedReversed.append(turns[candidateIndex])
+            selectedByteCount += pairByteCount
+            pairEnd = candidateIndex
+        }
+
+        return Array(selectedReversed.reversed())
     }
 
     private static func bestCandidate(
@@ -943,7 +1000,19 @@ public actor InterviewRoomSession {
             guard case .candidate(let candidate) = manifest.turns[index],
                   case .interviewer(let interviewer) = manifest.turns[index + 1],
                   interviewer.replyToTurnID == candidate.id,
-                  interviewer.commandID == candidate.commandID else {
+                  interviewer.commandID == candidate.commandID,
+                  !candidate.transcript.body
+                    .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  candidate.transcript.body.utf8.count
+                    <= CandidateTranscript.maximumBodyUTF8Bytes,
+                  !interviewer.displayMarkdown
+                    .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  interviewer.displayMarkdown.utf8.count
+                    <= CanonicalInterviewerResponse.maximumDisplayMarkdownUTF8Bytes,
+                  !interviewer.spokenText
+                    .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  interviewer.spokenText.utf8.count
+                    <= CanonicalInterviewerResponse.maximumSpokenTextUTF8Bytes else {
                 throw InterviewRoomSessionError.invalidManifest(
                     reason: "turns must be ordered candidate then matching interviewer"
                 )
@@ -954,7 +1023,11 @@ public actor InterviewRoomSession {
         if index < manifest.turns.count {
             guard manifest.phase == .interviewerProcessing,
                   index == manifest.turns.count - 1,
-                  case .candidate = manifest.turns[index] else {
+                  case .candidate(let candidate) = manifest.turns[index],
+                  !candidate.transcript.body
+                    .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  candidate.transcript.body.utf8.count
+                    <= CandidateTranscript.maximumBodyUTF8Bytes else {
                 throw InterviewRoomSessionError.invalidManifest(
                     reason: "only an interviewer-processing session may end with a candidate"
                 )

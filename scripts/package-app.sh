@@ -9,6 +9,7 @@ app_name="Interview Arc Live.app"
 app_dir="$repo_root/dist/$app_name"
 contents_dir="$app_dir/Contents"
 executable_name="InterviewArcLive"
+smoke_executable_name="InterviewArcLiveCodexSmoke"
 info_plist="$repo_root/Resources/Info.plist"
 signing_identity="${INTERVIEW_ARC_LIVE_SIGNING_IDENTITY:--}"
 manifest_path="$repo_root/dist/InterviewArcLive.package-manifest.txt"
@@ -37,8 +38,10 @@ if [[ -n "$(git status --porcelain --untracked-files=all)" ]]; then
 fi
 
 swift build -c "$configuration" --product "$executable_name"
+swift build -c "$configuration" --product "$smoke_executable_name"
 bin_dir="$(swift build -c "$configuration" --show-bin-path)"
 executable="$bin_dir/$executable_name"
+smoke_executable="$bin_dir/$smoke_executable_name"
 
 if [[ -n "$(git status --porcelain --untracked-files=all)" ]]; then
   source_tree_clean="false"
@@ -48,8 +51,8 @@ if [[ -n "$(git status --porcelain --untracked-files=all)" ]]; then
   fi
 fi
 
-if [[ ! -x "$executable" ]]; then
-  echo "Built executable is missing: $executable" >&2
+if [[ ! -x "$executable" || ! -x "$smoke_executable" ]]; then
+  echo "A built application executable or Codex smoke helper is missing." >&2
   exit 66
 fi
 
@@ -61,16 +64,24 @@ if [[ "$app_dir" != "$repo_root/dist/$app_name" ]]; then
 fi
 
 rm -rf "$app_dir"
-mkdir -p "$contents_dir/MacOS" "$contents_dir/Resources"
+mkdir -p "$contents_dir/MacOS" "$contents_dir/Helpers" "$contents_dir/Resources"
 cp "$info_plist" "$contents_dir/Info.plist"
 cp "$executable" "$contents_dir/MacOS/$executable_name"
+cp "$smoke_executable" "$contents_dir/Helpers/$smoke_executable_name"
 chmod 0755 "$contents_dir/MacOS/$executable_name"
+chmod 0755 "$contents_dir/Helpers/$smoke_executable_name"
 
 for resource_bundle in "$bin_dir"/*.bundle; do
   if [[ -d "$resource_bundle" ]]; then
     cp -R "$resource_bundle" "$contents_dir/Resources/"
   fi
 done
+
+/usr/bin/codesign \
+  --force \
+  --sign "$signing_identity" \
+  --timestamp=none \
+  "$contents_dir/Helpers/$smoke_executable_name"
 
 /usr/bin/codesign \
   --force \
@@ -89,6 +100,7 @@ if [[ "$actual_identifier" != "app.interviewarc.live" || "$actual_executable" !=
 fi
 
 executable_sha256="$(/usr/bin/shasum -a 256 "$contents_dir/MacOS/$executable_name" | /usr/bin/awk '{print $1}')"
+smoke_executable_sha256="$(/usr/bin/shasum -a 256 "$contents_dir/Helpers/$smoke_executable_name" | /usr/bin/awk '{print $1}')"
 info_plist_sha256="$(/usr/bin/shasum -a 256 "$contents_dir/Info.plist" | /usr/bin/awk '{print $1}')"
 code_directory_hash="$(/usr/bin/codesign -dvvv "$app_dir" 2>&1 | /usr/bin/awk -F= '/^CDHash=/{print $2; exit}')"
 resource_bundle_count="$(/usr/bin/find "$contents_dir/Resources" -mindepth 1 -maxdepth 1 -type d -name '*.bundle' | /usr/bin/wc -l | /usr/bin/tr -d ' ')"
@@ -105,10 +117,13 @@ fi
   print -r -- "signature_mode=$signature_mode"
   print -r -- "code_directory_hash=$code_directory_hash"
   print -r -- "executable_sha256=$executable_sha256"
+  print -r -- "codex_smoke_executable_sha256=$smoke_executable_sha256"
   print -r -- "info_plist_sha256=$info_plist_sha256"
   print -r -- "resource_bundle_count=$resource_bundle_count"
 } > "$manifest_path"
 chmod 0600 "$manifest_path"
+
+"$repo_root/scripts/verify-package-manifest.sh" "$app_dir" "$manifest_path"
 
 echo "$app_dir"
 echo "$manifest_path"

@@ -335,6 +335,7 @@ final class SegmentLifecycleTests: XCTestCase {
         let manifest = SessionManifest(
             sessionID: sessionID,
             activityID: "invalid-membership-activity",
+            activityPrompt: try fixtureActivityPrompt(),
             phase: .interviewerProcessing,
             turnMode: .manual,
             turns: [.candidate(candidate)],
@@ -370,6 +371,7 @@ final class SegmentLifecycleTests: XCTestCase {
         let coordinator = try await SegmentSpeechCoordinator.open(
             sessionID: SessionID("coordinator-idempotency"),
             activityID: "activity-coordinator-idempotency",
+            activityPrompt: try fixtureActivityPrompt(),
             manifestStore: InMemorySessionManifestStore(),
             interviewerRuntime: fixtureRuntime(),
             recording: recorder,
@@ -439,6 +441,7 @@ final class SegmentLifecycleTests: XCTestCase {
         let coordinator = try await SegmentSpeechCoordinator.open(
             sessionID: begin.sessionID,
             activityID: begin.activityID,
+            activityPrompt: try fixtureActivityPrompt(),
             manifestStore: store,
             interviewerRuntime: fixtureRuntime(),
             recording: recorder,
@@ -486,6 +489,7 @@ final class SegmentLifecycleTests: XCTestCase {
         let coordinator = try await SegmentSpeechCoordinator.open(
             sessionID: interruptedSnapshot.sessionID,
             activityID: "activity-segment-fixture",
+            activityPrompt: try fixtureActivityPrompt(),
             manifestStore: store,
             interviewerRuntime: fixtureRuntime(),
             recording: StubSegmentRecorder(
@@ -547,6 +551,7 @@ final class SegmentLifecycleTests: XCTestCase {
         let coordinator = try await SegmentSpeechCoordinator.open(
             sessionID: begin.sessionID,
             activityID: begin.activityID,
+            activityPrompt: try fixtureActivityPrompt(),
             manifestStore: store,
             interviewerRuntime: fixtureRuntime(),
             recording: recorder,
@@ -583,6 +588,7 @@ final class SegmentLifecycleTests: XCTestCase {
         let coordinator = try await SegmentSpeechCoordinator.open(
             sessionID: SessionID("unexpected-observer-session"),
             activityID: "unexpected-observer-activity",
+            activityPrompt: try fixtureActivityPrompt(),
             manifestStore: InMemorySessionManifestStore(),
             interviewerRuntime: fixtureRuntime(),
             recording: recorder,
@@ -619,6 +625,7 @@ final class SegmentLifecycleTests: XCTestCase {
         let coordinator = try await SegmentSpeechCoordinator.open(
             sessionID: SessionID("stop-retry-session"),
             activityID: "stop-retry-activity",
+            activityPrompt: try fixtureActivityPrompt(),
             manifestStore: InMemorySessionManifestStore(),
             interviewerRuntime: fixtureRuntime(),
             recording: recorder,
@@ -660,6 +667,7 @@ final class SegmentLifecycleTests: XCTestCase {
         let coordinator = try await SegmentSpeechCoordinator.open(
             sessionID: SessionID("non-playable-session"),
             activityID: "non-playable-activity",
+            activityPrompt: try fixtureActivityPrompt(),
             manifestStore: store,
             interviewerRuntime: fixtureRuntime(),
             recording: recorder,
@@ -703,6 +711,7 @@ final class SegmentLifecycleTests: XCTestCase {
         let coordinator = try await SegmentSpeechCoordinator.open(
             sessionID: SessionID("compatibility-active-session"),
             activityID: "compatibility-active-activity",
+            activityPrompt: try fixtureActivityPrompt(),
             manifestStore: InMemorySessionManifestStore(),
             interviewerRuntime: fixtureRuntime(),
             recording: recorder,
@@ -748,6 +757,7 @@ final class SegmentLifecycleTests: XCTestCase {
         let coordinator = try await SegmentSpeechCoordinator.open(
             sessionID: SessionID("start-persistence-session"),
             activityID: "start-persistence-activity",
+            activityPrompt: try fixtureActivityPrompt(),
             manifestStore: store,
             interviewerRuntime: fixtureRuntime(),
             recording: recorder,
@@ -822,6 +832,7 @@ final class SegmentLifecycleTests: XCTestCase {
         let manifest = SessionManifest(
             sessionID: SessionID("duplicate-candidate-session"),
             activityID: "duplicate-candidate-activity",
+            activityPrompt: try fixtureActivityPrompt(),
             phase: .interviewerTurn,
             turnMode: .manual,
             turns: turns,
@@ -847,6 +858,7 @@ final class SegmentLifecycleTests: XCTestCase {
         let session = try await InterviewRoomSession.start(
             sessionID: SessionID("session-\(UUID().uuidString)"),
             activityID: "activity-segment-fixture",
+            activityPrompt: try fixtureActivityPrompt(),
             manifestStore: store,
             interviewerRuntime: fixtureRuntime()
         )
@@ -862,6 +874,15 @@ final class SegmentLifecycleTests: XCTestCase {
                 displayMarkdown: "What trade-off comes next?",
                 spokenText: "What trade-off comes next?"
             )
+        )
+    }
+
+    private func fixtureActivityPrompt() throws -> ActivityPrompt {
+        try ActivityPrompt(
+            specialty: .systemDesign,
+            stage: "High-level design",
+            question: "Design a global notification system.",
+            requestedParts: ["Explain delivery reliability and tradeoffs."]
         )
     }
 

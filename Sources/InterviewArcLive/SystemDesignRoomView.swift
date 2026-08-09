@@ -11,6 +11,9 @@ struct SystemDesignRoomView: View {
             if let errorMessage = model.errorMessage {
                 recoveryBanner(errorMessage)
             }
+            if let codexMessage = model.codexAttentionMessage {
+                codexReadinessBanner(codexMessage)
+            }
 
             HSplitView {
                 transcript
@@ -59,6 +62,10 @@ struct SystemDesignRoomView: View {
             Rectangle()
                 .fill(LivePalette.line.opacity(0.45))
                 .frame(width: 1, height: 18)
+            codexStatus
+            Rectangle()
+                .fill(LivePalette.line.opacity(0.45))
+                .frame(width: 1, height: 18)
             Label("Local source · Groq transcript", systemImage: "lock")
         }
         .font(.system(.body, design: .rounded))
@@ -66,6 +73,32 @@ struct SystemDesignRoomView: View {
         .padding(.horizontal, 22)
         .frame(height: 60)
         .background(LivePalette.shell)
+    }
+
+    private var codexStatus: some View {
+        HStack(spacing: 6) {
+            if model.isCheckingCodex {
+                ProgressView()
+                    .controlSize(.small)
+                    .tint(LivePalette.paper)
+                    .accessibilityHidden(true)
+            } else {
+                Image(systemName: model.codexStatusIcon)
+                    .accessibilityHidden(true)
+            }
+            Text(model.codexStatusTitle)
+                .lineLimit(1)
+        }
+        .foregroundStyle(codexStatusColor)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Codex status: \(model.codexStatusTitle)")
+    }
+
+    private var codexStatusColor: Color {
+        if model.isCheckingCodex {
+            return LivePalette.paper
+        }
+        return model.isCodexReady ? LivePalette.liveSignal : LivePalette.handoff
     }
 
     private var question: some View {
@@ -333,12 +366,22 @@ struct SystemDesignRoomView: View {
     }
 
     private var floorLabel: String {
+        if model.isInterviewerRequestInFlight {
+            return "Answer saved · Codex working"
+        }
         switch model.snapshot?.phase {
-        case .candidateFloor: "Your floor"
-        case .interviewerProcessing: "Answer saved · interviewer retry required"
-        case .interviewerTurn: "Interviewer turn"
-        case .completed: "Session complete"
-        default: "Preparing room"
+        case .candidateFloor:
+            return "Your floor"
+        case .interviewerProcessing:
+            return model.isCodexReady
+                ? "Answer saved · interviewer retry required"
+                : "Answer saved · check Codex to retry"
+        case .interviewerTurn:
+            return "Interviewer turn"
+        case .completed:
+            return "Session complete"
+        default:
+            return "Preparing room"
         }
     }
 
@@ -368,6 +411,35 @@ struct SystemDesignRoomView: View {
         .overlay(alignment: .bottom) {
             Rectangle().fill(LivePalette.warning.opacity(0.5)).frame(height: 1)
         }
+    }
+
+    private func codexReadinessBanner(_ message: String) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: model.codexStatusIcon)
+                .foregroundStyle(LivePalette.warning)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(model.codexStatusTitle)
+                    .font(.system(.callout, design: .rounded, weight: .semibold))
+                Text(message)
+                    .font(.system(.callout, design: .rounded))
+                    .foregroundStyle(LivePalette.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 12)
+            Button("Check Codex") {
+                Task { await model.checkCodex() }
+            }
+            .disabled(model.isCheckingCodex)
+            .accessibilityHint("Runs a private local compatibility and sign-in check")
+        }
+        .padding(.horizontal, 24)
+        .padding(.vertical, 10)
+        .background(LivePalette.warning.opacity(0.1))
+        .overlay(alignment: .bottom) {
+            Rectangle().fill(LivePalette.warning.opacity(0.45)).frame(height: 1)
+        }
+        .accessibilityElement(children: .contain)
     }
 }
 
