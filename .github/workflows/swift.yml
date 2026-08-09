@@ -21,6 +21,8 @@ jobs:
         run: swift package resolve
       - name: Test package
         run: swift test
+      - name: Test installer safety
+        run: Tests/ScriptTests/install-app-tests.zsh
       - name: Package merged application
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         run: scripts/package-app.sh release
