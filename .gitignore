@@ -1,0 +1,16 @@
+.build/
+.swiftpm/
+DerivedData/
+*.xcuserstate
+.DS_Store
+
+# Private runtime state
+.env
+.env.*
+Models/
+Recordings/
+Sessions/
+Diagnostics/
+*.m4a
+*.wav
+*.mp3
