@@ -36,6 +36,29 @@ final class CodexAppServerProcessTests: XCTestCase {
         await connection.terminate()
     }
 
+    func testWaitForNaturalExitCompletesFromDetachedWorkerWithoutRunLoopPolling() async throws {
+        let launcher = FoundationCodexAppServerProcessLauncher()
+        let connection = try await launcher.connect(
+            executableURL: URL(fileURLWithPath: "/bin/sh"),
+            arguments: ["-c", "exit 23"],
+            environment: [
+                "HOME": "/private/tmp",
+                "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+                "LANG": "en_US.UTF-8",
+                "LC_ALL": "en_US.UTF-8",
+            ],
+            lineLimit: 1_024,
+            totalOutputLimit: 1_024
+        )
+
+        let exitCode = await Task.detached {
+            await connection.waitForExit()
+        }.value
+
+        XCTAssertEqual(exitCode, 23)
+        await connection.terminate()
+    }
+
     func testTerminateEscalatesTermIgnoringChildAndReapsWithinBound() async throws {
         let launcher = FoundationCodexAppServerProcessLauncher()
         let connection = try await launcher.connect(
@@ -53,14 +76,30 @@ final class CodexAppServerProcessTests: XCTestCase {
         let readyLine = try await connection.receiveLine()
         XCTAssertEqual(readyLine, Data("ready".utf8))
 
+        let exitWaiters = (0..<8).map { _ in
+            Task.detached {
+                await connection.waitForExit()
+            }
+        }
         let clock = ContinuousClock()
         let started = clock.now
-        await connection.terminate()
+        await withTaskGroup(of: Void.self) { group in
+            for _ in 0..<8 {
+                group.addTask {
+                    await connection.terminate()
+                }
+            }
+        }
         let elapsed = started.duration(to: clock.now)
 
         XCTAssertLessThan(elapsed, .seconds(3))
-        let exitCode = await connection.waitForExit()
-        XCTAssertEqual(exitCode, SIGKILL)
+        for waiter in exitWaiters {
+            let exitCode = await waiter.value
+            XCTAssertEqual(exitCode, SIGKILL)
+        }
+        let repeatedExitCode = await connection.waitForExit()
+        XCTAssertEqual(repeatedExitCode, SIGKILL)
+        await connection.terminate()
     }
 
     func testLargeWriteToNonReadingChildCanBeCancelledAndReaped() async throws {

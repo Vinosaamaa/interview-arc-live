@@ -123,6 +123,15 @@ struct FoundationCodexAppServerProcessLauncher: CodexAppServerProcessLaunching {
         // retains it; a zero-byte buffer is the strictest possible memory bound.
         process.standardError = FileHandle.nullDevice
 
+        // `waitUntilExit()` polls the current thread's run loop, which is not a
+        // safe assumption on Swift concurrency's detached worker threads. Install
+        // the completion observer before launch so even an immediate exit is
+        // retained for every current or future waiter.
+        let exitWaiter = ProcessExitWaiter()
+        process.terminationHandler = { [exitWaiter] process in
+            exitWaiter.finish(with: process.terminationStatus)
+        }
+
         // A concurrent cancellation closes stdin while a detached writer may be
         // blocked. Convert the resulting broken pipe into a Swift error instead of
         // allowing SIGPIPE to terminate the Live app process.
@@ -145,7 +154,8 @@ struct FoundationCodexAppServerProcessLauncher: CodexAppServerProcessLaunching {
             inputPipe: input,
             outputPipe: output,
             lineLimit: lineLimit,
-            totalOutputLimit: totalOutputLimit
+            totalOutputLimit: totalOutputLimit,
+            exitWaiter: exitWaiter
         )
     }
 }
@@ -155,6 +165,41 @@ private final class SendableProcessBox: @unchecked Sendable {
 
     init(_ process: Process) {
         self.process = process
+    }
+}
+
+private final class ProcessExitWaiter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var exitCode: Int32?
+    private var waiters: [CheckedContinuation<Int32, Never>] = []
+
+    func wait() async -> Int32 {
+        await withCheckedContinuation { continuation in
+            lock.lock()
+            if let exitCode {
+                lock.unlock()
+                continuation.resume(returning: exitCode)
+            } else {
+                waiters.append(continuation)
+                lock.unlock()
+            }
+        }
+    }
+
+    func finish(with exitCode: Int32) {
+        lock.lock()
+        guard self.exitCode == nil else {
+            lock.unlock()
+            return
+        }
+        self.exitCode = exitCode
+        let waiters = waiters
+        self.waiters.removeAll(keepingCapacity: false)
+        lock.unlock()
+
+        for waiter in waiters {
+            waiter.resume(returning: exitCode)
+        }
     }
 }
 
@@ -262,6 +307,7 @@ private actor FoundationCodexAppServerConnection: CodexAppServerProcessConnectio
     private let outputPipe: Pipe
     private let writer: BlockingWriter
     private let reader: BlockingLineReader
+    private let exitWaiter: ProcessExitWaiter
     private var didTerminate = false
     private var terminationCompleted = false
     private var terminationWaiters: [CheckedContinuation<Void, Never>] = []
@@ -271,7 +317,8 @@ private actor FoundationCodexAppServerConnection: CodexAppServerProcessConnectio
         inputPipe: Pipe,
         outputPipe: Pipe,
         lineLimit: Int,
-        totalOutputLimit: Int
+        totalOutputLimit: Int,
+        exitWaiter: ProcessExitWaiter
     ) {
         processBox = SendableProcessBox(process)
         self.inputPipe = inputPipe
@@ -282,6 +329,7 @@ private actor FoundationCodexAppServerConnection: CodexAppServerProcessConnectio
             lineLimit: lineLimit,
             totalOutputLimit: totalOutputLimit
         )
+        self.exitWaiter = exitWaiter
     }
 
     func send(_ data: Data) async throws {
@@ -302,11 +350,7 @@ private actor FoundationCodexAppServerConnection: CodexAppServerProcessConnectio
     }
 
     func waitForExit() async -> Int32 {
-        let processBox = processBox
-        return await Task.detached(priority: .utility) {
-            processBox.process.waitUntilExit()
-            return processBox.process.terminationStatus
-        }.value
+        await exitWaiter.wait()
     }
 
     func terminate() async {
