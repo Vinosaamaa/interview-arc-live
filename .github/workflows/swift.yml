@@ -69,10 +69,9 @@ jobs:
         run: Tests/ScriptTests/endpoint-smoke-tests.zsh
       - name: Test installed local-speech smoke safety
         run: Tests/ScriptTests/speech-smoke-tests.zsh
-      - name: Package merged application
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+      - name: Package application
         env:
-          INTERVIEW_ARC_LIVE_DERIVED_DATA_PATH: ${{ runner.temp }}/InterviewArcLiveDerivedData
+          INTERVIEW_ARC_LIVE_DERIVED_DATA_PATH: ${{ runner.temp }}/InterviewArcLivePackageDerivedData
         run: scripts/package-app.sh release
       - name: Upload merged application
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
