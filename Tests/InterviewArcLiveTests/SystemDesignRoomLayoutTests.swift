@@ -51,6 +51,50 @@ final class SystemDesignRoomLayoutTests: XCTestCase {
         )
     }
 
+    func testMinimumWidthUsesCompactHeaderForSpeechAndRoomAttention() {
+        let normal = FullRoomHeaderLayout.state(
+            windowWidth: FullRoomLayout.minimumWindowWidth,
+            hasSpeechAttention: false,
+            hasRoomAttention: false
+        )
+        XCTAssertEqual(normal.attention, .none)
+        XCTAssertFalse(normal.usesAttentionCompactHeader)
+
+        let speech = FullRoomHeaderLayout.state(
+            windowWidth: FullRoomLayout.minimumWindowWidth,
+            hasSpeechAttention: true,
+            hasRoomAttention: false
+        )
+        XCTAssertEqual(speech.attention, .speech)
+        XCTAssertTrue(speech.usesAttentionCompactHeader)
+
+        let room = FullRoomHeaderLayout.state(
+            windowWidth: FullRoomLayout.minimumWindowWidth,
+            hasSpeechAttention: false,
+            hasRoomAttention: true
+        )
+        XCTAssertEqual(room.attention, .room)
+        XCTAssertTrue(room.usesAttentionCompactHeader)
+
+        let combined = FullRoomHeaderLayout.state(
+            windowWidth: FullRoomLayout.minimumWindowWidth,
+            hasSpeechAttention: true,
+            hasRoomAttention: true
+        )
+        XCTAssertEqual(combined.attention, .speechAndRoom)
+        XCTAssertTrue(combined.usesAttentionCompactHeader)
+    }
+
+    func testDefaultWidthStillLetsViewThatFitsChooseTheHeader() {
+        let state = FullRoomHeaderLayout.state(
+            windowWidth: FullRoomLayout.defaultWindowWidth,
+            hasSpeechAttention: true,
+            hasRoomAttention: true
+        )
+        XCTAssertEqual(state.attention, .speechAndRoom)
+        XCTAssertFalse(state.usesAttentionCompactHeader)
+    }
+
     func testFullRoomAccessibilityIdentifiersAreStableAndUnique() {
         XCTAssertEqual(
             Set(FullRoomAccessibility.allIdentifiers).count,
@@ -60,9 +104,14 @@ final class SystemDesignRoomLayoutTests: XCTestCase {
         XCTAssertEqual(FullRoomAccessibility.turnline, "full-room-turnline")
         XCTAssertEqual(FullRoomAccessibility.board, "full-room-board")
         XCTAssertEqual(FullRoomAccessibility.floorRail, "full-room-floor-rail")
+        XCTAssertEqual(FullRoomAccessibility.collapse, "full-room-collapse")
         XCTAssertEqual(
             FullRoomAccessibility.primaryAction,
             "full-room-primary-action"
         )
+        XCTAssertFalse(FullRoomHeaderAccessibility.roomStatusLabel.isEmpty)
+        XCTAssertFalse(FullRoomHeaderAccessibility.personaLabel.isEmpty)
+        XCTAssertFalse(FullRoomHeaderAccessibility.privacyLabel.isEmpty)
+        XCTAssertFalse(FullRoomHeaderAccessibility.collapseLabel.isEmpty)
     }
 }

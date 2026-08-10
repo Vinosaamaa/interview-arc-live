@@ -70,28 +70,105 @@ struct SystemDesignRoomView: View {
     }
 
     private var header: some View {
+        GeometryReader { geometry in
+            let state = FullRoomHeaderLayout.state(
+                windowWidth: geometry.size.width,
+                hasSpeechAttention: !model.isSpeechReady,
+                hasRoomAttention: model.errorMessage != nil
+                    || model.codexAttentionMessage != nil
+            )
+
+            Group {
+                if state.usesAttentionCompactHeader {
+                    compactHeaderContent
+                } else {
+                    ViewThatFits(in: .horizontal) {
+                        fullHeaderContent
+                            .fixedSize(horizontal: true, vertical: false)
+                        compactHeaderContent
+                    }
+                }
+            }
+            .font(.system(.body, design: .rounded))
+            .foregroundStyle(LivePalette.ink)
+            .padding(.leading, FullRoomLayout.trafficLightClearance)
+            .padding(.trailing, 22)
+            .frame(
+                width: geometry.size.width,
+                height: geometry.size.height,
+                alignment: .leading
+            )
+        }
+        .frame(height: FullRoomLayout.headerHeight)
+        .background(LivePalette.paper)
+        .overlay(alignment: .bottom) {
+            Rectangle().fill(LivePalette.line).frame(height: 1)
+        }
+    }
+
+    private var fullHeaderContent: some View {
         HStack(spacing: 16) {
+            headerBrand
+            Spacer(minLength: 22)
+            roomStatusMenu(isCompact: false)
+            headerDivider
+            personaMenu(isCompact: false)
+            Spacer(minLength: 22)
+            privacyStatus(isCompact: false)
+            collapseButton
+        }
+    }
+
+    private var compactHeaderContent: some View {
+        HStack(spacing: 12) {
+            headerBrand
+            Spacer(minLength: 12)
+            roomStatusMenu(isCompact: true)
+            headerDivider
+            personaMenu(isCompact: true)
+            Spacer(minLength: 12)
+            privacyStatus(isCompact: true)
+            collapseButton
+        }
+    }
+
+    private var headerBrand: some View {
+        HStack(spacing: 14) {
             LiveMark()
                 .frame(width: 34, height: 34)
             Text("Interview Arc Live")
                 .font(.system(.title3, design: .rounded, weight: .semibold))
                 .fixedSize()
-            Spacer(minLength: 22)
+        }
+        .accessibilityElement(children: .combine)
+    }
 
-            Menu {
-                Picker("Turn-taking", selection: turnModeRawSelection) {
-                    ForEach(model.availableTurnModes, id: \.rawValue) { mode in
-                        Text(model.turnModeTitle(mode)).tag(mode.rawValue)
-                    }
+    private func roomStatusMenu(isCompact: Bool) -> some View {
+        Menu {
+            Picker("Turn-taking", selection: turnModeRawSelection) {
+                ForEach(model.availableTurnModes, id: \.rawValue) { mode in
+                    Text(model.turnModeTitle(mode)).tag(mode.rawValue)
                 }
-                Divider()
-                Text(model.endpointShadowPresentation.title)
-                Text(model.endpointShadowPresentation.detail)
-                if model.needsGroqCredential {
-                    Button("Add Groq key") { model.presentCredentialSetup() }
+            }
+            Divider()
+            Text(model.endpointShadowPresentation.title)
+            Text(model.endpointShadowPresentation.detail)
+            if model.needsGroqCredential {
+                Button("Add Groq key") { model.presentCredentialSetup() }
+            }
+            Button("Check Codex") { Task { await model.checkCodex() } }
+        } label: {
+            if isCompact {
+                HStack(spacing: 7) {
+                    Text("System design")
+                        .fontWeight(.semibold)
+                    Circle()
+                        .fill(headerRoomStatusColor)
+                        .frame(width: 8, height: 8)
+                        .accessibilityHidden(true)
                 }
-                Button("Check Codex") { Task { await model.checkCodex() } }
-            } label: {
+                .help("System design · \(model.statusMessage)")
+            } else {
                 HStack(spacing: 7) {
                     Text("System design")
                         .fontWeight(.semibold)
@@ -104,82 +181,104 @@ struct SystemDesignRoomView: View {
                         .help(model.statusMessage)
                 }
             }
-            .menuStyle(.borderlessButton)
-            .fixedSize(horizontal: true, vertical: false)
-            .accessibilityLabel("System design room status")
-            .accessibilityValue(model.statusMessage)
+        }
+        .menuStyle(.borderlessButton)
+        .accessibilityLabel(FullRoomHeaderAccessibility.roomStatusLabel)
+        .accessibilityValue(model.statusMessage)
+    }
 
-            headerDivider
-
-            Menu {
-                Text(model.speechReadinessPresentation.title)
-                Text(model.speechReadinessPresentation.detail)
-                if model.speechReadinessPresentation.canDownload {
-                    Button("Download local voice model") {
-                        model.startSpeechModelDownload()
-                    }
+    private func personaMenu(isCompact: Bool) -> some View {
+        Menu {
+            Text("Mara · Staff Engineer")
+            Divider()
+            Text(model.speechReadinessPresentation.title)
+            Text(model.speechReadinessPresentation.detail)
+            if model.speechReadinessPresentation.canDownload {
+                Button("Download local voice model") {
+                    model.startSpeechModelDownload()
                 }
-                if model.speechReadinessPresentation.canCancel {
-                    Button("Cancel model download") {
-                        model.cancelSpeechModelDownload()
-                    }
+            }
+            if model.speechReadinessPresentation.canCancel {
+                Button("Cancel model download") {
+                    model.cancelSpeechModelDownload()
                 }
-                if model.showsSpeechMuteControl {
-                    Button(model.isSpeechMuted ? "Unmute Mara" : "Mute Mara") {
-                        Task { await model.toggleSpeechMute() }
-                    }
+            }
+            if model.showsSpeechMuteControl {
+                Button(model.isSpeechMuted ? "Unmute Mara" : "Mute Mara") {
+                    Task { await model.toggleSpeechMute() }
                 }
-                if model.speechReadinessPresentation.canRemove {
-                    Button("Remove local voice model", role: .destructive) {
-                        isModelRemovalConfirmationPresented = true
-                    }
+            }
+            if model.speechReadinessPresentation.canRemove {
+                Button("Remove local voice model", role: .destructive) {
+                    isModelRemovalConfirmationPresented = true
                 }
-            } label: {
-                HStack(spacing: 7) {
-                    Text("Mara")
-                        .fontWeight(.semibold)
+            }
+        } label: {
+            HStack(spacing: 7) {
+                Text("Mara")
+                    .fontWeight(.semibold)
+                if !isCompact {
                     Text("·")
                     Text("Staff Engineer")
-                    if !model.isSpeechReady {
-                        speechAttentionBadge
-                    }
                 }
-                .foregroundStyle(LivePalette.navy)
+                if !model.isSpeechReady {
+                    speechAttentionBadge
+                }
             }
-            .menuStyle(.borderlessButton)
+            .foregroundStyle(LivePalette.navy)
+        }
+        .menuStyle(.borderlessButton)
+        .accessibilityLabel(FullRoomHeaderAccessibility.personaLabel)
+        .accessibilityValue(model.speechReadinessPresentation.title)
+    }
 
-            Spacer(minLength: 22)
-
+    private func privacyStatus(isCompact: Bool) -> some View {
+        HStack(spacing: 7) {
             Label("Private", systemImage: "lock")
-            Text("·")
-                .foregroundStyle(LivePalette.muted)
-            Text(
-                model.latestBoardRevision != nil && !model.isBoardDraftDirty
-                    ? "Saved"
-                    : "Local"
-            )
-                .foregroundStyle(LivePalette.muted)
-            Button(action: onCollapse) {
-                Image(systemName: "sidebar.trailing")
-                    .frame(
-                        width: FullRoomLayout.minimumActionHitTarget,
-                        height: FullRoomLayout.minimumActionHitTarget
-                    )
+            if isCompact {
+                Image(systemName: isBoardSaved ? "checkmark.circle.fill" : "internaldrive")
+                    .foregroundStyle(LivePalette.muted)
+                    .accessibilityHidden(true)
+            } else {
+                Text("·")
+                    .foregroundStyle(LivePalette.muted)
+                Text(boardSaveStatus)
+                    .foregroundStyle(LivePalette.muted)
             }
-            .buttonStyle(.plain)
-            .accessibilityIdentifier("full-room-collapse")
-            .accessibilityLabel("Collapse interview room")
-            .accessibilityHint("Keeps the same room and board in compact controls")
         }
-        .font(.system(.body, design: .rounded))
-        .foregroundStyle(LivePalette.ink)
-        .padding(.leading, FullRoomLayout.trafficLightClearance)
-        .padding(.trailing, 22)
-        .frame(minHeight: FullRoomLayout.headerHeight)
-        .background(LivePalette.paper)
-        .overlay(alignment: .bottom) {
-            Rectangle().fill(LivePalette.line).frame(height: 1)
+        .fixedSize()
+        .help("Private · \(boardSaveStatus)")
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(FullRoomHeaderAccessibility.privacyLabel)
+        .accessibilityValue(boardSaveStatus)
+    }
+
+    private var collapseButton: some View {
+        Button(action: onCollapse) {
+            Image(systemName: "sidebar.trailing")
+                .frame(
+                    width: FullRoomLayout.minimumActionHitTarget,
+                    height: FullRoomLayout.minimumActionHitTarget
+                )
         }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier(FullRoomAccessibility.collapse)
+        .accessibilityLabel(FullRoomHeaderAccessibility.collapseLabel)
+        .accessibilityHint("Keeps the same room and board in compact controls")
+    }
+
+    private var boardSaveStatus: String {
+        isBoardSaved ? "Saved" : "Local"
+    }
+
+    private var isBoardSaved: Bool {
+        model.latestBoardRevision != nil && !model.isBoardDraftDirty
+    }
+
+    private var headerRoomStatusColor: Color {
+        model.errorMessage == nil && model.codexAttentionMessage == nil
+            ? LivePalette.interviewer
+            : LivePalette.warning
     }
 
     private var headerDivider: some View {
@@ -810,6 +909,52 @@ enum FullRoomLayout {
     }
 }
 
+enum FullRoomHeaderAttention: Equatable {
+    case none
+    case speech
+    case room
+    case speechAndRoom
+}
+
+struct FullRoomHeaderLayoutState: Equatable {
+    let windowWidth: CGFloat
+    let attention: FullRoomHeaderAttention
+
+    var usesAttentionCompactHeader: Bool {
+        attention != .none
+            && windowWidth <= FullRoomHeaderLayout.attentionCompactMaximumWidth
+    }
+}
+
+enum FullRoomHeaderLayout {
+    static let attentionCompactMaximumWidth: CGFloat = 1_100
+
+    static func state(
+        windowWidth: CGFloat,
+        hasSpeechAttention: Bool,
+        hasRoomAttention: Bool
+    ) -> FullRoomHeaderLayoutState {
+        let attention: FullRoomHeaderAttention
+        switch (hasSpeechAttention, hasRoomAttention) {
+        case (false, false): attention = .none
+        case (true, false): attention = .speech
+        case (false, true): attention = .room
+        case (true, true): attention = .speechAndRoom
+        }
+        return FullRoomHeaderLayoutState(
+            windowWidth: windowWidth,
+            attention: attention
+        )
+    }
+}
+
+enum FullRoomHeaderAccessibility {
+    static let roomStatusLabel = "System design room status"
+    static let personaLabel = "Interviewer: Mara, Staff Engineer"
+    static let privacyLabel = "Private local session"
+    static let collapseLabel = "Collapse interview room"
+}
+
 enum FullRoomAccessibility {
     static let question = "full-room-question"
     static let turnline = "full-room-turnline"
@@ -818,6 +963,7 @@ enum FullRoomAccessibility {
     static let primaryAction = "full-room-primary-action"
     static let recordingAction = "full-room-recording-action"
     static let endAction = "full-room-end-action"
+    static let collapse = "full-room-collapse"
 
     static let allIdentifiers = [
         question,
@@ -827,6 +973,7 @@ enum FullRoomAccessibility {
         primaryAction,
         recordingAction,
         endAction,
+        collapse,
     ]
 }
 
