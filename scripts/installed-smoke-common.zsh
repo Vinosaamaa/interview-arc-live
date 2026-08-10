@@ -83,6 +83,77 @@ interview_arc_live_run_installed_smoke() {
     return 65
   fi
 
+  if [[ "$helper_name" == "InterviewArcLiveSpeechSmoke" ]]; then
+    local -a mlx_metallib_candidates=(
+      "$installed_app/Contents/Resources/mlx-swift_Cmlx.bundle"/**/default.metallib(N)
+    )
+    if (( ${#mlx_metallib_candidates} != 1 )) \
+        || [[ ! -f "${mlx_metallib_candidates[1]}" \
+        || -L "${mlx_metallib_candidates[1]}" ]]; then
+      echo "Installed local-speech smoke requires exactly one regular MLX Metal resource." >&2
+      return 65
+    fi
+
+    local manifest_mlx_output
+    if ! manifest_mlx_output="$(/usr/bin/awk -F= '
+      $1 == "mlx_metallib_relative_path" {
+        path_count += 1
+        path_value = substr($0, length($1) + 2)
+      }
+      $1 == "mlx_metallib_sha256" {
+        hash_count += 1
+        hash_value = substr($0, length($1) + 2)
+      }
+      $1 == "mlx_metallib_byte_count" {
+        byte_count += 1
+        byte_value = substr($0, length($1) + 2)
+      }
+      END {
+        if (path_count != 1 || hash_count != 1 || byte_count != 1 \
+            || path_value == "" || hash_value == "" || byte_value == "") exit 65
+        print path_value
+        print hash_value
+        print byte_value
+      }
+    ' "$package_manifest")"; then
+      echo "Installed local-speech smoke requires unique MLX manifest fields." >&2
+      return 65
+    fi
+    local -a manifest_mlx_values=("${(@f)manifest_mlx_output}")
+    local mlx_metallib="${mlx_metallib_candidates[1]}"
+    local mlx_relative_path="${mlx_metallib#$installed_app/}"
+    local mlx_sha256="$(/usr/bin/shasum -a 256 "$mlx_metallib" | /usr/bin/awk '{print $1}')"
+    local mlx_byte_count="$(/usr/bin/stat -f '%z' "$mlx_metallib")"
+    if (( ${#manifest_mlx_values} != 3 )) \
+        || [[ "${manifest_mlx_values[1]}" != "$mlx_relative_path" \
+        || "${manifest_mlx_values[2]}" != "$mlx_sha256" \
+        || "${manifest_mlx_values[3]}" != "$mlx_byte_count" ]]; then
+      echo "Installed local-speech smoke MLX resource no longer matches its verified manifest." >&2
+      return 65
+    fi
+
+    local staged_metallib="$smoke_root/default.metallib"
+    if [[ -e "$staged_metallib" || -L "$staged_metallib" ]]; then
+      echo "Installed local-speech smoke workspace is not empty." >&2
+      return 65
+    fi
+    local previous_umask="$(umask)"
+    umask 077
+    if ! /bin/cp -p "$mlx_metallib" "$staged_metallib"; then
+      umask "$previous_umask"
+      echo "Installed local-speech smoke could not stage its verified MLX resource." >&2
+      return 65
+    fi
+    umask "$previous_umask"
+    if ! /bin/chmod 0400 "$staged_metallib" \
+        || [[ ! -f "$staged_metallib" || -L "$staged_metallib" ]] \
+        || [[ "$(/usr/bin/shasum -a 256 "$staged_metallib" | /usr/bin/awk '{print $1}')" != "$mlx_sha256" ]] \
+        || [[ "$(/usr/bin/stat -f '%z' "$staged_metallib")" != "$mlx_byte_count" ]]; then
+      echo "Installed local-speech smoke staged an invalid MLX resource." >&2
+      return 65
+    fi
+  fi
+
   cd "$smoke_root"
   local helper_status=0
   if [[ "$helper_name" == "InterviewArcLiveSpeechSmoke" ]]; then
