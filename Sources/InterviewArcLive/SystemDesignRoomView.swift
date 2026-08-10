@@ -859,9 +859,7 @@ struct SystemDesignRoomView: View {
 enum FullRoomLayout {
     static let minimumWindowWidth: CGFloat = 1_080
     static let defaultWindowWidth: CGFloat = 1_180
-    static let minimumWindowHeight: CGFloat = 700
     static let headerHeight: CGFloat = 70
-    static let questionBandMinimumHeight: CGFloat = 148
     static let questionTitleSize: CGFloat = 40
     static let questionHorizontalPadding: CGFloat = 56
     static let questionTopPadding: CGFloat = 48
@@ -869,6 +867,11 @@ enum FullRoomLayout {
     static let questionStackSpacing: CGFloat = 24
     static let questionLineLimit = 2
     static let questionMinimumScaleFactor: CGFloat = 0.82
+    /// Keeps the approved single-line mockup band unchanged.
+    static let questionBandOneLineHeight: CGFloat = 148
+    /// Reserves one full rounded 40-point title line without clipping.
+    static let questionAdditionalLineHeight: CGFloat = 48
+    static let questionBandMinimumHeight = questionBandOneLineHeight
     static let turnlineHeaderHeight: CGFloat = 58
     static let turnlineWidthFraction: CGFloat = 0.37
     static let turnlineMinimumWidth: CGFloat = 380
@@ -881,6 +884,15 @@ enum FullRoomLayout {
     static let floorContentHorizontalPadding: CGFloat = 48
     static let floorOutlineHorizontalInset: CGFloat = 24
     static let minimumActionHitTarget: CGFloat = 44
+    static let requiredWorkspaceHeight: CGFloat = 380
+    static let minimumWindowHeight = headerHeight
+        + questionBandMaximumHeight
+        + floorRailHeight
+        + requiredWorkspaceHeight
+
+    static var questionBandMaximumHeight: CGFloat {
+        questionBandHeight(forLineCount: questionLineLimit)
+    }
 
     /// The full-size-content window draws into the titlebar. This keeps the
     /// brand beyond the standard close/minimize/zoom group while the custom
@@ -902,8 +914,23 @@ enum FullRoomLayout {
         max(boardMinimumWidth, workspaceWidth - turnlineIdealWidth(for: workspaceWidth))
     }
 
-    static func minimumWorkspaceHeight(for windowHeight: CGFloat) -> CGFloat {
-        max(0, windowHeight - headerHeight - questionBandMinimumHeight - floorRailHeight)
+    static func questionBandHeight(forLineCount lineCount: Int) -> CGFloat {
+        let boundedLineCount = min(max(lineCount, 1), questionLineLimit)
+        return questionBandOneLineHeight
+            + CGFloat(boundedLineCount - 1) * questionAdditionalLineHeight
+    }
+
+    static func minimumWorkspaceHeight(
+        for windowHeight: CGFloat,
+        questionLineCount: Int = questionLineLimit
+    ) -> CGFloat {
+        max(
+            0,
+            windowHeight
+                - headerHeight
+                - questionBandHeight(forLineCount: questionLineCount)
+                - floorRailHeight
+        )
     }
 }
 

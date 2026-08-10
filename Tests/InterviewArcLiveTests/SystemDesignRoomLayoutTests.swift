@@ -35,11 +35,29 @@ final class SystemDesignRoomLayoutTests: XCTestCase {
     }
 
     func testMinimumWindowRetainsAUsableWorkspaceAndActionTargets() {
+        XCTAssertEqual(
+            FullRoomLayout.questionBandHeight(forLineCount: 1),
+            148
+        )
+        XCTAssertEqual(
+            FullRoomLayout.questionBandHeight(forLineCount: 2),
+            196
+        )
+        XCTAssertEqual(FullRoomLayout.questionBandMaximumHeight, 196)
+        XCTAssertEqual(FullRoomLayout.minimumWindowHeight, 742)
+        XCTAssertEqual(
+            FullRoomLayout.minimumWorkspaceHeight(
+                for: FullRoomLayout.minimumWindowHeight,
+                questionLineCount: FullRoomLayout.questionLineLimit
+            ),
+            FullRoomLayout.requiredWorkspaceHeight
+        )
         XCTAssertGreaterThanOrEqual(
             FullRoomLayout.minimumWorkspaceHeight(
-                for: FullRoomLayout.minimumWindowHeight
+                for: FullRoomLayout.minimumWindowHeight,
+                questionLineCount: 1
             ),
-            380
+            FullRoomLayout.requiredWorkspaceHeight
         )
         XCTAssertGreaterThanOrEqual(FullRoomLayout.minimumActionHitTarget, 44)
         XCTAssertGreaterThanOrEqual(
@@ -47,7 +65,10 @@ final class SystemDesignRoomLayoutTests: XCTestCase {
             FullRoomLayout.minimumActionHitTarget
         )
         XCTAssertGreaterThanOrEqual(FullRoomLayout.questionLineLimit, 2)
-        XCTAssertEqual(FullRoomLayout.questionBandMinimumHeight, 148)
+        XCTAssertEqual(
+            FullRoomLayout.questionBandMinimumHeight,
+            FullRoomLayout.questionBandHeight(forLineCount: 1)
+        )
         XCTAssertEqual(FullRoomLayout.questionTitleSize, 40)
         XCTAssertEqual(FullRoomLayout.turnlineHorizontalPadding, 64)
         XCTAssertEqual(FullRoomLayout.turnlineEntryGap, 42)

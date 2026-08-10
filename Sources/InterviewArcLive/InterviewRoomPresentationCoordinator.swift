@@ -48,6 +48,17 @@ enum CompactPanelLayout {
     }
 }
 
+enum InterviewRoomWindowLayout {
+    static let fullDefaultContentSize = NSSize(
+        width: FullRoomLayout.defaultWindowWidth,
+        height: 760
+    )
+    static let fullMinimumContentSize = NSSize(
+        width: FullRoomLayout.minimumWindowWidth,
+        height: FullRoomLayout.minimumWindowHeight
+    )
+}
+
 final class PresentationFrameAdjustmentGuard {
     private(set) var isActive = false
 
@@ -347,7 +358,10 @@ final class InterviewRoomPresentationCoordinator: NSObject, NSWindowDelegate {
         )
 
         let full = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 1_180, height: 760),
+            contentRect: NSRect(
+                origin: .zero,
+                size: InterviewRoomWindowLayout.fullDefaultContentSize
+            ),
             styleMask: [
                 .titled,
                 .closable,
@@ -362,7 +376,7 @@ final class InterviewRoomPresentationCoordinator: NSObject, NSWindowDelegate {
         full.titleVisibility = .hidden
         full.titlebarAppearsTransparent = true
         full.isReleasedWhenClosed = false
-        full.contentMinSize = NSSize(width: 1_080, height: 700)
+        full.contentMinSize = InterviewRoomWindowLayout.fullMinimumContentSize
         full.animationBehavior = .none
         full.contentViewController = fullContainerController
         full.delegate = self

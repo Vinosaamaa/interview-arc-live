@@ -12,6 +12,28 @@ final class InterviewRoomPresentationCoordinatorTests: XCTestCase {
         XCTAssertEqual(CompactPanelLayout.maximumContentHeight, 180)
     }
 
+    func testFullWindowMinimumSizeUsesTheTwoLineQuestionBudget() {
+        let coordinator = makeCoordinator()
+        defer { coordinator.prepareForTermination() }
+
+        XCTAssertEqual(
+            coordinator.fullWindow.contentMinSize,
+            InterviewRoomWindowLayout.fullMinimumContentSize
+        )
+        XCTAssertEqual(
+            coordinator.fullWindow.contentMinSize.width,
+            FullRoomLayout.minimumWindowWidth
+        )
+        XCTAssertEqual(coordinator.fullWindow.contentMinSize.height, 742)
+        XCTAssertEqual(
+            FullRoomLayout.minimumWorkspaceHeight(
+                for: coordinator.fullWindow.contentMinSize.height,
+                questionLineCount: FullRoomLayout.questionLineLimit
+            ),
+            FullRoomLayout.requiredWorkspaceHeight
+        )
+    }
+
     func testCoordinatorOwnsOneFullWindowAndOneNonactivatingPanelWithSharedModel() {
         let model = SystemDesignRoomModel()
         let coordinator = makeCoordinator(model: model)
