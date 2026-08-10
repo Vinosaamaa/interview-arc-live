@@ -675,6 +675,94 @@ final class BoardSessionTests: XCTestCase {
         XCTAssertEqual(restoredSnapshot.board.revisions, [revision])
         XCTAssertEqual(restoredSnapshot.board.revisions.first?.document, savedDocument)
     }
+
+    func testCompletedSessionAllowsHistoricalSelectionWithoutMutatingDraft() async throws {
+        let store = InMemorySessionManifestStore()
+        let runtime = fixtureRuntime()
+        let session = try await makeSession(store: store, runtime: runtime)
+        let historicalDocument = try fixtureDocument(label: "Historical completed selection")
+        _ = try await session.execute(
+            .updateBoardDraft(
+                commandID: CommandID("completed-selection-historical-draft"),
+                document: historicalDocument
+            )
+        )
+        let saved = try await session.execute(
+            .saveBoardRevision(commandID: CommandID("completed-selection-historical-save"))
+        )
+        let revision = try XCTUnwrap(saved.board.revisions.first)
+        let currentDraft = try fixtureDocument(label: "Current editable draft")
+        _ = try await session.execute(
+            .updateBoardDraft(
+                commandID: CommandID("completed-selection-current-draft"),
+                document: currentDraft
+            )
+        )
+        _ = try await session.execute(
+            .finish(commandID: CommandID("completed-selection-finish"))
+        )
+
+        let selected = try await session.execute(
+            .selectBoardRevision(
+                commandID: CommandID("completed-selection-select"),
+                revisionID: revision.id
+            )
+        )
+        XCTAssertEqual(selected.phase, .completed)
+        XCTAssertEqual(selected.board.selectedRevisionID, revision.id)
+        XCTAssertEqual(selected.board.revisions.first?.document, historicalDocument)
+        XCTAssertEqual(selected.board.draft, currentDraft)
+        let persisted = await store.load(sessionID: selected.sessionID)
+        XCTAssertEqual(persisted?.board, selected.board)
+    }
+
+    func testCompletedSessionAllowsExplicitExportAuthorizationAndOutcome() async throws {
+        let store = InMemorySessionManifestStore()
+        let runtime = fixtureRuntime()
+        let session = try await makeSession(store: store, runtime: runtime)
+        _ = try await session.execute(
+            .updateBoardDraft(
+                commandID: CommandID("completed-export-draft"),
+                document: try fixtureDocument(label: "Completed export")
+            )
+        )
+        let saved = try await session.execute(
+            .saveBoardRevision(commandID: CommandID("completed-export-save"))
+        )
+        let revision = try XCTUnwrap(saved.board.revisions.first)
+        let settings = try BoardExportSettings(
+            viewport: BoardSize(width: 1_200, height: 800),
+            scale: 2,
+            background: .white
+        )
+        _ = try await session.execute(
+            .finish(commandID: CommandID("completed-export-finish"))
+        )
+        let authorized = try await session.execute(
+            .authorizeBoardExport(
+                commandID: CommandID("completed-export-authorize-after-finish"),
+                revisionID: revision.id,
+                settings: settings
+            )
+        )
+        let operation = try XCTUnwrap(authorized.board.exports.first)
+        XCTAssertEqual(authorized.phase, .completed)
+        XCTAssertEqual(operation.lifecycle, .authorized)
+        let persistedAuthorization = await store.load(sessionID: authorized.sessionID)
+        XCTAssertEqual(persistedAuthorization?.board, authorized.board)
+
+        let reconciled = try await session.execute(
+            .recordBoardExportOutcome(
+                commandID: CommandID("completed-export-outcome-after-finish"),
+                exportID: operation.id,
+                outcome: .ready(fixtureBundle(identities: operation.artifactIdentities))
+            )
+        )
+        XCTAssertEqual(reconciled.phase, .completed)
+        XCTAssertEqual(reconciled.board.exports.first?.lifecycle, .ready)
+        let persistedReconciliation = await store.load(sessionID: reconciled.sessionID)
+        XCTAssertEqual(persistedReconciliation?.board, reconciled.board)
+    }
 }
 
 private func fixtureRuntime() -> DeterministicInterviewerRuntime {

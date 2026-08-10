@@ -119,4 +119,12 @@ final class DrawIOBoardCodecTests: XCTestCase {
 
         XCTAssertThrowsError(try DrawIOBoardCodec().encode(document))
     }
+
+    func testEncodeEnforcesByteBudgetWhileAppending() throws {
+        let codec = DrawIOBoardCodec(maximumSourceBytes: 128)
+
+        XCTAssertThrowsError(try codec.encode(.empty)) { error in
+            XCTAssertEqual(error as? DrawIOBoardCodecError, .sourceTooLarge)
+        }
+    }
 }

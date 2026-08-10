@@ -371,11 +371,31 @@ final class SystemDesignRoomModel: ObservableObject {
     }
 
     var canSaveBoardRevision: Bool {
-        coordinator != nil
-            && snapshot?.phase != .completed
-            && !isInspectingBoardRevision
-            && !isBoardSaving
-            && !isBoardExporting
+        Self.boardRevisionSaveIsAvailable(
+            coordinatorIsAvailable: coordinator != nil,
+            phase: snapshot?.phase,
+            isWorking: isWorking,
+            isInspectingRevision: isInspectingBoardRevision,
+            isSaving: isBoardSaving,
+            isExporting: isBoardExporting
+        )
+    }
+
+    static func boardRevisionSaveIsAvailable(
+        coordinatorIsAvailable: Bool,
+        phase: InterviewRoomPhase?,
+        isWorking: Bool,
+        isInspectingRevision: Bool,
+        isSaving: Bool,
+        isExporting: Bool
+    ) -> Bool {
+        coordinatorIsAvailable
+            && phase != nil
+            && phase != .completed
+            && !isWorking
+            && !isInspectingRevision
+            && !isSaving
+            && !isExporting
     }
 
     var canAttachBoardRevision: Bool {
@@ -535,6 +555,8 @@ final class SystemDesignRoomModel: ObservableObject {
         boardExportMessage = nil
         defer { isBoardExporting = false }
 
+        // Terminal export operations are immutable. Retrying intentionally
+        // obtains a fresh authorization, export identity, and private subtree.
         var operation = coordinator.snapshot.board.exports.last {
             $0.revisionID == revision.id && $0.lifecycle == .authorized
         }

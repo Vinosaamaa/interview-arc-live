@@ -269,7 +269,7 @@ private enum InjectedFailure: Error {
     case afterPromotion
 }
 
-private final class FailFirstPromotionValidation: @unchecked Sendable {
+final class FailFirstPromotionValidation: @unchecked Sendable {
     private let lock = NSLock()
     private var shouldFail = true
 

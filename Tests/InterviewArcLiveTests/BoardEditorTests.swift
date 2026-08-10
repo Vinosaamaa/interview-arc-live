@@ -3,6 +3,26 @@ import InterviewArcLiveCore
 @testable import InterviewArcLive
 
 final class BoardEditorTests: XCTestCase {
+    func testEraserSamplingDropsNearbyDuplicatePointerUpdates() {
+        let first = BoardPoint(x: 100, y: 100)
+
+        XCTAssertTrue(
+            BoardGestureSampling.shouldAcceptEraserPoint(first, after: nil)
+        )
+        XCTAssertFalse(
+            BoardGestureSampling.shouldAcceptEraserPoint(
+                BoardPoint(x: 103, y: 104),
+                after: first
+            )
+        )
+        XCTAssertTrue(
+            BoardGestureSampling.shouldAcceptEraserPoint(
+                BoardPoint(x: 106, y: 100),
+                after: first
+            )
+        )
+    }
+
     func testBoxCreationPreservesEveryExplicitCanonicalNodeKind() throws {
         var editor = BoardEditorState(document: .empty)
 

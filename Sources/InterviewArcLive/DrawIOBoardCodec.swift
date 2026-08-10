@@ -23,7 +23,22 @@ struct DrawIOBoardCodec: Sendable {
     }
 
     func encode(_ document: BoardDocument) throws -> String {
-        var lines = [
+        var source = ""
+        var byteCount = 0
+
+        func append(_ lines: [String]) throws {
+            for line in lines {
+                let lineByteCount = line.utf8.count + 1
+                guard lineByteCount <= maximumSourceBytes - byteCount else {
+                    throw DrawIOBoardCodecError.sourceTooLarge
+                }
+                source.append(line)
+                source.append("\n")
+                byteCount += lineByteCount
+            }
+        }
+
+        try append([
             "<?xml version=\"1.0\" encoding=\"UTF-8\"?>",
             "<mxfile host=\"Interview Arc Live\" version=\"board-v1\">",
             "  <diagram id=\"board-v1\" name=\"Board\">",
@@ -31,22 +46,18 @@ struct DrawIOBoardCodec: Sendable {
             "      <root>",
             "        <mxCell id=\"0\"/>",
             "        <mxCell id=\"1\" parent=\"0\"/>",
-        ]
+        ])
 
         for element in document.elements {
-            lines.append(contentsOf: try encode(element))
+            try append(encode(element))
         }
 
-        lines.append(contentsOf: [
+        try append([
             "      </root>",
             "    </mxGraphModel>",
             "  </diagram>",
             "</mxfile>",
         ])
-        let source = lines.joined(separator: "\n") + "\n"
-        guard source.utf8.count <= maximumSourceBytes else {
-            throw DrawIOBoardCodecError.sourceTooLarge
-        }
         return source
     }
 

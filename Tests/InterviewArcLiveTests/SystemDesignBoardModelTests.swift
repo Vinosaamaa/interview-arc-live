@@ -5,6 +5,39 @@ import InterviewArcLiveCore
 
 @MainActor
 final class SystemDesignBoardModelTests: XCTestCase {
+    func testBoardRevisionSaveAvailabilityRequiresPublishedNonworkingRoom() {
+        XCTAssertFalse(
+            SystemDesignRoomModel.boardRevisionSaveIsAvailable(
+                coordinatorIsAvailable: true,
+                phase: nil,
+                isWorking: false,
+                isInspectingRevision: false,
+                isSaving: false,
+                isExporting: false
+            )
+        )
+        XCTAssertFalse(
+            SystemDesignRoomModel.boardRevisionSaveIsAvailable(
+                coordinatorIsAvailable: true,
+                phase: .candidateFloor,
+                isWorking: true,
+                isInspectingRevision: false,
+                isSaving: false,
+                isExporting: false
+            )
+        )
+        XCTAssertTrue(
+            SystemDesignRoomModel.boardRevisionSaveIsAvailable(
+                coordinatorIsAvailable: true,
+                phase: .candidateFloor,
+                isWorking: false,
+                isInspectingRevision: false,
+                isSaving: false,
+                isExporting: false
+            )
+        )
+    }
+
     func testSaveRevisionFailsClosedAgainstConcurrentReentry() async throws {
         let (model, store) = try await makeCompletionBlockingRoomModel()
         model.applyBoardAction(
@@ -115,6 +148,63 @@ final class SystemDesignBoardModelTests: XCTestCase {
         XCTAssertEqual(operation.lifecycle, .ready)
         XCTAssertEqual(recovery, .complete(bundle))
         XCTAssertEqual(model.snapshot?.board.revisions.count, 1)
+
+        await model.exportSelectedBoardRevision()
+
+        let exports = try XCTUnwrap(model.snapshot?.board.exports)
+        XCTAssertEqual(exports.count, 2)
+        XCTAssertEqual(exports.map(\.lifecycle), [.ready, .ready])
+        XCTAssertNotEqual(exports[0].id, exports[1].id)
+        XCTAssertNotEqual(
+            exports[0].artifactIdentities.source,
+            exports[1].artifactIdentities.source
+        )
+        let secondRecovery = try await store.recover(
+            identities: exports[1].artifactIdentities
+        )
+        XCTAssertEqual(secondRecovery, .complete(try XCTUnwrap(exports[1].bundle)))
+    }
+
+    func testFailedExportRetryCreatesFreshAuthorizationAndCompletes() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "interview-arc-live-board-retry-tests-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        defer { try? FileManager.default.removeItem(at: root) }
+        let gate = FailFirstPromotionValidation()
+        let store = PrivateBoardArtifactStore(
+            root: root,
+            postPromotionValidation: { url in try gate.validate(url) }
+        )
+        let (model, _) = try await makeCompletionBlockingRoomModel(
+            boardArtifactStore: store
+        )
+        model.applyBoardAction(
+            .createLabel(
+                origin: BoardPoint(x: 80, y: 80),
+                text: "Retry fixture"
+            )
+        )
+        await model.waitForBoardPersistence()
+        await model.saveBoardRevision()
+
+        await model.exportSelectedBoardRevision()
+
+        let failed = try XCTUnwrap(model.snapshot?.board.exports.last)
+        XCTAssertEqual(failed.lifecycle, .failed)
+        XCTAssertEqual(failed.failure?.reason, .storageFailed)
+
+        await model.exportSelectedBoardRevision()
+
+        let exports = try XCTUnwrap(model.snapshot?.board.exports)
+        XCTAssertEqual(exports.count, 2)
+        XCTAssertEqual(exports[0].lifecycle, .failed)
+        XCTAssertEqual(exports[1].lifecycle, .ready)
+        XCTAssertNotEqual(exports[0].id, exports[1].id)
+        let recovery = try await store.recover(
+            identities: exports[1].artifactIdentities
+        )
+        XCTAssertEqual(recovery, .complete(try XCTUnwrap(exports[1].bundle)))
     }
 
     func testRestoreAuditSurfacesDerivativeAndMissingBundleAttentionWithoutExporting() async throws {

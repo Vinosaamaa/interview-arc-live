@@ -6,6 +6,7 @@ struct SystemDesignBoardView: View {
 
     @State private var connectorSourceID: BoardElementID?
     @State private var activePenPoints: [BoardPoint] = []
+    @State private var lastEraserPoint: BoardPoint?
     @State private var newBoxKind: BoardNodeKind = .service
     @State private var editingElementID: BoardElementID?
     @State private var editingText = ""
@@ -592,7 +593,13 @@ struct SystemDesignBoardView: View {
                         activePenPoints.append(point)
                     }
                 case .eraser:
-                    model.applyBoardAction(.eraseStroke(at: point, radius: 12))
+                    if BoardGestureSampling.shouldAcceptEraserPoint(
+                        point,
+                        after: lastEraserPoint
+                    ) {
+                        lastEraserPoint = point
+                        model.applyBoardAction(.eraseStroke(at: point, radius: 12))
+                    }
                 default:
                     break
                 }
@@ -632,7 +639,13 @@ struct SystemDesignBoardView: View {
                     }
                     activePenPoints = []
                 case .eraser:
-                    model.applyBoardAction(.eraseStroke(at: point, radius: 12))
+                    if BoardGestureSampling.shouldAcceptEraserPoint(
+                        point,
+                        after: lastEraserPoint
+                    ) {
+                        model.applyBoardAction(.eraseStroke(at: point, radius: 12))
+                    }
+                    lastEraserPoint = nil
                 case .connector:
                     connectorSourceID = nil
                 }
@@ -768,6 +781,19 @@ struct SystemDesignBoardView: View {
 
     private func distance(_ first: BoardPoint, _ second: BoardPoint) -> Double {
         hypot(second.x - first.x, second.y - first.y)
+    }
+}
+
+enum BoardGestureSampling {
+    static let minimumEraserDistance = 6.0
+
+    static func shouldAcceptEraserPoint(
+        _ point: BoardPoint,
+        after previous: BoardPoint?
+    ) -> Bool {
+        guard let previous else { return true }
+        return hypot(point.x - previous.x, point.y - previous.y)
+            >= minimumEraserDistance
     }
 }
 
