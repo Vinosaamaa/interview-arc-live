@@ -1416,11 +1416,11 @@ final class SystemDesignRoomModel: ObservableObject {
     }
 
     private static func makeDefaultBoardArtifactStore(
-        sessionIdentity: String,
-        fileManager: FileManager = .default
+        sessionIdentity: String
     ) -> PrivateBoardArtifactStore? {
+        let pathFileManager = FileManager()
         guard let applicationSupportRoot = try? LivePaths.applicationSupportRoot(
-            fileManager: fileManager
+            fileManager: pathFileManager
         ) else {
             return nil
         }
@@ -1433,7 +1433,10 @@ final class SystemDesignRoomModel: ObservableObject {
                 "session-\(digest)",
                 isDirectory: true
             )
-        return PrivateBoardArtifactStore(root: root, fileManager: fileManager)
+        // The store actor owns a distinct FileManager instance. Reusing the
+        // main-actor path helper here would send an already-isolated mutable
+        // reference across the actor boundary under Swift 6.
+        return PrivateBoardArtifactStore(root: root, fileManager: FileManager())
     }
 
     private func safeSpeechMessage(for error: Error) -> String {
