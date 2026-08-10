@@ -173,10 +173,16 @@ actor QwenModelStore {
             return (modelDirectory, loadedModel)
         case .preparing:
             throw QwenModelStoreFailure.preparationInProgress
-        case .notInstalled, .unavailable:
+        case .notInstalled:
             guard allowDownload else {
                 throw QwenModelStoreFailure.missingFile
             }
+        case .unavailable(let failure):
+            // Readiness may detect a corrupt installed snapshot before the
+            // load-time hash gate. A no-download caller must receive that
+            // concrete verification/storage failure instead of having it
+            // collapsed into "not installed".
+            guard allowDownload else { throw failure }
         }
 
         try Task.checkCancellation()

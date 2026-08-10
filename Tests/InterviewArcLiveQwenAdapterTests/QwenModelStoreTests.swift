@@ -542,7 +542,7 @@ final class QwenModelStoreTests: XCTestCase {
         XCTAssertTrue(snapshots.isEmpty)
     }
 
-    func testLoadTimeFullHashGateRejectsSameSizeTamperWithRestoredModificationDate() async throws {
+    func testLoadRejectsSameSizeTamperWhetherMetadataGateDetectsItFirst() async throws {
         let fixture = try Fixture.make()
         defer { fixture.remove() }
         let directory = try await fixture.prepare(allowDownload: true)
@@ -553,15 +553,26 @@ final class QwenModelStoreTests: XCTestCase {
         try Data(repeating: 0x58, count: original.count).write(to: config)
         try fixture.fileManager.setAttributes([.modificationDate: date], ofItemAtPath: config.path)
 
-        // The process-local metadata cache deliberately remains cheap.
+        // Filesystems differ in how precisely Foundation restores a modified
+        // timestamp. The cheap readiness signature may therefore catch this
+        // tamper immediately or leave it to prepare's mandatory full hash.
         let metadataReadiness = await fixture.store.readiness()
-        XCTAssertEqual(metadataReadiness, .ready(modelDirectory: directory))
+        switch metadataReadiness {
+        case .ready(let readyDirectory):
+            XCTAssertEqual(readyDirectory, directory)
+        case .unavailable(let failure):
+            XCTAssertEqual(failure, .hashMismatch)
+        default:
+            XCTFail("tampered installed bytes must remain present and fail closed")
+        }
         do {
             _ = try await fixture.prepare(allowDownload: false)
             XCTFail("every load must run complete public-file hashes")
         } catch let failure as QwenModelStoreFailure {
             XCTAssertEqual(failure, .hashMismatch)
         }
+        let downloadCount = await fixture.downloader.callCount()
+        XCTAssertEqual(downloadCount, 1)
     }
 
     func testExistingSymlinkedPrivateRootIsRejectedBeforeDownload() async throws {
