@@ -72,4 +72,8 @@ Speech remains optional derived presentation instead of interview state. The
 Session Manifest has additional lifecycle history and revisions, but a model,
 storage, provider, or playback failure cannot erase or delay canonical Turns.
 The installed package must carry and verify MLX runtime resources, while the
-large model remains an explicit separately managed local asset.
+large model remains an explicit separately managed local asset. The installed
+speech smoke projects the already manifest-verified `default.metallib` into its
+private ephemeral working directory because its standalone helper is not hosted
+by the application bundle; the production application continues loading the
+canonical SwiftPM resource bundle from `Contents/Resources`.

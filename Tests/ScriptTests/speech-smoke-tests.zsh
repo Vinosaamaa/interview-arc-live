@@ -36,7 +36,7 @@ mkdir -p "$installed_app/Contents/MacOS" "$installed_app/Contents/Helpers" \
 print -r -- $'#!/bin/zsh\nexit 0' > "$app_executable"
 print -r -- $'#!/bin/zsh\nexit 0' > "$codex_helper"
 print -r -- $'#!/bin/zsh\nexit 0' > "$endpoint_helper"
-print -r -- $'#!/bin/zsh\n[[ "${INTERVIEW_ARC_LIVE_RUN_SPEECH_SMOKE:-0}" == "1" ]] || exit 64\nprint -r -- "$PWD|${INTERVIEW_ARC_LIVE_ALLOW_MODEL_DOWNLOAD:-0}" > "${INTERVIEW_ARC_LIVE_TEST_OBSERVED:?}"\nprint -r -- "public upstream status that must be filtered"\nprint -r -- "model_revision=049ef77fe8816b536193c0c25f9a214d17921282"\nprint -r -- "chunk_count=2"\nprint -r -- "time_to_first_audio_ms=120"\nprint -r -- "generation_total_ms=920"\nprint -r -- "audio_duration_ms=1400"\nprint -r -- "audio_bytes=134444"' > "$speech_helper"
+print -r -- $'#!/bin/zsh\n[[ "${INTERVIEW_ARC_LIVE_RUN_SPEECH_SMOKE:-0}" == "1" ]] || exit 64\n[[ -f "$PWD/default.metallib" && ! -L "$PWD/default.metallib" ]] || exit 65\n[[ "$(/usr/bin/shasum -a 256 "$PWD/default.metallib" | /usr/bin/awk \'{print $1}\')" == "${INTERVIEW_ARC_LIVE_TEST_EXPECTED_MLX_SHA:?}" ]] || exit 65\n[[ "$(/usr/bin/stat -f \'%z\' "$PWD/default.metallib")" == "${INTERVIEW_ARC_LIVE_TEST_EXPECTED_MLX_BYTES:?}" ]] || exit 65\nprint -r -- "$PWD|${INTERVIEW_ARC_LIVE_ALLOW_MODEL_DOWNLOAD:-0}" > "${INTERVIEW_ARC_LIVE_TEST_OBSERVED:?}"\nprint -r -- "public upstream status that must be filtered"\nprint -r -- "model_revision=049ef77fe8816b536193c0c25f9a214d17921282"\nprint -r -- "chunk_count=2"\nprint -r -- "time_to_first_audio_ms=120"\nprint -r -- "generation_total_ms=920"\nprint -r -- "audio_duration_ms=1400"\nprint -r -- "audio_bytes=134444"' > "$speech_helper"
 print -rn -- 'fixture-metallib' > "$mlx_metallib"
 print -rn -- 'fixture-notice' > "$sealed_unmanifested_resource"
 chmod 0755 "$app_executable" "$codex_helper" "$endpoint_helper" "$speech_helper"
@@ -86,6 +86,8 @@ report="$test_root/speech-report.txt"
 INTERVIEW_ARC_LIVE_RUN_SPEECH_SMOKE=1 \
 INTERVIEW_ARC_LIVE_ALLOW_MODEL_DOWNLOAD=1 \
 INTERVIEW_ARC_LIVE_TEST_OBSERVED="$observed" \
+INTERVIEW_ARC_LIVE_TEST_EXPECTED_MLX_SHA="$mlx_sha" \
+INTERVIEW_ARC_LIVE_TEST_EXPECTED_MLX_BYTES="$mlx_bytes" \
   "$smoke_script" "$installed_app" "$manifest" > "$report"
 [[ -f "$observed" ]] || fail "opt-in speech smoke did not invoke the helper"
 observed_value="$(<"$observed")"
@@ -126,4 +128,4 @@ if "$manifest_verifier" "$installed_app" "$manifest" >/dev/null 2>&1; then
   fail "standalone package verification accepted a changed sealed resource"
 fi
 
-echo "Installed speech smoke opt-in, download authorization, isolated cwd, helper hash, and MLX manifest tests passed."
+echo "Installed speech smoke opt-in, download authorization, isolated cwd, helper hash, and staged MLX resource tests passed."
