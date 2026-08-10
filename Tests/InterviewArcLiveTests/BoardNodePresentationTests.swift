@@ -135,42 +135,68 @@ final class BoardNodePresentationTests: XCTestCase {
     }
 
     func testFooterKeepsCanvasFeedbackDistinctFromRevisionStatus() {
-        XCTAssertEqual(
-            BoardFooterPresentation.make(
-                errorMessage: nil,
-                exportMessage: nil,
-                interactionFeedback: nil
-            ),
-            BoardFooterPresentation(
+        let error = "Return to the draft before editing."
+        let feedback = "Service node added and selected"
+        let export = "Editable source · SVG + PNG available"
+        let cases: [(
+            error: String?,
+            export: String?,
+            feedback: String?,
+            expected: BoardFooterPresentation
+        )] = [
+            (nil, nil, nil, BoardFooterPresentation(
                 text: "Editable source autosaves locally",
                 systemImage: "internaldrive",
                 tone: .neutral
+            )),
+            (nil, export, nil, BoardFooterPresentation(
+                text: export,
+                systemImage: "checkmark.circle",
+                tone: .confirmation
+            )),
+            (nil, nil, feedback, BoardFooterPresentation(
+                text: feedback,
+                systemImage: "info.circle",
+                tone: .feedback
+            )),
+            (nil, export, feedback, BoardFooterPresentation(
+                text: feedback,
+                systemImage: "info.circle",
+                tone: .feedback
+            )),
+            (error, nil, nil, BoardFooterPresentation(
+                text: error,
+                systemImage: "exclamationmark.triangle",
+                tone: .error
+            )),
+            (error, export, nil, BoardFooterPresentation(
+                text: error,
+                systemImage: "exclamationmark.triangle",
+                tone: .error
+            )),
+            (error, nil, feedback, BoardFooterPresentation(
+                text: error,
+                systemImage: "exclamationmark.triangle",
+                tone: .error
+            )),
+            (error, export, feedback, BoardFooterPresentation(
+                text: error,
+                systemImage: "exclamationmark.triangle",
+                tone: .error
+            )),
+        ]
+
+        for value in cases {
+            XCTAssertEqual(
+                BoardFooterPresentation.make(
+                    errorMessage: value.error,
+                    exportMessage: value.export,
+                    interactionFeedback: value.feedback
+                ),
+                value.expected
             )
-        )
-
-        let feedback = BoardFooterPresentation.make(
-            errorMessage: nil,
-            exportMessage: nil,
-            interactionFeedback: "Service node added and selected"
-        )
-        XCTAssertEqual(feedback.text, "Service node added and selected")
-        XCTAssertFalse(feedback.text.localizedCaseInsensitiveContains("unsaved"))
-
-        let exported = BoardFooterPresentation.make(
-            errorMessage: nil,
-            exportMessage: "Editable source · SVG + PNG available",
-            interactionFeedback: "Selection cleared"
-        )
-        XCTAssertEqual(exported.tone, .confirmation)
-        XCTAssertEqual(exported.text, "Editable source · SVG + PNG available")
-
-        let error = BoardFooterPresentation.make(
-            errorMessage: "Return to the draft before editing.",
-            exportMessage: "Editable source · SVG + PNG available",
-            interactionFeedback: nil
-        )
-        XCTAssertEqual(error.tone, .error)
-        XCTAssertEqual(error.text, "Return to the draft before editing.")
+        }
+        XCTAssertFalse(feedback.localizedCaseInsensitiveContains("unsaved"))
     }
 
     func testCompactRevisionStatusPreservesEveryCanonicalLifecycleState() {

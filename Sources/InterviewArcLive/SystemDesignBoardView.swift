@@ -1920,18 +1920,18 @@ struct BoardFooterPresentation: Equatable {
                 tone: .error
             )
         }
-        if let exportMessage {
-            return Self(
-                text: exportMessage,
-                systemImage: "checkmark.circle",
-                tone: .confirmation
-            )
-        }
         if let interactionFeedback {
             return Self(
                 text: interactionFeedback,
                 systemImage: "info.circle",
                 tone: .feedback
+            )
+        }
+        if let exportMessage {
+            return Self(
+                text: exportMessage,
+                systemImage: "checkmark.circle",
+                tone: .confirmation
             )
         }
         return Self(
