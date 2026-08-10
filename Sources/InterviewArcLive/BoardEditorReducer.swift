@@ -47,6 +47,38 @@ enum BoardEditorAction: Sendable {
     case redo
 }
 
+struct BoardSelectionCapabilities: Equatable, Sendable {
+    let canMove: Bool
+    let canResize: Bool
+    let canEditLabel: Bool
+
+    init(element: BoardElement) {
+        switch element {
+        case .box:
+            canMove = true
+            canResize = true
+            canEditLabel = true
+        case .connector(let connector):
+            canMove = connector.start.elementID == nil
+                && connector.end.elementID == nil
+            canResize = false
+            canEditLabel = true
+        case .label:
+            canMove = true
+            canResize = false
+            canEditLabel = true
+        case .stroke:
+            canMove = true
+            canResize = false
+            canEditLabel = false
+        }
+    }
+}
+
+enum BoardElementLayout {
+    static let labelSize = BoardSize(width: 240, height: 32)
+}
+
 struct BoardEditorState: Equatable, Sendable {
     static let minimumZoom = 0.25
     static let maximumZoom = 4.0
@@ -180,12 +212,18 @@ struct BoardEditorState: Equatable, Sendable {
             guard delta.x.isFinite, delta.y.isFinite else {
                 throw BoardEditorError.invalidGesture
             }
-            guard let selectedElementID else { return }
+            guard let selectedElementID,
+                  let boundedDelta = boundedMoveDelta(
+                    for: selectedElementID,
+                    requested: delta
+                  ) else {
+                return
+            }
             let moved = document.elements.map { element in
                 move(
                     element,
                     selectedElementID: selectedElementID,
-                    delta: delta
+                    delta: boundedDelta
                 )
             }
             try commit(elements: moved)
@@ -372,6 +410,87 @@ struct BoardEditorState: Equatable, Sendable {
         default:
             return element
         }
+    }
+
+    private func boundedMoveDelta(
+        for selectedElementID: BoardElementID,
+        requested: BoardPoint
+    ) -> BoardPoint? {
+        guard let element = document.elements.first(where: {
+            $0.boardID == selectedElementID
+        }) else {
+            return nil
+        }
+        let capabilities = BoardSelectionCapabilities(element: element)
+        guard capabilities.canMove else { return nil }
+
+        let bounds: (minX: Double, maxX: Double, minY: Double, maxY: Double)
+        switch element {
+        case .box(let box):
+            bounds = (
+                box.frame.origin.x,
+                box.frame.origin.x + box.frame.size.width,
+                box.frame.origin.y,
+                box.frame.origin.y + box.frame.size.height
+            )
+        case .connector(let connector):
+            bounds = (
+                min(connector.start.point.x, connector.end.point.x),
+                max(connector.start.point.x, connector.end.point.x),
+                min(connector.start.point.y, connector.end.point.y),
+                max(connector.start.point.y, connector.end.point.y)
+            )
+        case .label(let label):
+            let width = min(
+                BoardElementLayout.labelSize.width,
+                document.canvas.size.width
+            )
+            let height = min(
+                BoardElementLayout.labelSize.height,
+                document.canvas.size.height
+            )
+            bounds = (
+                label.origin.x,
+                label.origin.x + width,
+                label.origin.y,
+                label.origin.y + height
+            )
+        case .stroke(let stroke):
+            guard let minX = stroke.points.map(\.x).min(),
+                  let maxX = stroke.points.map(\.x).max(),
+                  let minY = stroke.points.map(\.y).min(),
+                  let maxY = stroke.points.map(\.y).max() else {
+                return nil
+            }
+            bounds = (minX, maxX, minY, maxY)
+        }
+
+        guard let x = boundedAxisDelta(
+            requested.x,
+            minimum: bounds.minX,
+            maximum: bounds.maxX,
+            limit: document.canvas.size.width
+        ), let y = boundedAxisDelta(
+            requested.y,
+            minimum: bounds.minY,
+            maximum: bounds.maxY,
+            limit: document.canvas.size.height
+        ) else {
+            return nil
+        }
+        return BoardPoint(x: x, y: y)
+    }
+
+    private func boundedAxisDelta(
+        _ requested: Double,
+        minimum: Double,
+        maximum: Double,
+        limit: Double
+    ) -> Double? {
+        guard maximum - minimum <= limit else { return nil }
+        let lowerBound = -minimum
+        let upperBound = limit - maximum
+        return min(max(requested, lowerBound), upperBound)
     }
 
     private func relabel(

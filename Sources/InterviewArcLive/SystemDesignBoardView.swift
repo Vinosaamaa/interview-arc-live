@@ -57,85 +57,232 @@ struct SystemDesignBoardView: View {
     }
 
     private var revisionRail: some View {
-        HStack(spacing: 18) {
-            HStack(spacing: 30) {
+        ViewThatFits(in: .horizontal) {
+            revisionRailContent(compact: false)
+            revisionRailContent(compact: true)
+        }
+        .frame(
+            maxWidth: .infinity,
+            minHeight: BoardLayoutMetrics.revisionRailHeight,
+            alignment: .leading
+        )
+        .background(BoardPalette.paper)
+    }
+
+    private func revisionRailContent(compact: Bool) -> some View {
+        HStack(spacing: compact
+            ? BoardRailWidthBudget.compactRevisionSpacing
+            : 18
+        ) {
+            if compact {
                 tab("Board", isSelected: true)
-                tab("Brief", isSelected: false)
-                tab("Notes", isSelected: false)
-            }
-
-            Spacer(minLength: 12)
-
-            if model.isInspectingBoardRevision {
-                Button("Return to draft") {
-                    Task { await model.returnToBoardDraft() }
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(BoardPalette.violet)
-                .accessibilityHint("Closes the immutable revision without changing the editable draft")
-            } else if model.isBoardDraftDirty {
-                Button {
-                    Task { await model.saveBoardRevision() }
-                } label: {
-                    Label("Save revision", systemImage: "square.and.arrow.down")
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(BoardPalette.violet)
-                .disabled(!model.canSaveBoardRevision)
-                .keyboardShortcut("s", modifiers: .command)
-                .accessibilityHint("Creates one immutable board revision")
+                    .frame(width: BoardRailWidthBudget.compactTabWidth)
+                    .accessibilityHint("Brief and Notes are not available in this version")
             } else {
-                Label(model.boardRevisionStatus, systemImage: "checkmark.circle.fill")
-                    .foregroundStyle(BoardPalette.muted)
-                    .accessibilityElement(children: .combine)
-            }
-
-            if let snapshot = model.snapshot, !snapshot.board.revisions.isEmpty {
-                Menu {
-                    ForEach(snapshot.board.revisions, id: \.id) { revision in
-                        Button("Revision \(revision.ordinal + 1)") {
-                            Task { await model.inspectBoardRevision(revision.id) }
-                        }
-                    }
-                } label: {
-                    Label("Revisions", systemImage: "clock.arrow.circlepath")
-                        .labelStyle(.titleAndIcon)
-                }
-                .menuStyle(.borderlessButton)
-                .fixedSize()
-                .accessibilityHint("Opens an immutable saved board for inspection")
-            }
-
-            railDivider
-
-            Button("Attach revision") {
-                Task { await model.attachSelectedBoardRevision() }
-            }
-            .buttonStyle(.plain)
-            .foregroundStyle(BoardPalette.navy)
-            .disabled(!model.canAttachBoardRevision)
-            .accessibilityHint("Attaches the selected immutable revision to the latest unattached answer")
-
-            Button {
-                Task { await model.exportSelectedBoardRevision() }
-            } label: {
-                if model.isBoardExporting {
-                    ProgressView()
-                        .controlSize(.small)
-                        .accessibilityLabel("Exporting board revision")
-                } else {
-                    Text("Export")
+                HStack(spacing: 30) {
+                    tab("Board", isSelected: true)
+                    tab("Brief", isSelected: false)
+                    tab("Notes", isSelected: false)
                 }
             }
-            .buttonStyle(.bordered)
-            .tint(BoardPalette.violet)
-            .disabled(!model.canExportBoardRevision || model.isBoardExporting)
-            .accessibilityHint("Exports Draw.io source, SVG, and PNG as one private bundle")
+
+            revisionStatus(compact: compact)
+            Spacer(minLength: compact ? 4 : 12)
+            revisionPrimaryAction(compact: compact)
+            revisionMenu(compact: compact)
+            if !compact { railDivider }
+            attachRevisionButton(compact: compact)
+            exportRevisionButton(compact: compact)
         }
         .font(.system(.callout, design: .rounded))
-        .padding(.horizontal, 20)
-        .frame(minHeight: BoardLayoutMetrics.revisionRailHeight)
-        .background(BoardPalette.paper)
+        .padding(.horizontal, compact
+            ? BoardRailWidthBudget.compactHorizontalPadding
+            : 20
+        )
+        .frame(
+            minWidth: compact
+                ? BoardRailWidthBudget.compactRevisionRequiredWidth(
+                    actionCount: compactRevisionActionCount
+                )
+                : BoardRailWidthBudget.wideRevisionRequiredWidth,
+            minHeight: BoardLayoutMetrics.revisionRailHeight
+        )
+        .fixedSize(horizontal: true, vertical: false)
+    }
+
+    private var compactRevisionActionCount: Int {
+        var count = 2 // Attach and Export are always discoverable.
+        if model.isInspectingBoardRevision || model.isBoardDraftDirty {
+            count += 1
+        }
+        if model.snapshot?.board.revisions.isEmpty == false {
+            count += 1
+        }
+        return count
+    }
+
+    private func revisionStatus(compact: Bool) -> some View {
+        Label {
+            Text(
+                compact
+                    ? BoardRailPresentation.compactRevisionStatus(
+                        model.boardRevisionStatus
+                    )
+                    : model.boardRevisionStatus
+            )
+            .lineLimit(1)
+        } icon: {
+            Image(systemName: revisionStatusIcon)
+        }
+        .foregroundStyle(model.boardErrorMessage == nil
+            ? BoardPalette.muted
+            : BoardPalette.errorText
+        )
+        .frame(
+            width: compact ? BoardRailWidthBudget.compactStatusWidth : nil,
+            alignment: .leading
+        )
+        .frame(minHeight: BoardLayoutMetrics.minimumHitTarget)
+        .help(model.boardRevisionStatus)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Board revision status")
+        .accessibilityValue(model.boardRevisionStatus)
+    }
+
+    private var revisionStatusIcon: String {
+        if model.boardErrorMessage != nil { return "exclamationmark.triangle.fill" }
+        if model.isBoardSaving { return "arrow.triangle.2.circlepath" }
+        if model.isBoardDraftDirty { return "circle.dotted" }
+        return "checkmark.circle.fill"
+    }
+
+    @ViewBuilder
+    private func revisionPrimaryAction(compact: Bool) -> some View {
+        if model.isInspectingBoardRevision {
+            Button {
+                Task { await model.returnToBoardDraft() }
+            } label: {
+                adaptiveRailLabel(
+                    "Return to draft",
+                    icon: "arrow.uturn.backward",
+                    compact: compact
+                )
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(BoardPalette.violet)
+            .help("Return to draft")
+            .accessibilityHint("Closes the immutable revision without changing the editable draft")
+        } else if model.isBoardDraftDirty {
+            Button {
+                Task { await model.saveBoardRevision() }
+            } label: {
+                adaptiveRailLabel(
+                    "Save revision",
+                    icon: "square.and.arrow.down",
+                    compact: compact
+                )
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(BoardPalette.violet)
+            .disabled(!model.canSaveBoardRevision)
+            .keyboardShortcut("s", modifiers: .command)
+            .help("Save revision")
+            .accessibilityHint("Creates one immutable board revision")
+        }
+    }
+
+    @ViewBuilder
+    private func revisionMenu(compact: Bool) -> some View {
+        if let snapshot = model.snapshot, !snapshot.board.revisions.isEmpty {
+            Menu {
+                ForEach(snapshot.board.revisions, id: \.id) { revision in
+                    Button("Revision \(revision.ordinal + 1)") {
+                        Task { await model.inspectBoardRevision(revision.id) }
+                    }
+                }
+            } label: {
+                adaptiveRailLabel(
+                    "Revisions",
+                    icon: "clock.arrow.circlepath",
+                    compact: compact
+                )
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .help("Browse revisions")
+            .accessibilityHint("Opens an immutable saved board for inspection")
+        }
+    }
+
+    private func attachRevisionButton(compact: Bool) -> some View {
+        Button {
+            Task { await model.attachSelectedBoardRevision() }
+        } label: {
+            adaptiveRailLabel(
+                "Attach revision",
+                icon: "paperclip",
+                compact: compact
+            )
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(BoardPalette.navy)
+        .disabled(!model.canAttachBoardRevision)
+        .help("Attach revision")
+        .accessibilityHint("Attaches the selected immutable revision to the latest unattached answer")
+    }
+
+    private func exportRevisionButton(compact: Bool) -> some View {
+        Button {
+            Task { await model.exportSelectedBoardRevision() }
+        } label: {
+            if model.isBoardExporting {
+                ProgressView()
+                    .controlSize(.small)
+                    .frame(
+                        minWidth: BoardLayoutMetrics.minimumHitTarget,
+                        minHeight: BoardLayoutMetrics.minimumHitTarget
+                    )
+                    .accessibilityLabel("Exporting board revision")
+            } else {
+                adaptiveRailLabel(
+                    "Export",
+                    icon: "square.and.arrow.up",
+                    compact: compact
+                )
+            }
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(BoardPalette.violet)
+        .background(
+            BoardPalette.violet.opacity(0.08),
+            in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(BoardPalette.violet.opacity(0.28), lineWidth: 1)
+        }
+        .disabled(!model.canExportBoardRevision || model.isBoardExporting)
+        .help("Export board revision")
+        .accessibilityHint("Exports Draw.io source, SVG, and PNG as one private bundle")
+    }
+
+    @ViewBuilder
+    private func adaptiveRailLabel(
+        _ title: String,
+        icon: String,
+        compact: Bool
+    ) -> some View {
+        if compact {
+            Image(systemName: icon)
+                .frame(
+                    width: BoardLayoutMetrics.minimumHitTarget,
+                    height: BoardLayoutMetrics.minimumHitTarget
+                )
+                .accessibilityLabel(title)
+        } else {
+            Label(title, systemImage: icon)
+                .frame(minHeight: BoardLayoutMetrics.minimumHitTarget)
+        }
     }
 
     private func tab(_ title: String, isSelected: Bool) -> some View {
@@ -158,81 +305,77 @@ struct SystemDesignBoardView: View {
     }
 
     private var toolRail: some View {
-        ScrollView(.horizontal) {
-            HStack(spacing: 8) {
-                toolButton(.select, title: "Select", icon: "cursorarrow")
-                toolButton(
-                    .connector,
-                    title: connectorSourceID == nil ? "Connector" : "Choose target",
-                    icon: "point.3.connected.trianglepath.dotted"
-                )
-                boxToolMenu
-                toolButton(.label, title: "Text", icon: "textformat")
-                railDivider
-                toolButton(.pen, title: "Pen", icon: "pencil.tip")
-                toolButton(.eraser, title: "Eraser", icon: "eraser")
-                railDivider
-                Button {
-                    model.applyBoardAction(.undo)
-                    interactionFeedback = "Undid the last board edit"
-                } label: {
-                    Label("Undo", systemImage: "arrow.uturn.backward")
-                }
-                .disabled(!model.boardEditor.canUndo || model.isInspectingBoardRevision)
-                .keyboardShortcut("z", modifiers: .command)
-                .accessibilityHint("Reverses the last board edit")
-
-                Button {
-                    model.applyBoardAction(.redo)
-                    interactionFeedback = "Restored the last board edit"
-                } label: {
-                    Label("Redo", systemImage: "arrow.uturn.forward")
-                }
-                .disabled(!model.boardEditor.canRedo || model.isInspectingBoardRevision)
-                .keyboardShortcut("z", modifiers: [.command, .shift])
-                .accessibilityHint("Restores the last undone board edit")
-
-                railDivider
-
-                Menu {
-                    Button("Zoom in") {
-                        model.applyBoardAction(
-                            .setZoom(model.boardEditor.zoom * 1.25)
-                        )
-                    }
-                    .keyboardShortcut("+", modifiers: .command)
-                    Button("Zoom out") {
-                        model.applyBoardAction(
-                            .setZoom(model.boardEditor.zoom / 1.25)
-                        )
-                    }
-                    .keyboardShortcut("-", modifiers: .command)
-                    Button("Reset zoom") {
-                        model.applyBoardAction(.resetZoom)
-                    }
-                    .keyboardShortcut("0", modifiers: .command)
-                } label: {
-                    HStack(spacing: 5) {
-                        Text("\(Int((model.boardEditor.zoom * 100).rounded()))%")
-                        Image(systemName: "chevron.down")
-                    }
-                    .frame(minHeight: 32)
-                }
-                .menuStyle(.borderlessButton)
-                .fixedSize()
-                .accessibilityLabel("Board zoom")
-                .accessibilityValue("\(Int((model.boardEditor.zoom * 100).rounded())) percent")
-            }
-            .buttonStyle(.plain)
-            .font(.system(.callout, design: .rounded))
-            .padding(.horizontal, 20)
-            .frame(minHeight: BoardLayoutMetrics.toolRailHeight)
+        ViewThatFits(in: .horizontal) {
+            toolRailContent(compact: false)
+            toolRailContent(compact: true)
         }
-        .scrollIndicators(.hidden)
+        .frame(
+            maxWidth: .infinity,
+            minHeight: BoardLayoutMetrics.toolRailHeight,
+            alignment: .leading
+        )
         .background(BoardPalette.toolbar)
     }
 
-    private var boxToolMenu: some View {
+    private func toolRailContent(compact: Bool) -> some View {
+        HStack(spacing: compact
+            ? BoardRailWidthBudget.compactToolbarSpacing
+            : 8
+        ) {
+            toolButton(
+                .select,
+                title: "Select",
+                icon: "cursorarrow",
+                compact: compact
+            )
+            toolButton(
+                .connector,
+                title: connectorSourceID == nil ? "Connector" : "Choose target",
+                icon: "point.3.connected.trianglepath.dotted",
+                compact: compact
+            )
+            boxToolMenu(compact: compact)
+            toolButton(
+                .label,
+                title: "Text",
+                icon: "textformat",
+                compact: compact
+            )
+            railDivider
+            toolButton(
+                .pen,
+                title: "Pen",
+                icon: "pencil.tip",
+                compact: compact
+            )
+            toolButton(
+                .eraser,
+                title: "Eraser",
+                icon: "eraser",
+                compact: compact
+            )
+            railDivider
+            historyButton(isUndo: true, compact: compact)
+            historyButton(isUndo: false, compact: compact)
+            railDivider
+            zoomMenu(compact: compact)
+        }
+        .buttonStyle(.plain)
+        .font(.system(.callout, design: .rounded))
+        .padding(.horizontal, compact
+            ? BoardRailWidthBudget.compactHorizontalPadding
+            : 20
+        )
+        .frame(
+            minWidth: compact
+                ? BoardRailWidthBudget.compactToolbarRequiredWidth
+                : BoardRailWidthBudget.wideToolbarRequiredWidth,
+            minHeight: BoardLayoutMetrics.toolRailHeight
+        )
+        .fixedSize(horizontal: true, vertical: false)
+    }
+
+    private func boxToolMenu(compact: Bool) -> some View {
         Menu {
             Button {
                 addBoxFromKeyboard()
@@ -254,16 +397,22 @@ struct SystemDesignBoardView: View {
                     interactionFeedback = "\(kind.displayName) box tool active · click the canvas to place"
                     isCanvasFocused = true
                 } label: {
-                    if newBoxKind == kind {
-                        Label(kind.displayName, systemImage: "checkmark")
-                    } else {
-                        Text(kind.displayName)
-                    }
+                    boxKindMenuLabel(kind)
                 }
             }
         } label: {
-            Label("Box", systemImage: "square")
-                .padding(.horizontal, 10)
+            Group {
+                if compact {
+                    Image(systemName: "square")
+                        .accessibilityLabel("Box")
+                } else {
+                    Label("Box", systemImage: "square")
+                        .padding(.horizontal, 10)
+                }
+            }
+                .frame(
+                    width: compact ? BoardLayoutMetrics.minimumHitTarget : nil
+                )
                 .frame(minHeight: BoardLayoutMetrics.toolControlHeight)
                 .background(
                     model.boardEditor.tool == .box
@@ -300,12 +449,23 @@ struct SystemDesignBoardView: View {
             "\(newBoxKind.displayName)\(model.boardEditor.tool == .box ? ", selected" : "")"
         )
         .accessibilityHint("Choose the architecture node kind, then click the canvas")
+        .help("Box · \(newBoxKind.displayName)")
+    }
+
+    @ViewBuilder
+    private func boxKindMenuLabel(_ kind: BoardNodeKind) -> some View {
+        if newBoxKind == kind {
+            Label(kind.displayName, systemImage: "checkmark")
+        } else {
+            Text(kind.displayName)
+        }
     }
 
     private func toolButton(
         _ tool: BoardEditorTool,
         title: String,
-        icon: String
+        icon: String,
+        compact: Bool
     ) -> some View {
         Button {
             connectorSourceID = nil
@@ -313,8 +473,18 @@ struct SystemDesignBoardView: View {
             interactionFeedback = "\(title) tool active"
             isCanvasFocused = true
         } label: {
-            Label(title, systemImage: icon)
-                .padding(.horizontal, 10)
+            Group {
+                if compact {
+                    Image(systemName: icon)
+                        .accessibilityLabel(title)
+                } else {
+                    Label(title, systemImage: icon)
+                        .padding(.horizontal, 10)
+                }
+            }
+                .frame(
+                    width: compact ? BoardLayoutMetrics.minimumHitTarget : nil
+                )
                 .frame(minHeight: BoardLayoutMetrics.toolControlHeight)
                 .background(
                     model.boardEditor.tool == tool
@@ -341,6 +511,83 @@ struct SystemDesignBoardView: View {
         .disabled(model.isInspectingBoardRevision)
         .accessibilityValue(model.boardEditor.tool == tool ? "Selected" : "")
         .accessibilityHint(hint(for: tool))
+        .help(title)
+    }
+
+    private func historyButton(isUndo: Bool, compact: Bool) -> some View {
+        let title = isUndo ? "Undo" : "Redo"
+        let icon = isUndo ? "arrow.uturn.backward" : "arrow.uturn.forward"
+        return Button {
+            model.applyBoardAction(isUndo ? .undo : .redo)
+            interactionFeedback = isUndo
+                ? "Undid the last board edit"
+                : "Restored the last board edit"
+        } label: {
+            Group {
+                if compact {
+                    Image(systemName: icon)
+                        .accessibilityLabel(title)
+                } else {
+                    Label(title, systemImage: icon)
+                }
+            }
+            .frame(
+                width: compact ? BoardLayoutMetrics.minimumHitTarget : nil
+            )
+            .frame(minHeight: BoardLayoutMetrics.toolControlHeight)
+        }
+        .disabled(
+            isUndo
+                ? !model.boardEditor.canUndo || model.isInspectingBoardRevision
+                : !model.boardEditor.canRedo || model.isInspectingBoardRevision
+        )
+        .keyboardShortcut(
+            "z",
+            modifiers: isUndo ? .command : [.command, .shift]
+        )
+        .accessibilityHint(
+            isUndo
+                ? "Reverses the last board edit"
+                : "Restores the last undone board edit"
+        )
+        .help(title)
+    }
+
+    private func zoomMenu(compact: Bool) -> some View {
+        Menu {
+            Button("Zoom in") {
+                model.applyBoardAction(
+                    .setZoom(model.boardEditor.zoom * 1.25)
+                )
+            }
+            .keyboardShortcut("+", modifiers: .command)
+            Button("Zoom out") {
+                model.applyBoardAction(
+                    .setZoom(model.boardEditor.zoom / 1.25)
+                )
+            }
+            .keyboardShortcut("-", modifiers: .command)
+            Button("Reset zoom") {
+                model.applyBoardAction(.resetZoom)
+            }
+            .keyboardShortcut("0", modifiers: .command)
+        } label: {
+            HStack(spacing: compact ? 3 : 5) {
+                if compact { Image(systemName: "magnifyingglass") }
+                Text("\(Int((model.boardEditor.zoom * 100).rounded()))%")
+                if !compact { Image(systemName: "chevron.down") }
+            }
+            .font(compact ? .caption : .callout)
+            .frame(
+                width: compact ? BoardRailWidthBudget.compactZoomWidth : nil
+            )
+            .frame(minHeight: BoardLayoutMetrics.toolControlHeight)
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .help("Board zoom")
+        .accessibilityLabel("Board zoom")
+        .accessibilityValue("\(Int((model.boardEditor.zoom * 100).rounded())) percent")
     }
 
     private var canvas: some View {
@@ -580,6 +827,9 @@ struct SystemDesignBoardView: View {
         ForEach(connectors(in: document), id: \.id) { connector in
             let selected = model.boardEditor.selectedElementID == connector.id
                 && !model.isInspectingBoardRevision
+            let capabilities = BoardSelectionCapabilities(
+                element: .connector(connector)
+            )
             ZStack(alignment: .topLeading) {
                 BoardConnectorPath(
                     start: connector.start.point,
@@ -627,7 +877,9 @@ struct SystemDesignBoardView: View {
                 .accessibilityValue(selected ? "Selected" : "")
                 .boardElementHint(
                     isReadOnly: model.isInspectingBoardRevision,
-                    editable: "Selects this connector so it can be labeled or deleted"
+                    editable: capabilities.canMove
+                        ? "Select, label, move, or delete this free connector"
+                        : "Select, label, or delete this connector; its endpoints stay anchored to their nodes"
                 )
                 .accessibilityFocused($accessibilityFocusedElementID, equals: connector.id)
                 .boardEditAccessibilityAction(
@@ -637,7 +889,8 @@ struct SystemDesignBoardView: View {
                     beginEditing(id: connector.id, text: connector.label)
                 }
                 .boardMoveAccessibilityActions(
-                    isReadOnly: model.isInspectingBoardRevision,
+                    isReadOnly: model.isInspectingBoardRevision
+                        || !capabilities.canMove,
                     left: { select(connector.id); moveSelection(.left) },
                     right: { select(connector.id); moveSelection(.right) },
                     up: { select(connector.id); moveSelection(.up) },
@@ -695,8 +948,15 @@ struct SystemDesignBoardView: View {
                         .foregroundStyle(boardColor(label.color))
                 }
             }
-            .frame(minWidth: 80, minHeight: 34, alignment: .leading)
-            .position(x: label.origin.x + 80, y: label.origin.y + 17)
+            .frame(
+                width: BoardElementLayout.labelSize.width,
+                height: BoardElementLayout.labelSize.height,
+                alignment: .leading
+            )
+            .position(
+                x: label.origin.x + BoardElementLayout.labelSize.width / 2,
+                y: label.origin.y + BoardElementLayout.labelSize.height / 2
+            )
             .contentShape(Rectangle())
             .onTapGesture(count: 2) {
                 guard !model.isInspectingBoardRevision else { return }
@@ -923,8 +1183,14 @@ struct SystemDesignBoardView: View {
             return .ignored
         }
         if press.modifiers.contains(.shift) {
+            guard selectedCapabilities?.canResize == true else {
+                return .ignored
+            }
             resizeSelection(by: direction.delta)
         } else {
+            guard selectedCapabilities?.canMove == true else {
+                return .ignored
+            }
             moveSelection(direction)
         }
         return .handled
@@ -962,29 +1228,53 @@ struct SystemDesignBoardView: View {
         isCanvasFocused = true
     }
 
-    private func moveSelection(_ direction: BoardKeyboardDirection) {
-        guard !model.isInspectingBoardRevision else { return }
+    @discardableResult
+    private func moveSelection(_ direction: BoardKeyboardDirection) -> Bool {
+        guard !model.isInspectingBoardRevision,
+              selectedCapabilities?.canMove == true else {
+            return false
+        }
+        let original = model.boardEditor.document
         model.applyBoardAction(.moveSelected(by: direction.delta))
+        guard model.boardEditor.document != original else { return false }
         interactionFeedback = "Selection moved \(direction.displayName)"
         accessibilityFocusedElementID = model.boardEditor.selectedElementID
         isCanvasFocused = true
+        return true
     }
 
-    private func resizeSelection(by delta: BoardPoint) {
-        guard !model.isInspectingBoardRevision else { return }
+    @discardableResult
+    private func resizeSelection(by delta: BoardPoint) -> Bool {
+        guard !model.isInspectingBoardRevision,
+              selectedCapabilities?.canResize == true else {
+            return false
+        }
+        let original = model.boardEditor.document
         model.applyBoardAction(
             .resizeSelected(handle: .bottomTrailing, by: delta)
         )
+        guard model.boardEditor.document != original else { return false }
         interactionFeedback = "Selected node resized"
         accessibilityFocusedElementID = model.boardEditor.selectedElementID
         isCanvasFocused = true
+        return true
+    }
+
+    private var selectedBoardElement: BoardElement? {
+        guard let selectedID = model.boardEditor.selectedElementID else {
+            return nil
+        }
+        return model.boardEditor.document.elements.first {
+            $0.boardID == selectedID
+        }
+    }
+
+    private var selectedCapabilities: BoardSelectionCapabilities? {
+        selectedBoardElement.map(BoardSelectionCapabilities.init(element:))
     }
 
     private var editableSelection: (id: BoardElementID, text: String)? {
-        guard let selectedID = model.boardEditor.selectedElementID,
-              let element = model.boardEditor.document.elements.first(where: {
-                  $0.boardID == selectedID
-              }) else {
+        guard let element = selectedBoardElement else {
             return nil
         }
         switch element {
@@ -1203,8 +1493,66 @@ enum BoardLayoutMetrics {
     static let revisionRailHeight: CGFloat = 54
     static let toolRailHeight: CGFloat = 58
     static let sectionLabelHeight: CGFloat = 44
-    static let toolControlHeight: CGFloat = 38
+    static let minimumHitTarget: CGFloat = 44
+    static let toolControlHeight: CGFloat = minimumHitTarget
     static let emptyStateMaximumWidth: CGFloat = 360
+}
+
+enum BoardRailWidthBudget {
+    static let supportedBoardWidth: CGFloat = 680
+    static let compactHorizontalPadding: CGFloat = 8
+    static let compactRevisionSpacing: CGFloat = 6
+    static let compactToolbarSpacing: CGFloat = 4
+    static let compactTabWidth: CGFloat = 64
+    static let compactStatusWidth: CGFloat = 132
+    static let compactRevisionSpacerWidth: CGFloat = 4
+    static let compactZoomWidth: CGFloat = 68
+    static let dividerWidth: CGFloat = 1
+    static let wideRevisionRequiredWidth: CGFloat = 820
+    static let wideToolbarRequiredWidth: CGFloat = 780
+
+    static func compactRevisionRequiredWidth(actionCount: Int) -> CGFloat {
+        let actions = max(0, actionCount)
+        let itemCount = 3 + actions // Board, status, spacer, then actions.
+        return compactHorizontalPadding * 2
+            + compactTabWidth
+            + compactStatusWidth
+            + compactRevisionSpacerWidth
+            + CGFloat(actions) * BoardLayoutMetrics.minimumHitTarget
+            + CGFloat(max(0, itemCount - 1)) * compactRevisionSpacing
+    }
+
+    static var compactToolbarRequiredWidth: CGFloat {
+        let iconControlCount = 8
+        let dividerCount = 3
+        let itemCount = iconControlCount + dividerCount + 1 // Zoom.
+        return compactHorizontalPadding * 2
+            + CGFloat(iconControlCount) * BoardLayoutMetrics.minimumHitTarget
+            + CGFloat(dividerCount) * dividerWidth
+            + compactZoomWidth
+            + CGFloat(itemCount - 1) * compactToolbarSpacing
+    }
+}
+
+enum BoardRailPresentation {
+    static func compactRevisionStatus(_ status: String) -> String {
+        if status == "Saving board…" { return "Saving…" }
+        if status == "Draft not saved" { return "Draft unsaved" }
+        if status == "Unsaved board" { return "Unsaved" }
+        if status.hasPrefix("Unsaved changes · revision ") {
+            return status.replacingOccurrences(
+                of: "Unsaved changes · revision ",
+                with: "Unsaved · r"
+            )
+        }
+        if status.hasPrefix("Board saved · revision ") {
+            return status.replacingOccurrences(
+                of: "Board saved · revision ",
+                with: "Saved · r"
+            )
+        }
+        return "Board issue"
+    }
 }
 
 enum BoardPalette {

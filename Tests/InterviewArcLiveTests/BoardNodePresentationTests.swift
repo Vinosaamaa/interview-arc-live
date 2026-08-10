@@ -8,8 +8,73 @@ final class BoardNodePresentationTests: XCTestCase {
         XCTAssertEqual(BoardLayoutMetrics.revisionRailHeight, 54)
         XCTAssertEqual(BoardLayoutMetrics.toolRailHeight, 58)
         XCTAssertEqual(BoardLayoutMetrics.sectionLabelHeight, 44)
-        XCTAssertEqual(BoardLayoutMetrics.toolControlHeight, 38)
+        XCTAssertEqual(BoardLayoutMetrics.minimumHitTarget, 44)
+        XCTAssertEqual(BoardLayoutMetrics.toolControlHeight, 44)
         XCTAssertEqual(BoardLayoutMetrics.emptyStateMaximumWidth, 360)
+    }
+
+    func testCompactBoardRailsFitTheSupported680PointBoardWidth() {
+        let boardWidth = BoardRailWidthBudget.supportedBoardWidth
+        let worstCaseRevisionWidth = BoardRailWidthBudget
+            .compactRevisionRequiredWidth(actionCount: 4)
+
+        XCTAssertEqual(boardWidth, 680)
+        XCTAssertGreaterThan(
+            BoardRailWidthBudget.wideRevisionRequiredWidth,
+            boardWidth
+        )
+        XCTAssertGreaterThan(
+            BoardRailWidthBudget.wideToolbarRequiredWidth,
+            boardWidth
+        )
+        XCTAssertEqual(worstCaseRevisionWidth, 428)
+        XCTAssertEqual(BoardRailWidthBudget.compactToolbarRequiredWidth, 483)
+        XCTAssertLessThanOrEqual(worstCaseRevisionWidth, boardWidth)
+        XCTAssertLessThanOrEqual(
+            BoardRailWidthBudget.compactToolbarRequiredWidth,
+            boardWidth
+        )
+        XCTAssertGreaterThanOrEqual(
+            BoardLayoutMetrics.minimumHitTarget,
+            44
+        )
+        XCTAssertGreaterThanOrEqual(
+            BoardRailWidthBudget.compactZoomWidth,
+            BoardLayoutMetrics.minimumHitTarget
+        )
+    }
+
+    func testCompactRevisionStatusPreservesEveryCanonicalLifecycleState() {
+        XCTAssertEqual(
+            BoardRailPresentation.compactRevisionStatus("Saving board…"),
+            "Saving…"
+        )
+        XCTAssertEqual(
+            BoardRailPresentation.compactRevisionStatus("Draft not saved"),
+            "Draft unsaved"
+        )
+        XCTAssertEqual(
+            BoardRailPresentation.compactRevisionStatus("Unsaved board"),
+            "Unsaved"
+        )
+        XCTAssertEqual(
+            BoardRailPresentation.compactRevisionStatus(
+                "Unsaved changes · revision 3"
+            ),
+            "Unsaved · r3"
+        )
+        XCTAssertEqual(
+            BoardRailPresentation.compactRevisionStatus(
+                "Board saved · revision 4"
+            ),
+            "Saved · r4"
+        )
+        XCTAssertEqual(
+            BoardRailPresentation.compactRevisionStatus(
+                "Return to the draft before editing."
+            ),
+            "Board issue"
+        )
     }
 
     func testEveryCanonicalNodeKindHasOneDistinctVectorVocabulary() {

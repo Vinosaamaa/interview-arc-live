@@ -168,6 +168,157 @@ final class BoardEditorTests: XCTestCase {
         XCTAssertTrue(editor.document.elements.contains { $0.boardID == connectorID })
     }
 
+    func testMoveClampsBoxesLabelsAndStrokesAndKeepsAttachedConnectorAnchored() throws {
+        let source = BoardBox(
+            id: BoardElementID("source"),
+            frame: BoardRect(
+                origin: BoardPoint(x: 240, y: 40),
+                size: BoardSize(width: 60, height: 60)
+            ),
+            label: "Source"
+        )
+        let target = BoardBox(
+            id: BoardElementID("target"),
+            frame: BoardRect(
+                origin: BoardPoint(x: 40, y: 140),
+                size: BoardSize(width: 80, height: 60)
+            ),
+            label: "Target"
+        )
+        let connector = BoardConnector(
+            id: BoardElementID("attached"),
+            start: BoardConnectorEndpoint(
+                point: BoardPoint(x: 300, y: 70),
+                elementID: source.id
+            ),
+            end: BoardConnectorEndpoint(
+                point: BoardPoint(x: 40, y: 170),
+                elementID: target.id
+            )
+        )
+        let label = BoardLabel(
+            id: BoardElementID("label"),
+            origin: BoardPoint(x: 295, y: 210),
+            text: "Edge"
+        )
+        let stroke = BoardStroke(
+            id: BoardElementID("stroke"),
+            points: [
+                BoardPoint(x: 280, y: 210),
+                BoardPoint(x: 295, y: 215),
+            ],
+            width: 3
+        )
+        var editor = BoardEditorState(
+            document: try BoardDocument(
+                canvas: BoardCanvas(size: BoardSize(width: 300, height: 220)),
+                elements: [
+                    .box(source),
+                    .box(target),
+                    .connector(connector),
+                    .label(label),
+                    .stroke(stroke),
+                ]
+            )
+        )
+
+        try editor.apply(.select(source.id))
+        try editor.apply(.moveSelected(by: BoardPoint(x: 10, y: 0)))
+        XCTAssertEqual(editor.document.elements[0], .box(source))
+        XCTAssertEqual(editor.document.elements[2], .connector(connector))
+
+        try editor.apply(.moveSelected(by: BoardPoint(x: -20, y: 0)))
+        guard case .box(let movedSource) = editor.document.elements[0],
+              case .connector(let reanchored) = editor.document.elements[2] else {
+            return XCTFail("Expected moved source and attached connector")
+        }
+        XCTAssertEqual(movedSource.frame.origin, BoardPoint(x: 220, y: 40))
+        XCTAssertEqual(reanchored.start.point, BoardPoint(x: 280, y: 70))
+        XCTAssertEqual(reanchored.start.elementID, source.id)
+
+        try editor.apply(.select(label.id))
+        try editor.apply(.moveSelected(by: BoardPoint(x: 10, y: 10)))
+        guard case .label(let clampedLabel) = editor.document.elements[3] else {
+            return XCTFail("Expected label")
+        }
+        XCTAssertEqual(clampedLabel.origin, BoardPoint(x: 60, y: 188))
+
+        try editor.apply(.select(stroke.id))
+        try editor.apply(.moveSelected(by: BoardPoint(x: 20, y: 20)))
+        guard case .stroke(let clampedStroke) = editor.document.elements[4] else {
+            return XCTFail("Expected stroke")
+        }
+        XCTAssertEqual(
+            clampedStroke.points,
+            [
+                BoardPoint(x: 285, y: 215),
+                BoardPoint(x: 300, y: 220),
+            ]
+        )
+
+        let beforeConnectorNudge = editor.document
+        try editor.apply(.select(connector.id))
+        try editor.apply(.moveSelected(by: BoardPoint(x: 10, y: 10)))
+        XCTAssertEqual(editor.document, beforeConnectorNudge)
+    }
+
+    func testSelectionCapabilitiesOnlyResizeBoxesAndKeepAttachedRoutesFixed() {
+        let box = BoardBox(
+            id: BoardElementID("box"),
+            frame: BoardRect(
+                origin: BoardPoint(x: 20, y: 20),
+                size: BoardSize(width: 120, height: 80)
+            ),
+            label: "Box"
+        )
+        let attached = BoardConnector(
+            id: BoardElementID("attached"),
+            start: BoardConnectorEndpoint(
+                point: BoardPoint(x: 140, y: 60),
+                elementID: box.id
+            ),
+            end: BoardConnectorEndpoint(point: BoardPoint(x: 240, y: 60))
+        )
+        let free = BoardConnector(
+            id: BoardElementID("free"),
+            start: BoardConnectorEndpoint(point: BoardPoint(x: 20, y: 160)),
+            end: BoardConnectorEndpoint(point: BoardPoint(x: 240, y: 160))
+        )
+        let label = BoardLabel(
+            id: BoardElementID("label"),
+            origin: BoardPoint(x: 20, y: 200),
+            text: "Label"
+        )
+        let stroke = BoardStroke(
+            id: BoardElementID("stroke"),
+            points: [BoardPoint(x: 20, y: 240)],
+            width: 3
+        )
+
+        let boxCapabilities = BoardSelectionCapabilities(element: .box(box))
+        XCTAssertTrue(boxCapabilities.canMove)
+        XCTAssertTrue(boxCapabilities.canResize)
+        XCTAssertTrue(boxCapabilities.canEditLabel)
+        XCTAssertFalse(
+            BoardSelectionCapabilities(element: .connector(attached)).canMove
+        )
+        XCTAssertTrue(
+            BoardSelectionCapabilities(element: .connector(free)).canMove
+        )
+        XCTAssertFalse(
+            BoardSelectionCapabilities(element: .connector(free)).canResize
+        )
+        XCTAssertFalse(
+            BoardSelectionCapabilities(element: .label(label)).canResize
+        )
+        XCTAssertFalse(
+            BoardSelectionCapabilities(element: .stroke(stroke)).canResize
+        )
+        XCTAssertFalse(
+            BoardSelectionCapabilities(element: .stroke(stroke)).canEditLabel
+        )
+    }
+
     func testSelectedBoxResizePersistsGeometryAndReanchorsConnector() throws {
         var editor = BoardEditorState(document: .empty)
         try editor.apply(
