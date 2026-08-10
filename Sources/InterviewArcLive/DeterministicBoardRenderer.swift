@@ -86,26 +86,48 @@ struct DeterministicBoardRenderer: Sendable {
             "  <rect x=\"0\" y=\"0\" width=\"\(width)\" height=\"\(height)\" fill=\"#\(attribute(settings.background.hexRGB))\"/>",
         ]
 
-        for element in document.elements {
+        for (renderIndex, element) in BoardRenderOrder.elements(
+            in: document
+        ).enumerated() {
             switch element {
             case .box(let box):
-                let centerX = box.frame.origin.x + box.frame.size.width / 2
-                let centerY = box.frame.origin.y + box.frame.size.height / 2
-                rows.append(
-                    "  <g data-id=\"\(attribute(box.id.rawValue))\" data-node-kind=\"\(attribute(box.kind.rawValue))\"><rect x=\"\(number(box.frame.origin.x))\" y=\"\(number(box.frame.origin.y))\" width=\"\(number(box.frame.size.width))\" height=\"\(number(box.frame.size.height))\" rx=\"11\" fill=\"#\(attribute(box.fill.hexRGB))\" stroke=\"#\(attribute(box.stroke.hexRGB))\" stroke-width=\"1.5\"/><rect x=\"\(number(centerX - 20))\" y=\"\(number(centerY - 25))\" width=\"40\" height=\"22\" rx=\"6\" fill=\"none\" stroke=\"#\(attribute(box.stroke.hexRGB))\" stroke-width=\"1.5\"/><text x=\"\(number(centerX))\" y=\"\(number(centerY - 10))\" text-anchor=\"middle\" font-family=\"ui-monospace, monospace\" font-size=\"9\" font-weight=\"700\" fill=\"#\(attribute(box.stroke.hexRGB))\">\(text(box.kind.glyphToken))</text><text x=\"\(number(centerX))\" y=\"\(number(centerY + 20))\" text-anchor=\"middle\" font-family=\"-apple-system, BlinkMacSystemFont, sans-serif\" font-size=\"13\" font-weight=\"600\" fill=\"#\(attribute(box.stroke.hexRGB))\">\(text(box.label))</text></g>"
+                let visual = box.kind.visual
+                let rect = CGRect(
+                    x: box.frame.origin.x,
+                    y: box.frame.origin.y,
+                    width: box.frame.size.width,
+                    height: box.frame.size.height
                 )
+                let labelRect = visual.labelRect(in: rect)
+                let labelLayout = BoardNodeLabelLayout(
+                    text: box.label,
+                    in: labelRect
+                )
+                let strokeWidth = number(visual.strokeWidth(in: rect))
+                let clipID = "ia-node-label-\(renderIndex)"
+                var nodeRows = [
+                    "  <g data-id=\"\(attribute(box.id.rawValue))\" data-node-kind=\"\(attribute(box.kind.rawValue))\" data-node-visual=\"\(attribute(visual.stableKey))\">",
+                    "    <path d=\"\(attribute(visual.outlinePath(in: rect).svgPathData))\" fill=\"#\(attribute(box.fill.hexRGB))\" stroke=\"#\(attribute(box.stroke.hexRGB))\" stroke-width=\"\(strokeWidth)\" stroke-linejoin=\"round\"/>",
+                    "    <clipPath id=\"\(clipID)\"><rect x=\"\(number(labelRect.minX))\" y=\"\(number(labelRect.minY))\" width=\"\(number(labelRect.width))\" height=\"\(number(labelRect.height))\"/></clipPath>",
+                ]
+                for path in visual.detailPaths(in: rect) + visual.pictogramPaths(in: rect) {
+                    nodeRows.append(
+                        "    <path d=\"\(attribute(path.svgPathData))\" fill=\"none\" stroke=\"#\(attribute(box.stroke.hexRGB))\" stroke-width=\"\(strokeWidth)\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/>"
+                    )
+                }
+                nodeRows.append(
+                    "    <text data-label-layout=\"wrapped-v1\" clip-path=\"url(#\(clipID))\" text-anchor=\"middle\" font-family=\"-apple-system, BlinkMacSystemFont, sans-serif\" font-size=\"\(number(labelLayout.resolvedFontSize))\" font-weight=\"600\" fill=\"#\(attribute(box.stroke.hexRGB))\">"
+                )
+                for (index, line) in labelLayout.lines.enumerated() {
+                    nodeRows.append(
+                        "      <tspan x=\"\(number(labelRect.midX))\" y=\"\(number(labelLayout.baselineY(at: index)))\">\(text(line))</tspan>"
+                    )
+                }
+                nodeRows.append("    </text>")
+                nodeRows.append("  </g>")
+                rows.append(contentsOf: nodeRows)
             case .connector(let connector):
-                let midpoint = BoardPoint(
-                    x: (connector.start.point.x + connector.end.point.x) / 2,
-                    y: (connector.start.point.y + connector.end.point.y) / 2
-                )
-                let arrow = arrowWingPoints(
-                    from: connector.start.point,
-                    to: connector.end.point
-                )
-                rows.append(
-                    "  <g data-id=\"\(attribute(connector.id.rawValue))\"><path d=\"M \(number(connector.start.point.x)) \(number(connector.start.point.y)) L \(number(connector.end.point.x)) \(number(connector.end.point.y))\" fill=\"none\" stroke=\"#\(attribute(connector.stroke.hexRGB))\" stroke-width=\"1.7\" stroke-linecap=\"round\"/><polygon points=\"\(number(connector.end.point.x)),\(number(connector.end.point.y)) \(number(arrow.0.x)),\(number(arrow.0.y)) \(number(arrow.1.x)),\(number(arrow.1.y))\" fill=\"#\(attribute(connector.stroke.hexRGB))\"/>\(connector.label.isEmpty ? "" : "<text x=\"\(number(midpoint.x))\" y=\"\(number(midpoint.y - 7))\" text-anchor=\"middle\" font-family=\"-apple-system, BlinkMacSystemFont, sans-serif\" font-size=\"12\" fill=\"#667A76\">\(text(connector.label))</text>")</g>"
-                )
+                rows.append(contentsOf: svgConnectorRows(connector))
             case .label(let label):
                 rows.append(
                     "  <text data-id=\"\(attribute(label.id.rawValue))\" x=\"\(number(label.origin.x))\" y=\"\(number(label.origin.y + 16))\" font-family=\"-apple-system, BlinkMacSystemFont, sans-serif\" font-size=\"16\" font-weight=\"600\" fill=\"#\(attribute(label.color.hexRGB))\">\(text(label.text))</text>"
@@ -121,6 +143,38 @@ struct DeterministicBoardRenderer: Sendable {
         }
         rows.append("</svg>")
         return rows.joined(separator: "\n") + "\n"
+    }
+
+    private func svgConnectorRows(_ connector: BoardConnector) -> [String] {
+        let route = BoardOrthogonalConnectorRoute(
+            start: connector.start.point,
+            end: connector.end.point
+        )
+        let routeData = route.points.enumerated().map { index, point in
+            "\(index == 0 ? "M" : "L") \(number(point.x)) \(number(point.y))"
+        }.joined(separator: " ")
+        let arrowStart = route.points.dropLast().last ?? connector.start.point
+        let arrow = arrowWingPoints(
+            from: arrowStart,
+            to: connector.end.point
+        )
+        let color = attribute(connector.stroke.hexRGB)
+        var rows = [
+            "  <g data-id=\"\(attribute(connector.id.rawValue))\" data-element-kind=\"connector\">",
+            "    <path data-role=\"route\" d=\"\(routeData)\" fill=\"none\" stroke=\"#\(color)\" stroke-width=\"1.7\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/>",
+            "    <polygon data-role=\"arrow\" points=\"\(number(connector.end.point.x)),\(number(connector.end.point.y)) \(number(arrow.0.x)),\(number(arrow.0.y)) \(number(arrow.1.x)),\(number(arrow.1.y))\" fill=\"#\(color)\"/>",
+        ]
+        if !connector.label.isEmpty {
+            let midpoint = BoardPoint(
+                x: (connector.start.point.x + connector.end.point.x) / 2,
+                y: (connector.start.point.y + connector.end.point.y) / 2
+            )
+            rows.append(
+                "    <text data-role=\"label\" x=\"\(number(midpoint.x))\" y=\"\(number(midpoint.y - 7))\" text-anchor=\"middle\" font-family=\"-apple-system, BlinkMacSystemFont, sans-serif\" font-size=\"12\" fill=\"#52628B\">\(text(connector.label))</text>"
+            )
+        }
+        rows.append("  </g>")
+        return rows
     }
 
     private func png(
@@ -162,7 +216,7 @@ struct DeterministicBoardRenderer: Sendable {
             )
         )
 
-        for element in document.elements {
+        for element in BoardRenderOrder.elements(in: document) {
             draw(
                 element,
                 in: context,
@@ -185,72 +239,82 @@ struct DeterministicBoardRenderer: Sendable {
     ) {
         switch element {
         case .box(let box):
-            let rect = CGRect(
+            let boardRect = CGRect(
                 x: box.frame.origin.x,
-                y: viewportHeight - box.frame.origin.y - box.frame.size.height,
+                y: box.frame.origin.y,
                 width: box.frame.size.width,
                 height: box.frame.size.height
             )
+            let visual = box.kind.visual
+            let stroke = (try? rgb(box.stroke).cgColor) ?? NSColor.gray.cgColor
+
+            context.saveGState()
+            context.translateBy(x: 0, y: viewportHeight)
+            context.scaleBy(x: 1, y: -1)
             context.setFillColor((try? rgb(box.fill).cgColor) ?? NSColor.white.cgColor)
-            context.setStrokeColor((try? rgb(box.stroke).cgColor) ?? NSColor.gray.cgColor)
-            context.setLineWidth(1.5)
-            let path = CGPath(
-                roundedRect: rect,
-                cornerWidth: 11,
-                cornerHeight: 11,
-                transform: nil
-            )
-            context.addPath(path)
+            context.setStrokeColor(stroke)
+            context.setLineWidth(visual.strokeWidth(in: boardRect))
+            context.setLineCap(.round)
+            context.setLineJoin(.round)
+            context.addPath(visual.outlinePath(in: boardRect).cgPath)
             context.drawPath(using: .fillStroke)
-            let glyphRect = CGRect(
-                x: rect.midX - 20,
-                y: rect.midY + 3,
-                width: 40,
-                height: 22
-            )
-            context.addPath(
-                CGPath(
-                    roundedRect: glyphRect,
-                    cornerWidth: 6,
-                    cornerHeight: 6,
-                    transform: nil
-                )
-            )
+            context.beginPath()
+            for path in visual.detailPaths(in: boardRect) + visual.pictogramPaths(in: boardRect) {
+                context.addPath(path.cgPath)
+            }
             context.strokePath()
-            drawText(
-                box.kind.glyphToken,
-                in: glyphRect.insetBy(dx: 2, dy: 5),
-                size: 9,
-                weight: .bold,
-                color: (try? rgb(box.stroke).nsColor) ?? NSColor.gray,
-                alignment: .center,
-                fontDesign: .monospaced
+            context.restoreGState()
+
+            let labelLayout = BoardNodeLabelLayout(
+                text: box.label,
+                in: visual.labelRect(in: boardRect)
             )
-            drawText(
-                box.label,
-                in: CGRect(
-                    x: rect.minX + 10,
-                    y: rect.midY - 26,
-                    width: rect.width - 20,
-                    height: 22
-                ),
-                size: 13,
-                weight: .semibold,
-                color: (try? rgb(box.stroke).nsColor) ?? NSColor.gray,
-                alignment: .center
+            let labelClip = CGRect(
+                x: labelLayout.rect.minX,
+                y: viewportHeight - labelLayout.rect.maxY,
+                width: labelLayout.rect.width,
+                height: labelLayout.rect.height
             )
+            context.saveGState()
+            context.clip(to: labelClip)
+            for (index, line) in labelLayout.lines.enumerated() {
+                let lineRect = labelLayout.lineRect(at: index)
+                drawText(
+                    line,
+                    in: CGRect(
+                        x: lineRect.minX,
+                        y: viewportHeight - lineRect.maxY,
+                        width: lineRect.width,
+                        height: lineRect.height
+                    ),
+                    size: labelLayout.resolvedFontSize,
+                    weight: .semibold,
+                    color: (try? rgb(box.stroke).nsColor) ?? NSColor.gray,
+                    alignment: .center,
+                    lineBreakMode: .byClipping
+                )
+            }
+            context.restoreGState()
 
         case .connector(let connector):
-            let start = cgPoint(connector.start.point, viewportHeight: viewportHeight)
-            let end = cgPoint(connector.end.point, viewportHeight: viewportHeight)
+            let route = BoardOrthogonalConnectorRoute(
+                start: connector.start.point,
+                end: connector.end.point
+            )
+            let points = route.points.map {
+                cgPoint($0, viewportHeight: viewportHeight)
+            }
+            guard let start = points.first, let end = points.last else { return }
             let color = (try? rgb(connector.stroke).cgColor) ?? NSColor.gray.cgColor
             context.setStrokeColor(color)
             context.setFillColor(color)
             context.setLineWidth(1.7)
             context.move(to: start)
-            context.addLine(to: end)
+            for point in points.dropFirst() {
+                context.addLine(to: point)
+            }
             context.strokePath()
-            drawArrow(from: start, to: end, in: context)
+            drawArrow(from: points.dropLast().last ?? start, to: end, in: context)
             if !connector.label.isEmpty {
                 drawText(
                     connector.label,
@@ -262,7 +326,7 @@ struct DeterministicBoardRenderer: Sendable {
                     ),
                     size: 12,
                     weight: .regular,
-                    color: NSColor(red: 102 / 255, green: 122 / 255, blue: 118 / 255, alpha: 1),
+                    color: NSColor(red: 82 / 255, green: 98 / 255, blue: 139 / 255, alpha: 1),
                     alignment: .center
                 )
             }
@@ -305,11 +369,12 @@ struct DeterministicBoardRenderer: Sendable {
         weight: NSFont.Weight,
         color: NSColor,
         alignment: NSTextAlignment,
-        fontDesign: NSFontDescriptor.SystemDesign = .default
+        fontDesign: NSFontDescriptor.SystemDesign = .default,
+        lineBreakMode: NSLineBreakMode = .byTruncatingTail
     ) {
         let paragraph = NSMutableParagraphStyle()
         paragraph.alignment = alignment
-        paragraph.lineBreakMode = .byTruncatingTail
+        paragraph.lineBreakMode = lineBreakMode
         (text as NSString).draw(
             in: rect,
             withAttributes: [

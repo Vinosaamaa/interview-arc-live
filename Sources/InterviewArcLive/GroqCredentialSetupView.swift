@@ -21,7 +21,7 @@ struct GroqCredentialSetupView: View {
             HStack(alignment: .top, spacing: 14) {
                 Image(systemName: "key.horizontal.fill")
                     .font(.system(size: 24, weight: .semibold))
-                    .foregroundStyle(LivePalette.candidate)
+                    .foregroundStyle(LivePalette.candidateText)
                     .accessibilityHidden(true)
 
                 VStack(alignment: .leading, spacing: 6) {
@@ -106,7 +106,7 @@ struct GroqCredentialSetupView: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .keyboardShortcut(.defaultAction)
-                .tint(LivePalette.candidate)
+                .tint(LivePalette.candidateText)
                 .disabled(isActionDisabled)
                 .accessibilityHint(detail)
             } else {
@@ -114,7 +114,7 @@ struct GroqCredentialSetupView: View {
                     actionLabel(title: title, submission: submission)
                 }
                 .buttonStyle(.bordered)
-                .tint(LivePalette.candidate)
+                .tint(LivePalette.candidateText)
                 .disabled(isActionDisabled)
                 .accessibilityHint(detail)
             }

@@ -10,8 +10,11 @@ struct SystemDesignBoardView: View {
     @State private var newBoxKind: BoardNodeKind = .service
     @State private var editingElementID: BoardElementID?
     @State private var editingText = ""
+    @State private var interactionFeedback: String?
+    @State private var isRevisionHistoryPresented = false
     @FocusState private var isCanvasFocused: Bool
     @FocusState private var isLabelEditorFocused: Bool
+    @AccessibilityFocusState private var accessibilityFocusedElementID: BoardElementID?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -23,6 +26,9 @@ struct SystemDesignBoardView: View {
         }
         .background(BoardPalette.canvas)
         .foregroundStyle(BoardPalette.navy)
+        .sheet(isPresented: $isRevisionHistoryPresented) {
+            revisionHistoryBrowser
+        }
         .onDeleteCommand {
             guard !model.isInspectingBoardRevision else { return }
             model.applyBoardAction(.deleteSelection)
@@ -33,103 +39,313 @@ struct SystemDesignBoardView: View {
                 cancelEditing()
             } else {
                 connectorSourceID = nil
-                model.applyBoardAction(.select(nil))
+                select(nil)
                 model.applyBoardAction(.setTool(.select))
             }
         }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("System design board")
+        .accessibilityValue(boardAccessibilityValue)
+        .boardRootAccessibilityActions(
+            isReadOnly: model.isInspectingBoardRevision,
+            addTitle: "Add \(newBoxKind.displayName) node",
+            add: addBoxFromKeyboard,
+            next: { selectRelativeElement(forward: true) },
+            previous: { selectRelativeElement(forward: false) }
+        )
+        .task(id: interactionFeedback) {
+            guard interactionFeedback != nil else { return }
+            try? await Task.sleep(for: .seconds(2))
+            interactionFeedback = nil
+        }
     }
 
     private var revisionRail: some View {
-        HStack(spacing: 18) {
-            HStack(spacing: 30) {
-                tab("Board", isSelected: true)
-                tab("Brief", isSelected: false)
-                tab("Notes", isSelected: false)
-            }
-
-            Spacer(minLength: 12)
-
-            if model.isInspectingBoardRevision {
-                Button("Return to draft") {
-                    Task { await model.returnToBoardDraft() }
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(BoardPalette.violet)
-                .accessibilityHint("Closes the immutable revision without changing the editable draft")
-            } else if model.isBoardDraftDirty {
-                Button {
-                    Task { await model.saveBoardRevision() }
-                } label: {
-                    Label("Save revision", systemImage: "square.and.arrow.down")
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(BoardPalette.violet)
-                .disabled(!model.canSaveBoardRevision)
-                .keyboardShortcut("s", modifiers: .command)
-                .accessibilityHint("Creates one immutable board revision")
-            } else {
-                Label(model.boardRevisionStatus, systemImage: "checkmark.circle.fill")
-                    .foregroundStyle(BoardPalette.muted)
-                    .accessibilityElement(children: .combine)
-            }
-
-            if let snapshot = model.snapshot, !snapshot.board.revisions.isEmpty {
-                Menu {
-                    ForEach(snapshot.board.revisions, id: \.id) { revision in
-                        Button("Revision \(revision.ordinal + 1)") {
-                            Task { await model.inspectBoardRevision(revision.id) }
-                        }
-                    }
-                } label: {
-                    Label("Revisions", systemImage: "clock.arrow.circlepath")
-                        .labelStyle(.titleAndIcon)
-                }
-                .menuStyle(.borderlessButton)
-                .fixedSize()
-                .accessibilityHint("Opens an immutable saved board for inspection")
-            }
-
-            railDivider
-
-            Button("Attach revision") {
-                Task { await model.attachSelectedBoardRevision() }
-            }
-            .buttonStyle(.plain)
-            .foregroundStyle(BoardPalette.navy)
-            .disabled(!model.canAttachBoardRevision)
-            .accessibilityHint("Attaches the selected immutable revision to the latest unattached answer")
-
-            Button {
-                Task { await model.exportSelectedBoardRevision() }
-            } label: {
-                if model.isBoardExporting {
-                    ProgressView()
-                        .controlSize(.small)
-                        .accessibilityLabel("Exporting board revision")
-                } else {
-                    Text("Export")
-                }
-            }
-            .buttonStyle(.bordered)
-            .tint(BoardPalette.violet)
-            .disabled(!model.canExportBoardRevision || model.isBoardExporting)
-            .accessibilityHint("Exports Draw.io source, SVG, and PNG as one private bundle")
+        ViewThatFits(in: .horizontal) {
+            revisionRailContent(compact: false)
+            revisionRailContent(compact: true)
         }
-        .font(.system(.callout, design: .rounded))
-        .padding(.horizontal, 20)
-        .frame(minHeight: 54)
+        .frame(
+            maxWidth: .infinity,
+            minHeight: BoardLayoutMetrics.revisionRailHeight,
+            alignment: .leading
+        )
         .background(BoardPalette.paper)
     }
 
-    private func tab(_ title: String, isSelected: Bool) -> some View {
-        Button(title) {}
+    private func revisionRailContent(compact: Bool) -> some View {
+        HStack(spacing: compact
+            ? BoardRailWidthBudget.compactRevisionSpacing
+            : 18
+        ) {
+            if compact {
+                tab("Board", isSelected: true)
+                    .frame(width: BoardRailWidthBudget.compactTabWidth)
+                    .accessibilityHint("Brief and Notes are not available in this version")
+            } else {
+                HStack(spacing: 30) {
+                    tab("Board", isSelected: true)
+                    tab("Brief", isSelected: false)
+                    tab("Notes", isSelected: false)
+                }
+            }
+
+            revisionStatus(compact: compact)
+            Spacer(minLength: compact ? 4 : 12)
+            revisionPrimaryAction(compact: compact)
+            revisionMenu(compact: compact)
+            if !compact { railDivider }
+            attachRevisionButton(compact: compact)
+            exportRevisionButton(compact: compact)
+        }
+        .font(.system(.callout, design: .rounded))
+        .padding(.horizontal, compact
+            ? BoardRailWidthBudget.compactHorizontalPadding
+            : 20
+        )
+        .frame(
+            minWidth: compact
+                ? BoardRailWidthBudget.compactRevisionRequiredWidth(
+                    actionCount: compactRevisionActionCount
+                )
+                : BoardRailWidthBudget.wideRevisionRequiredWidth,
+            minHeight: BoardLayoutMetrics.revisionRailHeight
+        )
+        .fixedSize(horizontal: true, vertical: false)
+    }
+
+    private var compactRevisionActionCount: Int {
+        var count = 2 // Attach and Export are always discoverable.
+        if model.isInspectingBoardRevision || model.isBoardDraftDirty {
+            count += 1
+        }
+        if model.snapshot?.board.revisions.isEmpty == false {
+            count += 1
+        }
+        return count
+    }
+
+    private func revisionStatus(compact: Bool) -> some View {
+        let status = model.boardRevisionStatusPresentation
+        return Label {
+            Text(
+                compact
+                    ? BoardRailPresentation.compactRevisionStatus(status)
+                    : status.fullText
+            )
+            .lineLimit(1)
+        } icon: {
+            Image(systemName: revisionStatusIcon)
+        }
+        .foregroundStyle(model.boardErrorMessage == nil
+            ? BoardPalette.muted
+            : BoardPalette.errorText
+        )
+        .frame(
+            width: compact ? BoardRailWidthBudget.compactStatusWidth : nil,
+            alignment: .leading
+        )
+        .frame(minHeight: BoardLayoutMetrics.minimumHitTarget)
+        .help(status.fullText)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Board revision status")
+        .accessibilityValue(status.fullText)
+    }
+
+    private var revisionStatusIcon: String {
+        if model.boardErrorMessage != nil { return "exclamationmark.triangle.fill" }
+        if model.isBoardSaving { return "arrow.triangle.2.circlepath" }
+        if model.isInspectingBoardRevision { return "lock.fill" }
+        if model.isBoardDraftDirty { return "circle.dotted" }
+        return "checkmark.circle.fill"
+    }
+
+    @ViewBuilder
+    private func revisionPrimaryAction(compact: Bool) -> some View {
+        if model.isInspectingBoardRevision {
+            Button {
+                Task { await model.returnToBoardDraft() }
+            } label: {
+                adaptiveRailLabel(
+                    "Return to draft",
+                    icon: "arrow.uturn.backward",
+                    compact: compact
+                )
+            }
             .buttonStyle(.plain)
+            .foregroundStyle(BoardPalette.violet)
+            .help("Return to draft")
+            .accessibilityHint("Closes the immutable revision without changing the editable draft")
+        } else if model.isBoardDraftDirty {
+            Button {
+                Task { await model.saveBoardRevision() }
+            } label: {
+                adaptiveRailLabel(
+                    "Save revision",
+                    icon: "square.and.arrow.down",
+                    compact: compact
+                )
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(BoardPalette.violet)
+            .disabled(!model.canSaveBoardRevision)
+            .keyboardShortcut("s", modifiers: .command)
+            .help("Save revision")
+            .accessibilityHint("Creates one immutable board revision")
+        }
+    }
+
+    @ViewBuilder
+    private func revisionMenu(compact: Bool) -> some View {
+        if let snapshot = model.snapshot, !snapshot.board.revisions.isEmpty {
+            Menu {
+                ForEach(
+                    BoardRevisionHistoryPresentation.recent(
+                        snapshot.board.revisions
+                    ),
+                    id: \.id
+                ) { revision in
+                    Button("Revision \(revision.ordinal + 1)") {
+                        Task { await model.inspectBoardRevision(revision.id) }
+                    }
+                }
+                if BoardRevisionHistoryPresentation.hasMore(
+                    snapshot.board.revisions
+                ) {
+                    Divider()
+                    Button("View all revisions…") {
+                        isRevisionHistoryPresented = true
+                    }
+                }
+            } label: {
+                adaptiveRailLabel(
+                    "Revisions",
+                    icon: "clock.arrow.circlepath",
+                    compact: compact
+                )
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .help("Browse revisions")
+            .accessibilityHint("Opens an immutable saved board for inspection")
+        }
+    }
+
+    private var revisionHistoryBrowser: some View {
+        NavigationStack {
+            List(
+                BoardRevisionHistoryPresentation.all(
+                    model.snapshot?.board.revisions ?? []
+                ),
+                id: \.id
+            ) { revision in
+                Button {
+                    isRevisionHistoryPresented = false
+                    Task { await model.inspectBoardRevision(revision.id) }
+                } label: {
+                    HStack {
+                        Label(
+                            "Revision \(revision.ordinal + 1)",
+                            systemImage: "doc.text"
+                        )
+                        Spacer()
+                        if model.inspectedBoardRevisionID == revision.id {
+                            Text("Viewing")
+                                .foregroundStyle(BoardPalette.muted)
+                        }
+                    }
+                    .frame(minHeight: BoardLayoutMetrics.minimumHitTarget)
+                }
+                .buttonStyle(.plain)
+            }
+            .navigationTitle("Board revisions")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Done") {
+                        isRevisionHistoryPresented = false
+                    }
+                }
+            }
+        }
+        .frame(minWidth: 420, minHeight: 420)
+    }
+
+    private func attachRevisionButton(compact: Bool) -> some View {
+        Button {
+            Task { await model.attachSelectedBoardRevision() }
+        } label: {
+            adaptiveRailLabel(
+                "Attach revision",
+                icon: "paperclip",
+                compact: compact
+            )
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(BoardPalette.navy)
+        .disabled(!model.canAttachBoardRevision)
+        .help("Attach revision")
+        .accessibilityHint("Attaches the selected immutable revision to the latest unattached answer")
+    }
+
+    private func exportRevisionButton(compact: Bool) -> some View {
+        Button {
+            Task { await model.exportSelectedBoardRevision() }
+        } label: {
+            if model.isBoardExporting {
+                ProgressView()
+                    .controlSize(.small)
+                    .frame(
+                        minWidth: BoardLayoutMetrics.minimumHitTarget,
+                        minHeight: BoardLayoutMetrics.minimumHitTarget
+                    )
+                    .accessibilityLabel("Exporting board revision")
+            } else {
+                adaptiveRailLabel(
+                    "Export",
+                    icon: "square.and.arrow.up",
+                    compact: compact
+                )
+            }
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(BoardPalette.violet)
+        .background(
+            BoardPalette.violet.opacity(0.08),
+            in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(BoardPalette.violet.opacity(0.28), lineWidth: 1)
+        }
+        .disabled(!model.canExportBoardRevision || model.isBoardExporting)
+        .help("Export board revision")
+        .accessibilityHint("Exports Draw.io source, SVG, and PNG as one private bundle")
+    }
+
+    @ViewBuilder
+    private func adaptiveRailLabel(
+        _ title: String,
+        icon: String,
+        compact: Bool
+    ) -> some View {
+        if compact {
+            Image(systemName: icon)
+                .frame(
+                    width: BoardLayoutMetrics.minimumHitTarget,
+                    height: BoardLayoutMetrics.minimumHitTarget
+                )
+                .accessibilityLabel(title)
+        } else {
+            Label(title, systemImage: icon)
+                .frame(minHeight: BoardLayoutMetrics.minimumHitTarget)
+        }
+    }
+
+    private func tab(_ title: String, isSelected: Bool) -> some View {
+        Text(title)
             .font(.system(.body, design: .rounded, weight: isSelected ? .semibold : .regular))
             .foregroundStyle(isSelected ? BoardPalette.ink : BoardPalette.muted)
-            .disabled(!isSelected)
-            .frame(minHeight: 44)
+            .frame(minHeight: BoardLayoutMetrics.sectionLabelHeight)
             .overlay(alignment: .bottom) {
                 if isSelected {
                     Rectangle()
@@ -137,144 +353,297 @@ struct SystemDesignBoardView: View {
                         .frame(height: 3)
                 }
             }
-            .accessibilityValue(isSelected ? "Selected" : "Unavailable in this slice")
+            .accessibilityLabel(
+                isSelected
+                    ? "Board, current section"
+                    : "\(title), not available in this version"
+            )
     }
 
     private var toolRail: some View {
-        ScrollView(.horizontal) {
-            HStack(spacing: 8) {
-                toolButton(.select, title: "Select", icon: "cursorarrow")
-                toolButton(
-                    .connector,
-                    title: connectorSourceID == nil ? "Connector" : "Choose target",
-                    icon: "point.3.connected.trianglepath.dotted"
-                )
-                boxToolMenu
-                toolButton(.label, title: "Text", icon: "textformat")
-                railDivider
-                toolButton(.pen, title: "Pen", icon: "pencil.tip")
-                toolButton(.eraser, title: "Eraser", icon: "eraser")
-                railDivider
-                Button {
-                    model.applyBoardAction(.undo)
-                } label: {
-                    Label("Undo", systemImage: "arrow.uturn.backward")
-                }
-                .disabled(!model.boardEditor.canUndo || model.isInspectingBoardRevision)
-                .keyboardShortcut("z", modifiers: .command)
-                .accessibilityHint("Reverses the last board edit")
-
-                Button {
-                    model.applyBoardAction(.redo)
-                } label: {
-                    Label("Redo", systemImage: "arrow.uturn.forward")
-                }
-                .disabled(!model.boardEditor.canRedo || model.isInspectingBoardRevision)
-                .keyboardShortcut("z", modifiers: [.command, .shift])
-                .accessibilityHint("Restores the last undone board edit")
-
-                railDivider
-
-                Menu {
-                    Button("Zoom in") {
-                        model.applyBoardAction(
-                            .setZoom(model.boardEditor.zoom * 1.25)
-                        )
-                    }
-                    .keyboardShortcut("+", modifiers: .command)
-                    Button("Zoom out") {
-                        model.applyBoardAction(
-                            .setZoom(model.boardEditor.zoom / 1.25)
-                        )
-                    }
-                    .keyboardShortcut("-", modifiers: .command)
-                    Button("Reset zoom") {
-                        model.applyBoardAction(.resetZoom)
-                    }
-                    .keyboardShortcut("0", modifiers: .command)
-                } label: {
-                    HStack(spacing: 5) {
-                        Text("\(Int((model.boardEditor.zoom * 100).rounded()))%")
-                        Image(systemName: "chevron.down")
-                    }
-                    .frame(minHeight: 32)
-                }
-                .menuStyle(.borderlessButton)
-                .fixedSize()
-                .accessibilityLabel("Board zoom")
-                .accessibilityValue("\(Int((model.boardEditor.zoom * 100).rounded())) percent")
-            }
-            .buttonStyle(.plain)
-            .font(.system(.callout, design: .rounded))
-            .padding(.horizontal, 20)
-            .frame(minHeight: 58)
+        ViewThatFits(in: .horizontal) {
+            toolRailContent(compact: false)
+            toolRailContent(compact: true)
         }
-        .scrollIndicators(.hidden)
-        .background(BoardPalette.paper)
+        .frame(
+            maxWidth: .infinity,
+            minHeight: BoardLayoutMetrics.toolRailHeight,
+            alignment: .leading
+        )
+        .background(BoardPalette.toolbar)
     }
 
-    private var boxToolMenu: some View {
+    private func toolRailContent(compact: Bool) -> some View {
+        HStack(spacing: compact
+            ? BoardRailWidthBudget.compactToolbarSpacing
+            : 8
+        ) {
+            toolButton(
+                .select,
+                title: "Select",
+                icon: "cursorarrow",
+                compact: compact
+            )
+            toolButton(
+                .connector,
+                title: connectorSourceID == nil ? "Connector" : "Choose target",
+                icon: "point.3.connected.trianglepath.dotted",
+                compact: compact
+            )
+            boxToolMenu(compact: compact)
+            toolButton(
+                .label,
+                title: "Text",
+                icon: "textformat",
+                compact: compact
+            )
+            railDivider
+            toolButton(
+                .pen,
+                title: "Pen",
+                icon: "pencil.tip",
+                compact: compact
+            )
+            toolButton(
+                .eraser,
+                title: "Eraser",
+                icon: "eraser",
+                compact: compact
+            )
+            railDivider
+            historyButton(isUndo: true, compact: compact)
+            historyButton(isUndo: false, compact: compact)
+            railDivider
+            zoomMenu(compact: compact)
+        }
+        .buttonStyle(.plain)
+        .font(.system(.callout, design: .rounded))
+        .padding(.horizontal, compact
+            ? BoardRailWidthBudget.compactHorizontalPadding
+            : 20
+        )
+        .frame(
+            minWidth: compact
+                ? BoardRailWidthBudget.compactToolbarRequiredWidth
+                : BoardRailWidthBudget.wideToolbarRequiredWidth,
+            minHeight: BoardLayoutMetrics.toolRailHeight
+        )
+        .fixedSize(horizontal: true, vertical: false)
+    }
+
+    private func boxToolMenu(compact: Bool) -> some View {
         Menu {
+            Button {
+                addBoxFromKeyboard()
+            } label: {
+                Label(
+                    "Add \(newBoxKind.displayName) node",
+                    systemImage: "plus.square"
+                )
+            }
+            .keyboardShortcut("b", modifiers: [.command, .shift])
+
+            Divider()
+
             ForEach(BoardNodeKind.selectableKinds, id: \.rawValue) { kind in
                 Button {
                     newBoxKind = kind
                     connectorSourceID = nil
                     model.applyBoardAction(.setTool(.box))
+                    interactionFeedback = "\(kind.displayName) box tool active · click the canvas to place"
                     isCanvasFocused = true
                 } label: {
-                    if newBoxKind == kind {
-                        Label(kind.displayName, systemImage: "checkmark")
-                    } else {
-                        Text(kind.displayName)
-                    }
+                    boxKindMenuLabel(kind)
                 }
             }
         } label: {
-            Label("Box", systemImage: "square")
-                .padding(.horizontal, 10)
-                .frame(minHeight: 38)
+            Group {
+                if compact {
+                    Image(systemName: "square")
+                        .accessibilityLabel("Box")
+                } else {
+                    Label("Box", systemImage: "square")
+                        .padding(.horizontal, 10)
+                }
+            }
+                .frame(
+                    width: compact ? BoardLayoutMetrics.minimumHitTarget : nil
+                )
+                .frame(minHeight: BoardLayoutMetrics.toolControlHeight)
                 .background(
                     model.boardEditor.tool == .box
-                        ? BoardPalette.violet.opacity(0.12)
+                        ? BoardPalette.violet.opacity(0.14)
                         : Color.clear,
                     in: RoundedRectangle(cornerRadius: 9, style: .continuous)
                 )
+                .overlay {
+                    RoundedRectangle(cornerRadius: 9, style: .continuous)
+                        .stroke(
+                            model.boardEditor.tool == .box
+                                ? BoardPalette.violet.opacity(0.72)
+                                : .clear,
+                            lineWidth: 1
+                        )
+                }
+        } primaryAction: {
+            connectorSourceID = nil
+            model.applyBoardAction(.setTool(.box))
+            interactionFeedback = "\(newBoxKind.displayName) box tool active · click the canvas to place"
+            isCanvasFocused = true
         }
         .menuStyle(.borderlessButton)
         .fixedSize()
         .keyboardShortcut("b", modifiers: .control)
         .disabled(model.isInspectingBoardRevision)
+        .foregroundStyle(
+            model.boardEditor.tool == .box
+                ? BoardPalette.violet
+                : BoardPalette.navy
+        )
         .accessibilityLabel("Box")
         .accessibilityValue(
             "\(newBoxKind.displayName)\(model.boardEditor.tool == .box ? ", selected" : "")"
         )
         .accessibilityHint("Choose the architecture node kind, then click the canvas")
+        .help("Box · \(newBoxKind.displayName)")
+    }
+
+    @ViewBuilder
+    private func boxKindMenuLabel(_ kind: BoardNodeKind) -> some View {
+        if newBoxKind == kind {
+            Label(kind.displayName, systemImage: "checkmark")
+        } else {
+            Text(kind.displayName)
+        }
     }
 
     private func toolButton(
         _ tool: BoardEditorTool,
         title: String,
-        icon: String
+        icon: String,
+        compact: Bool
     ) -> some View {
         Button {
             connectorSourceID = nil
             model.applyBoardAction(.setTool(tool))
+            interactionFeedback = "\(title) tool active"
             isCanvasFocused = true
         } label: {
-            Label(title, systemImage: icon)
-                .padding(.horizontal, 10)
-                .frame(minHeight: 38)
+            Group {
+                if compact {
+                    Image(systemName: icon)
+                        .accessibilityLabel(title)
+                } else {
+                    Label(title, systemImage: icon)
+                        .padding(.horizontal, 10)
+                }
+            }
+                .frame(
+                    width: compact ? BoardLayoutMetrics.minimumHitTarget : nil
+                )
+                .frame(minHeight: BoardLayoutMetrics.toolControlHeight)
                 .background(
                     model.boardEditor.tool == tool
-                        ? BoardPalette.violet.opacity(0.12)
+                        ? BoardPalette.violet.opacity(0.14)
                         : Color.clear,
                     in: RoundedRectangle(cornerRadius: 9, style: .continuous)
                 )
+                .overlay {
+                    RoundedRectangle(cornerRadius: 9, style: .continuous)
+                        .stroke(
+                            model.boardEditor.tool == tool
+                                ? BoardPalette.violet.opacity(0.72)
+                                : .clear,
+                            lineWidth: 1
+                        )
+                }
         }
+        .foregroundStyle(
+            model.boardEditor.tool == tool
+                ? BoardPalette.violet
+                : BoardPalette.navy
+        )
         .keyboardShortcut(shortcut(for: tool), modifiers: .control)
         .disabled(model.isInspectingBoardRevision)
         .accessibilityValue(model.boardEditor.tool == tool ? "Selected" : "")
         .accessibilityHint(hint(for: tool))
+        .help(title)
+    }
+
+    private func historyButton(isUndo: Bool, compact: Bool) -> some View {
+        let title = isUndo ? "Undo" : "Redo"
+        let icon = isUndo ? "arrow.uturn.backward" : "arrow.uturn.forward"
+        return Button {
+            model.applyBoardAction(isUndo ? .undo : .redo)
+            interactionFeedback = isUndo
+                ? "Undid the last board edit"
+                : "Restored the last board edit"
+        } label: {
+            Group {
+                if compact {
+                    Image(systemName: icon)
+                        .accessibilityLabel(title)
+                } else {
+                    Label(title, systemImage: icon)
+                }
+            }
+            .frame(
+                width: compact ? BoardLayoutMetrics.minimumHitTarget : nil
+            )
+            .frame(minHeight: BoardLayoutMetrics.toolControlHeight)
+        }
+        .disabled(
+            isUndo
+                ? !model.boardEditor.canUndo || model.isInspectingBoardRevision
+                : !model.boardEditor.canRedo || model.isInspectingBoardRevision
+        )
+        .keyboardShortcut(
+            "z",
+            modifiers: isUndo ? .command : [.command, .shift]
+        )
+        .accessibilityHint(
+            isUndo
+                ? "Reverses the last board edit"
+                : "Restores the last undone board edit"
+        )
+        .help(title)
+    }
+
+    private func zoomMenu(compact: Bool) -> some View {
+        Menu {
+            Button("Zoom in") {
+                model.applyBoardAction(
+                    .setZoom(model.boardEditor.zoom * 1.25)
+                )
+            }
+            .keyboardShortcut("+", modifiers: .command)
+            Button("Zoom out") {
+                model.applyBoardAction(
+                    .setZoom(model.boardEditor.zoom / 1.25)
+                )
+            }
+            .keyboardShortcut("-", modifiers: .command)
+            Button("Reset zoom") {
+                model.applyBoardAction(.resetZoom)
+            }
+            .keyboardShortcut("0", modifiers: .command)
+        } label: {
+            HStack(spacing: compact ? 3 : 5) {
+                if compact { Image(systemName: "magnifyingglass") }
+                Text("\(Int((model.boardEditor.zoom * 100).rounded()))%")
+                if !compact { Image(systemName: "chevron.down") }
+            }
+            .font(compact ? .caption : .callout)
+            .frame(
+                width: compact ? BoardRailWidthBudget.compactZoomWidth : nil
+            )
+            .frame(minHeight: BoardLayoutMetrics.toolControlHeight)
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .help("Board zoom")
+        .accessibilityLabel("Board zoom")
+        .accessibilityValue("\(Int((model.boardEditor.zoom * 100).rounded())) percent")
     }
 
     private var canvas: some View {
@@ -298,10 +667,8 @@ struct SystemDesignBoardView: View {
 
                     if document.elements.isEmpty {
                         emptyState
-                            .position(
-                                x: document.canvas.size.width / 2,
-                                y: document.canvas.size.height / 2
-                            )
+                            .padding(.leading, 28)
+                            .padding(.top, 26)
                     }
 
                     if activePenPoints.count > 1 {
@@ -328,6 +695,20 @@ struct SystemDesignBoardView: View {
             .background(BoardPalette.canvas)
             .focusable()
             .focused($isCanvasFocused)
+            .onKeyPress(
+                keys: [
+                    .tab,
+                    .return,
+                    .space,
+                    .leftArrow,
+                    .rightArrow,
+                    .upArrow,
+                    .downArrow,
+                    "b",
+                ],
+                phases: .down,
+                action: handleCanvasKeyPress
+            )
             .overlay {
                 Rectangle()
                     .stroke(
@@ -343,18 +724,23 @@ struct SystemDesignBoardView: View {
     }
 
     private var emptyState: some View {
-        VStack(spacing: 8) {
+        HStack(alignment: .top, spacing: 12) {
             Image(systemName: "point.3.connected.trianglepath.dotted")
-                .font(.system(size: 30, weight: .light))
+                .font(.system(size: 20, weight: .medium))
                 .foregroundStyle(BoardPalette.violet)
-            Text("Build the architecture here")
-                .font(.system(.headline, design: .rounded))
-            Text("Choose Box, Text, Connector, or Pen. Save a revision before Hand off.")
-                .font(.system(.callout, design: .rounded))
-                .foregroundStyle(BoardPalette.muted)
-                .multilineTextAlignment(.center)
-                .frame(maxWidth: 360)
+                .frame(width: 24, height: 24)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Build the architecture here")
+                    .font(.system(.callout, design: .rounded, weight: .semibold))
+                Text("Choose Box, Text, Connector, or Pen. Save a revision before Hand off.")
+                    .font(.system(.caption, design: .rounded))
+                    .foregroundStyle(BoardPalette.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
+        .frame(maxWidth: BoardLayoutMetrics.emptyStateMaximumWidth, alignment: .leading)
+        .allowsHitTesting(false)
         .accessibilityElement(children: .combine)
     }
 
@@ -371,7 +757,7 @@ struct SystemDesignBoardView: View {
         }
         .font(.system(.caption, design: .rounded))
         .foregroundStyle(
-            model.boardErrorMessage == nil ? BoardPalette.muted : BoardPalette.orange
+            model.boardErrorMessage == nil ? BoardPalette.muted : BoardPalette.errorText
         )
         .padding(.horizontal, 16)
         .padding(.vertical, 9)
@@ -382,51 +768,94 @@ struct SystemDesignBoardView: View {
     }
 
     private var boardStatusText: String {
-        model.boardErrorMessage
-            ?? model.boardExportMessage
-            ?? model.boardRevisionStatus
+        if let boardErrorMessage = model.boardErrorMessage {
+            return boardErrorMessage
+        }
+        if let boardExportMessage = model.boardExportMessage {
+            return boardExportMessage
+        }
+        if let interactionFeedback {
+            return "\(interactionFeedback) · \(model.boardRevisionStatus)"
+        }
+        return model.boardRevisionStatus
     }
 
     private func boxLayer(_ document: BoardDocument) -> some View {
         ForEach(boxes(in: document), id: \.id) { box in
             let selected = model.boardEditor.selectedElementID == box.id
                 && !model.isInspectingBoardRevision
-            VStack(spacing: 7) {
-                Text(box.kind.glyphToken)
-                    .font(.system(size: 9, weight: .bold, design: .monospaced))
-                    .frame(width: 40, height: 22)
-                    .overlay {
-                        RoundedRectangle(cornerRadius: 6, style: .continuous)
-                            .stroke(boardColor(box.stroke), lineWidth: 1.5)
-                    }
-                    .accessibilityLabel("\(box.kind.rawValue) node")
+            let visual = box.kind.visual
+            let nodeRect = CGRect(
+                origin: .zero,
+                size: CGSize(
+                    width: box.frame.size.width,
+                    height: box.frame.size.height
+                )
+            )
+            let labelLayout = BoardNodeLabelLayout(
+                text: box.label,
+                in: visual.labelRect(in: nodeRect)
+            )
+            ZStack {
+                BoardNodeVisualLayer(
+                    visual: visual,
+                    fill: boardColor(box.fill),
+                    stroke: selected
+                        ? BoardPalette.violet
+                        : boardColor(box.stroke),
+                    isSelected: selected
+                )
+                .accessibilityHidden(true)
+
                 if editingElementID == box.id {
                     TextField("Box label", text: $editingText)
                         .textFieldStyle(.plain)
                         .multilineTextAlignment(.center)
                         .focused($isLabelEditorFocused)
                         .onSubmit { commitEditing(id: box.id) }
+                        .frame(
+                            width: labelLayout.rect.width,
+                            height: labelLayout.rect.height
+                        )
+                        .clipped()
+                        .position(
+                            x: labelLayout.rect.midX,
+                            y: labelLayout.rect.midY
+                        )
                 } else {
-                    Text(box.label.isEmpty ? "Box" : box.label)
-                        .font(.system(.callout, design: .rounded, weight: .semibold))
-                        .multilineTextAlignment(.center)
-                        .lineLimit(3)
+                    VStack(spacing: 0) {
+                        ForEach(
+                            Array(labelLayout.lines.enumerated()),
+                            id: \.offset
+                        ) { _, line in
+                            Text(line)
+                                .font(
+                                    .system(
+                                        size: labelLayout.resolvedFontSize,
+                                        weight: .semibold,
+                                        design: .rounded
+                                    )
+                                )
+                                .lineLimit(1)
+                                .frame(
+                                    height: labelLayout.resolvedLineHeight
+                                )
+                        }
+                    }
+                    .frame(
+                        width: labelLayout.rect.width,
+                        height: labelLayout.rect.height
+                    )
+                    .clipped()
+                    .position(
+                        x: labelLayout.rect.midX,
+                        y: labelLayout.rect.midY
+                    )
                 }
             }
             .foregroundStyle(boardColor(box.stroke))
             .frame(width: box.frame.size.width, height: box.frame.size.height)
-            .background(
-                boardColor(box.fill),
-                in: RoundedRectangle(cornerRadius: 11, style: .continuous)
-            )
-            .overlay {
-                RoundedRectangle(cornerRadius: 11, style: .continuous)
-                    .stroke(
-                        selected ? BoardPalette.violet : boardColor(box.stroke),
-                        lineWidth: selected ? 2 : 1.5
-                    )
-            }
-            .overlay { selectionHandles(isVisible: selected) }
+            .overlay { selectionHandles(for: box, isVisible: selected) }
             .position(
                 x: box.frame.origin.x + box.frame.size.width / 2,
                 y: box.frame.origin.y + box.frame.size.height / 2
@@ -444,7 +873,7 @@ struct SystemDesignBoardView: View {
                     .onEnded { value in
                         guard model.boardEditor.tool == .select,
                               !model.isInspectingBoardRevision else { return }
-                        model.applyBoardAction(.select(box.id))
+                        select(box.id)
                         model.applyBoardAction(
                             .moveSelected(
                                 by: BoardPoint(
@@ -455,12 +884,59 @@ struct SystemDesignBoardView: View {
                         )
                     }
             )
-            .accessibilityElement(children: .combine)
+            .accessibilityElement(children: .contain)
             .accessibilityLabel("Architecture box: \(box.label.isEmpty ? "Untitled" : box.label)")
-            .accessibilityValue(selected ? "Selected" : "")
-            .accessibilityHint("Press to select. Double-click to edit the label. Drag to move in Select mode.")
-            .accessibilityAction(named: "Select") {
-                model.applyBoardAction(.select(box.id))
+            .accessibilityValue(
+                "\(visual.accessibilityName), \(Int(box.frame.size.width.rounded())) by \(Int(box.frame.size.height.rounded())) points\(selected ? ", selected" : "")"
+            )
+            .boardElementHint(
+                isReadOnly: model.isInspectingBoardRevision,
+                editable: BoardConnectorBoxActivation.resolve(
+                    sourceID: connectorSourceID,
+                    activatedBoxID: box.id,
+                    tool: model.boardEditor.tool
+                ).accessibilityHint
+            )
+            .accessibilityFocused($accessibilityFocusedElementID, equals: box.id)
+            .boardBoxAccessibilityActions(
+                isReadOnly: model.isInspectingBoardRevision,
+                connectorActionTitle: BoardConnectorBoxActivation.resolve(
+                    sourceID: connectorSourceID,
+                    activatedBoxID: box.id,
+                    tool: model.boardEditor.tool
+                ).accessibilityActionTitle
+            ) {
+                handleBoxTap(box)
+            }
+            .boardEditAccessibilityAction(
+                isReadOnly: model.isInspectingBoardRevision
+                    || model.boardEditor.tool == .connector
+            ) {
+                select(box.id)
+                beginEditing(id: box.id, text: box.label)
+            }
+            .boardMoveAccessibilityActions(
+                isReadOnly: model.isInspectingBoardRevision,
+                left: { select(box.id); moveSelection(.left) },
+                right: { select(box.id); moveSelection(.right) },
+                up: { select(box.id); moveSelection(.up) },
+                down: { select(box.id); moveSelection(.down) }
+            )
+            .boardResizeAccessibilityActions(
+                isReadOnly: model.isInspectingBoardRevision,
+                increase: {
+                    select(box.id)
+                    resizeSelection(by: BoardPoint(x: 10, y: 10))
+                },
+                decrease: {
+                    select(box.id)
+                    resizeSelection(by: BoardPoint(x: -10, y: -10))
+                }
+            )
+            .boardDeleteAccessibilityAction(
+                isReadOnly: model.isInspectingBoardRevision
+            ) {
+                deleteBoardElement(box.id, name: "Architecture node")
             }
         }
     }
@@ -469,6 +945,9 @@ struct SystemDesignBoardView: View {
         ForEach(connectors(in: document), id: \.id) { connector in
             let selected = model.boardEditor.selectedElementID == connector.id
                 && !model.isInspectingBoardRevision
+            let capabilities = BoardSelectionCapabilities(
+                element: .connector(connector)
+            )
             ZStack(alignment: .topLeading) {
                 BoardConnectorPath(
                     start: connector.start.point,
@@ -486,7 +965,7 @@ struct SystemDesignBoardView: View {
                             .frame(width: 150)
                     } else {
                         Button {
-                            model.applyBoardAction(.select(connector.id))
+                            select(connector.id)
                             isCanvasFocused = true
                         } label: {
                             Text(connector.label)
@@ -514,20 +993,117 @@ struct SystemDesignBoardView: View {
                         : "Connector: \(connector.label)"
                 )
                 .accessibilityValue(selected ? "Selected" : "")
-                .accessibilityHint("Selects this connector so it can be labeled or deleted")
+                .boardElementHint(
+                    isReadOnly: model.isInspectingBoardRevision,
+                    editable: capabilities.canMove
+                        ? "Select, label, move, or delete this free connector"
+                        : "Select, label, or delete this connector; its endpoints stay anchored to their nodes"
+                )
+                .accessibilityFocused($accessibilityFocusedElementID, equals: connector.id)
+                .boardEditAccessibilityAction(
+                    isReadOnly: model.isInspectingBoardRevision
+                ) {
+                    select(connector.id)
+                    beginEditing(id: connector.id, text: connector.label)
+                }
+                .boardMoveAccessibilityActions(
+                    isReadOnly: model.isInspectingBoardRevision
+                        || !capabilities.canMove,
+                    left: { select(connector.id); moveSelection(.left) },
+                    right: { select(connector.id); moveSelection(.right) },
+                    up: { select(connector.id); moveSelection(.up) },
+                    down: { select(connector.id); moveSelection(.down) }
+                )
+                .boardDeleteAccessibilityAction(
+                    isReadOnly: model.isInspectingBoardRevision
+                ) {
+                    deleteBoardElement(connector.id, name: "Connector")
+                }
             }
         }
     }
 
     private func strokeLayer(_ document: BoardDocument) -> some View {
         ForEach(strokes(in: document), id: \.id) { stroke in
-            BoardStrokePath(
-                points: stroke.points,
-                color: boardColor(stroke.color),
-                width: stroke.width
-            )
+            let selected = model.boardEditor.selectedElementID == stroke.id
+                && !model.isInspectingBoardRevision
+            ZStack {
+                BoardStrokePath(
+                    points: stroke.points,
+                    color: selected
+                        ? BoardPalette.violet
+                        : boardColor(stroke.color),
+                    width: selected ? stroke.width + 1 : stroke.width
+                )
+
+                BoardStrokeHitTarget(
+                    points: stroke.points,
+                    width: BoardStrokePointerInteraction.hitWidth(
+                        for: stroke.width
+                    )
+                )
+                .allowsHitTesting(
+                    BoardStrokePointerInteraction.isEnabled(
+                        tool: model.boardEditor.tool,
+                        isReadOnly: model.isInspectingBoardRevision
+                    )
+                )
+                .onTapGesture {
+                    select(stroke.id)
+                    interactionFeedback = "Freehand annotation selected"
+                    isCanvasFocused = true
+                }
+                .gesture(
+                    DragGesture(minimumDistance: 4)
+                        .onEnded { value in
+                            guard BoardStrokePointerInteraction.isEnabled(
+                                tool: model.boardEditor.tool,
+                                isReadOnly: model.isInspectingBoardRevision
+                            ) else { return }
+                            select(stroke.id)
+                            let changed = model.applyBoardAction(
+                                .moveSelected(
+                                    by: BoardPoint(
+                                        x: value.translation.width
+                                            / model.boardEditor.zoom,
+                                        y: value.translation.height
+                                            / model.boardEditor.zoom
+                                    )
+                                )
+                            )
+                            if changed {
+                                interactionFeedback = "Freehand annotation moved"
+                            }
+                            isCanvasFocused = true
+                        }
+                )
+                .accessibilityHidden(true)
+            }
             .accessibilityElement()
             .accessibilityLabel("Freehand board annotation")
+            .accessibilityValue(selected ? "Selected" : "")
+            .boardElementHint(
+                isReadOnly: model.isInspectingBoardRevision,
+                editable: "Select, move, or delete this freehand annotation"
+            )
+            .accessibilityFocused($accessibilityFocusedElementID, equals: stroke.id)
+            .boardSelectAccessibilityAction(
+                isReadOnly: model.isInspectingBoardRevision
+            ) {
+                select(stroke.id)
+            }
+            .boardMoveAccessibilityActions(
+                isReadOnly: model.isInspectingBoardRevision,
+                left: { select(stroke.id); moveSelection(.left) },
+                right: { select(stroke.id); moveSelection(.right) },
+                up: { select(stroke.id); moveSelection(.up) },
+                down: { select(stroke.id); moveSelection(.down) }
+            )
+            .boardDeleteAccessibilityAction(
+                isReadOnly: model.isInspectingBoardRevision
+            ) {
+                deleteBoardElement(stroke.id, name: "Freehand annotation")
+            }
         }
     }
 
@@ -545,8 +1121,15 @@ struct SystemDesignBoardView: View {
                         .foregroundStyle(boardColor(label.color))
                 }
             }
-            .frame(minWidth: 80, minHeight: 34, alignment: .leading)
-            .position(x: label.origin.x + 80, y: label.origin.y + 17)
+            .frame(
+                width: BoardElementLayout.labelSize.width,
+                height: BoardElementLayout.labelSize.height,
+                alignment: .leading
+            )
+            .position(
+                x: label.origin.x + BoardElementLayout.labelSize.width / 2,
+                y: label.origin.y + BoardElementLayout.labelSize.height / 2
+            )
             .contentShape(Rectangle())
             .onTapGesture(count: 2) {
                 guard !model.isInspectingBoardRevision else { return }
@@ -554,14 +1137,14 @@ struct SystemDesignBoardView: View {
             }
             .onTapGesture {
                 guard !model.isInspectingBoardRevision else { return }
-                model.applyBoardAction(.select(label.id))
+                select(label.id)
             }
             .gesture(
                 DragGesture(minimumDistance: 4)
                     .onEnded { value in
                         guard model.boardEditor.tool == .select,
                               !model.isInspectingBoardRevision else { return }
-                        model.applyBoardAction(.select(label.id))
+                        select(label.id)
                         model.applyBoardAction(
                             .moveSelected(
                                 by: BoardPoint(
@@ -573,7 +1156,32 @@ struct SystemDesignBoardView: View {
                     }
             )
             .accessibilityLabel("Board text: \(label.text)")
-            .accessibilityHint("Press to select. Double-click to edit. Drag to move in Select mode.")
+            .accessibilityValue(
+                model.boardEditor.selectedElementID == label.id ? "Selected" : ""
+            )
+            .boardElementHint(
+                isReadOnly: model.isInspectingBoardRevision,
+                editable: "Select, edit, move, or delete this board text"
+            )
+            .accessibilityFocused($accessibilityFocusedElementID, equals: label.id)
+            .boardEditAccessibilityAction(
+                isReadOnly: model.isInspectingBoardRevision
+            ) {
+                select(label.id)
+                beginEditing(id: label.id, text: label.text)
+            }
+            .boardMoveAccessibilityActions(
+                isReadOnly: model.isInspectingBoardRevision,
+                left: { select(label.id); moveSelection(.left) },
+                right: { select(label.id); moveSelection(.right) },
+                up: { select(label.id); moveSelection(.up) },
+                down: { select(label.id); moveSelection(.down) }
+            )
+            .boardDeleteAccessibilityAction(
+                isReadOnly: model.isInspectingBoardRevision
+            ) {
+                deleteBoardElement(label.id, name: "Board text")
+            }
         }
     }
 
@@ -609,7 +1217,8 @@ struct SystemDesignBoardView: View {
                 let point = BoardPoint(x: value.location.x, y: value.location.y)
                 switch model.boardEditor.tool {
                 case .select:
-                    model.applyBoardAction(.select(nil))
+                    select(nil)
+                    interactionFeedback = "Selection cleared"
                 case .box:
                     let origin = BoardPoint(
                         x: max(0, min(point.x - 80, model.boardEditor.document.canvas.size.width - 160)),
@@ -625,11 +1234,21 @@ struct SystemDesignBoardView: View {
                             kind: newBoxKind
                         )
                     )
+                    model.applyBoardAction(.setTool(.select))
+                    interactionFeedback = "\(newBoxKind.displayName) node added and selected"
                     if let id = model.boardEditor.selectedElementID {
                         beginEditing(id: id, text: newBoxKind.displayName)
                     }
                 case .label:
-                    model.applyBoardAction(.createLabel(origin: point, text: "Label"))
+                    let origin = BoardElementLayout.clampedLabelOrigin(
+                        point,
+                        in: model.boardEditor.document.canvas.size
+                    )
+                    model.applyBoardAction(
+                        .createLabel(origin: origin, text: "Label")
+                    )
+                    model.applyBoardAction(.setTool(.select))
+                    interactionFeedback = "Text label added and selected"
                     if let id = model.boardEditor.selectedElementID {
                         beginEditing(id: id, text: "Label")
                     }
@@ -648,50 +1267,262 @@ struct SystemDesignBoardView: View {
                     lastEraserPoint = nil
                 case .connector:
                     connectorSourceID = nil
+                    interactionFeedback = "Connector source cleared"
                 }
             }
     }
 
     private func handleBoxTap(_ box: BoardBox) {
         guard !model.isInspectingBoardRevision else { return }
-        if model.boardEditor.tool == .connector {
-            if let sourceID = connectorSourceID, sourceID != box.id {
-                model.applyBoardAction(
-                    .connect(
-                        sourceBoxID: sourceID,
-                        targetBoxID: box.id,
-                        label: ""
-                    )
-                )
+        switch BoardConnectorBoxActivation.resolve(
+            sourceID: connectorSourceID,
+            activatedBoxID: box.id,
+            tool: model.boardEditor.tool
+        ) {
+        case .selectNormally:
+            select(box.id)
+            interactionFeedback = "\(boxDisplayName(box)) selected"
+
+        case .chooseSource:
+            connectorSourceID = box.id
+            select(box.id)
+            interactionFeedback = "Source selected: \(boxDisplayName(box)) · choose a target node"
+
+        case .chooseDifferentTarget:
+            select(box.id)
+            interactionFeedback = "\(boxDisplayName(box)) is already the source · choose a different target node"
+
+        case .connect(let sourceID, let targetID):
+            guard let source = boxes(
+                in: model.boardEditor.document
+            ).first(where: { $0.id == sourceID }) else {
                 connectorSourceID = nil
-            } else {
-                connectorSourceID = box.id
-                model.applyBoardAction(.select(box.id))
+                interactionFeedback = "Connector source is no longer available · choose a source node"
+                break
             }
-        } else {
-            model.applyBoardAction(.select(box.id))
+            model.applyBoardAction(
+                .connect(
+                    sourceBoxID: sourceID,
+                    targetBoxID: targetID,
+                    label: ""
+                )
+            )
+            connectorSourceID = nil
+            model.applyBoardAction(.setTool(.select))
+            accessibilityFocusedElementID = model.boardEditor.selectedElementID
+            interactionFeedback = "Connector added: \(boxDisplayName(source)) to \(boxDisplayName(box))"
         }
         isCanvasFocused = true
     }
 
+    private func boxDisplayName(_ box: BoardBox) -> String {
+        box.label.isEmpty ? box.kind.displayName : box.label
+    }
+
+    private func deleteBoardElement(
+        _ id: BoardElementID,
+        name: String
+    ) {
+        guard !model.isInspectingBoardRevision else { return }
+        if connectorSourceID == id { connectorSourceID = nil }
+        select(id)
+        model.applyBoardAction(.deleteSelection)
+        accessibilityFocusedElementID = nil
+        interactionFeedback = "\(name) deleted"
+        isCanvasFocused = true
+    }
+
     @ViewBuilder
-    private func selectionHandles(isVisible: Bool) -> some View {
+    private func selectionHandles(for box: BoardBox, isVisible: Bool) -> some View {
         if isVisible {
             ZStack {
-                ForEach(SelectionCorner.allCases, id: \.self) { corner in
-                    Rectangle()
-                        .fill(BoardPalette.violet)
-                        .frame(width: 7, height: 7)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: corner.alignment)
+                ForEach(BoardResizeHandle.allCases, id: \.rawValue) { handle in
+                    ZStack {
+                        Rectangle()
+                            .fill(BoardPalette.paper)
+                            .frame(width: 10, height: 10)
+                        Rectangle()
+                            .stroke(BoardPalette.violet, lineWidth: 2)
+                            .frame(width: 10, height: 10)
+                    }
+                    .frame(width: 28, height: 28)
+                    .contentShape(Rectangle())
+                    .highPriorityGesture(
+                        DragGesture(minimumDistance: 1)
+                            .onEnded { value in
+                                guard !model.isInspectingBoardRevision else { return }
+                                select(box.id)
+                                model.applyBoardAction(
+                                    .resizeSelected(
+                                        handle: handle,
+                                        by: BoardPoint(
+                                            x: value.translation.width / model.boardEditor.zoom,
+                                            y: value.translation.height / model.boardEditor.zoom
+                                        )
+                                    )
+                                )
+                                interactionFeedback = "Node resized"
+                            }
+                    )
+                    .help("Resize from the \(handle.displayName) corner")
+                    .frame(
+                        maxWidth: .infinity,
+                        maxHeight: .infinity,
+                        alignment: handle.alignment
+                    )
                 }
             }
-            .padding(-4)
-            .allowsHitTesting(false)
+            .padding(-14)
             .accessibilityHidden(true)
         }
     }
 
+    private func handleCanvasKeyPress(_ press: KeyPress) -> KeyPress.Result {
+        guard !model.isInspectingBoardRevision,
+              editingElementID == nil else {
+            return .ignored
+        }
+
+        if press.key == .tab {
+            guard press.modifiers.contains(.control) else { return .ignored }
+            selectRelativeElement(forward: !press.modifiers.contains(.shift))
+            return .handled
+        }
+        if press.key == "b", press.modifiers.contains(.command) {
+            addBoxFromKeyboard()
+            return .handled
+        }
+        if let activationKey = BoardKeyboardActivationKey(key: press.key) {
+            switch BoardKeyboardActivation.resolve(
+                key: activationKey,
+                tool: model.boardEditor.tool,
+                selectedElement: selectedBoardElement
+            ) {
+            case .activateConnectorBox(let id):
+                guard let box = boxes(
+                    in: model.boardEditor.document
+                ).first(where: { $0.id == id }) else {
+                    return .ignored
+                }
+                handleBoxTap(box)
+                return .handled
+            case .editLabel(let id, let text):
+                beginEditing(id: id, text: text)
+                return .handled
+            case .ignored:
+                return .ignored
+            }
+        }
+        guard let direction = BoardKeyboardDirection(key: press.key) else {
+            return .ignored
+        }
+        if press.modifiers.contains(.shift) {
+            guard selectedCapabilities?.canResize == true else {
+                return .ignored
+            }
+            resizeSelection(by: direction.delta)
+        } else {
+            guard selectedCapabilities?.canMove == true else {
+                return .ignored
+            }
+            moveSelection(direction)
+        }
+        return .handled
+    }
+
+    private func addBoxFromKeyboard() {
+        guard !model.isInspectingBoardRevision else { return }
+        let frame = BoardKeyboardPlacement.nextBoxFrame(
+            in: model.boardEditor.document
+        )
+        let previousSelection = model.boardEditor.selectedElementID
+        let changed = model.applyBoardAction(
+            .createBox(
+                frame: frame,
+                label: newBoxKind.displayName,
+                kind: newBoxKind
+            )
+        )
+        guard BoardKeyboardCreationOutcome.didCreateElement(
+            documentChanged: changed,
+            previousSelection: previousSelection,
+            currentSelection: model.boardEditor.selectedElementID
+        ) else {
+            return
+        }
+        model.applyBoardAction(.setTool(.select))
+        interactionFeedback = "\(newBoxKind.displayName) node added and selected"
+        if let id = model.boardEditor.selectedElementID {
+            accessibilityFocusedElementID = id
+        }
+        isCanvasFocused = true
+    }
+
+    private func select(_ id: BoardElementID?) {
+        model.applyBoardAction(.select(id))
+        accessibilityFocusedElementID = id
+    }
+
+    private func selectRelativeElement(forward: Bool) {
+        guard !model.isInspectingBoardRevision else { return }
+        model.applyBoardAction(forward ? .selectNext : .selectPrevious)
+        accessibilityFocusedElementID = model.boardEditor.selectedElementID
+        isCanvasFocused = true
+    }
+
+    @discardableResult
+    private func moveSelection(_ direction: BoardKeyboardDirection) -> Bool {
+        guard !model.isInspectingBoardRevision,
+              selectedCapabilities?.canMove == true else {
+            return false
+        }
+        guard model.applyBoardAction(
+            .moveSelected(by: direction.delta)
+        ) else { return false }
+        interactionFeedback = "Selection moved \(direction.displayName)"
+        accessibilityFocusedElementID = model.boardEditor.selectedElementID
+        isCanvasFocused = true
+        return true
+    }
+
+    @discardableResult
+    private func resizeSelection(by delta: BoardPoint) -> Bool {
+        guard !model.isInspectingBoardRevision,
+              selectedCapabilities?.canResize == true else {
+            return false
+        }
+        guard model.applyBoardAction(
+            .resizeSelected(handle: .bottomTrailing, by: delta)
+        ) else { return false }
+        interactionFeedback = "Selected node resized"
+        accessibilityFocusedElementID = model.boardEditor.selectedElementID
+        isCanvasFocused = true
+        return true
+    }
+
+    private var selectedBoardElement: BoardElement? {
+        guard let selectedID = model.boardEditor.selectedElementID else {
+            return nil
+        }
+        return model.boardEditor.document.elements.first {
+            $0.boardID == selectedID
+        }
+    }
+
+    private var selectedCapabilities: BoardSelectionCapabilities? {
+        selectedBoardElement.map(BoardSelectionCapabilities.init(element:))
+    }
+
+    private var boardAccessibilityValue: String {
+        let document = model.boardDocumentForPresentation
+        let count = document.elements.count
+        let selection = model.boardSelectedElementIDForPresentation?.rawValue
+            ?? "none"
+        return "\(count) elements, \(model.boardEditor.tool.rawValue) tool, \(Int((model.boardEditor.zoom * 100).rounded())) percent zoom, selected \(selection)"
+    }
+
     private func beginEditing(id: BoardElementID, text: String) {
+        guard !model.isInspectingBoardRevision else { return }
         editingElementID = id
         editingText = text
         isLabelEditorFocused = true
@@ -711,28 +1542,28 @@ struct SystemDesignBoardView: View {
     }
 
     private func boxes(in document: BoardDocument) -> [BoardBox] {
-        document.elements.compactMap {
+        BoardRenderOrder.elements(in: document).compactMap {
             guard case .box(let value) = $0 else { return nil }
             return value
         }
     }
 
     private func connectors(in document: BoardDocument) -> [BoardConnector] {
-        document.elements.compactMap {
+        BoardRenderOrder.elements(in: document).compactMap {
             guard case .connector(let value) = $0 else { return nil }
             return value
         }
     }
 
     private func labels(in document: BoardDocument) -> [BoardLabel] {
-        document.elements.compactMap {
+        BoardRenderOrder.elements(in: document).compactMap {
             guard case .label(let value) = $0 else { return nil }
             return value
         }
     }
 
     private func strokes(in document: BoardDocument) -> [BoardStroke] {
-        document.elements.compactMap {
+        BoardRenderOrder.elements(in: document).compactMap {
             guard case .stroke(let value) = $0 else { return nil }
             return value
         }
@@ -784,6 +1615,244 @@ struct SystemDesignBoardView: View {
     }
 }
 
+private extension View {
+    @ViewBuilder
+    func boardRootAccessibilityActions(
+        isReadOnly: Bool,
+        addTitle: String,
+        add: @escaping () -> Void,
+        next: @escaping () -> Void,
+        previous: @escaping () -> Void
+    ) -> some View {
+        if isReadOnly {
+            self
+        } else {
+            self
+                .accessibilityAction(named: Text(addTitle)) { add() }
+                .accessibilityAction(named: "Select next board element") {
+                    next()
+                }
+                .accessibilityAction(named: "Select previous board element") {
+                    previous()
+                }
+        }
+    }
+
+    func boardElementHint(
+        isReadOnly: Bool,
+        editable: String
+    ) -> some View {
+        accessibilityHint(
+            isReadOnly ? "Read-only saved board revision" : editable
+        )
+    }
+
+    @ViewBuilder
+    func boardBoxAccessibilityActions(
+        isReadOnly: Bool,
+        connectorActionTitle: String?,
+        action: @escaping () -> Void
+    ) -> some View {
+        if isReadOnly {
+            self
+        } else if let connectorActionTitle {
+            self
+                .accessibilityAction { action() }
+                .accessibilityAction(named: "Select") { action() }
+                .accessibilityAction(named: Text(connectorActionTitle)) {
+                    action()
+                }
+        } else {
+            self
+                .accessibilityAction { action() }
+                .accessibilityAction(named: "Select") { action() }
+        }
+    }
+
+    @ViewBuilder
+    func boardSelectAccessibilityAction(
+        isReadOnly: Bool,
+        action: @escaping () -> Void
+    ) -> some View {
+        if isReadOnly {
+            self
+        } else {
+            accessibilityAction(named: "Select") { action() }
+        }
+    }
+
+    @ViewBuilder
+    func boardEditAccessibilityAction(
+        isReadOnly: Bool,
+        action: @escaping () -> Void
+    ) -> some View {
+        if isReadOnly {
+            self
+        } else {
+            accessibilityAction(named: "Edit label") { action() }
+        }
+    }
+
+    @ViewBuilder
+    func boardMoveAccessibilityActions(
+        isReadOnly: Bool,
+        left: @escaping () -> Void,
+        right: @escaping () -> Void,
+        up: @escaping () -> Void,
+        down: @escaping () -> Void
+    ) -> some View {
+        if isReadOnly {
+            self
+        } else {
+            self
+                .accessibilityAction(named: "Move left") { left() }
+                .accessibilityAction(named: "Move right") { right() }
+                .accessibilityAction(named: "Move up") { up() }
+                .accessibilityAction(named: "Move down") { down() }
+        }
+    }
+
+    @ViewBuilder
+    func boardResizeAccessibilityActions(
+        isReadOnly: Bool,
+        increase: @escaping () -> Void,
+        decrease: @escaping () -> Void
+    ) -> some View {
+        if isReadOnly {
+            self
+        } else {
+            self
+                .accessibilityAction(named: "Increase size") { increase() }
+                .accessibilityAction(named: "Decrease size") { decrease() }
+        }
+    }
+
+    @ViewBuilder
+    func boardDeleteAccessibilityAction(
+        isReadOnly: Bool,
+        action: @escaping () -> Void
+    ) -> some View {
+        if BoardAccessibilityActionPolicy.exposesDelete(
+            isReadOnly: isReadOnly
+        ) {
+            accessibilityAction(named: "Delete") { action() }
+        } else {
+            self
+        }
+    }
+}
+
+enum BoardAccessibilityActionPolicy {
+    static func exposesDelete(isReadOnly: Bool) -> Bool {
+        !isReadOnly
+    }
+}
+
+enum BoardConnectorBoxActivation: Equatable {
+    case selectNormally
+    case chooseSource
+    case chooseDifferentTarget
+    case connect(sourceID: BoardElementID, targetID: BoardElementID)
+
+    static func resolve(
+        sourceID: BoardElementID?,
+        activatedBoxID: BoardElementID,
+        tool: BoardEditorTool
+    ) -> Self {
+        guard tool == .connector else { return .selectNormally }
+        guard let sourceID else { return .chooseSource }
+        guard sourceID != activatedBoxID else {
+            return .chooseDifferentTarget
+        }
+        return .connect(sourceID: sourceID, targetID: activatedBoxID)
+    }
+
+    var accessibilityActionTitle: String? {
+        switch self {
+        case .selectNormally:
+            nil
+        case .chooseSource:
+            "Choose as connector source"
+        case .chooseDifferentTarget:
+            "Keep as connector source"
+        case .connect:
+            "Connect to this node"
+        }
+    }
+
+    var accessibilityHint: String {
+        switch self {
+        case .selectNormally:
+            "Select, edit, move, resize, or delete this architecture node"
+        case .chooseSource:
+            "Choose this node as the connector source, or delete it"
+        case .chooseDifferentTarget:
+            "This is the connector source; choose a different target node, or delete it"
+        case .connect:
+            "Use this node as the connector target, or delete it"
+        }
+    }
+}
+
+enum BoardKeyboardActivationKey: Equatable {
+    case returnKey
+    case space
+
+    init?(key: KeyEquivalent) {
+        if key == .return {
+            self = .returnKey
+        } else if key == .space {
+            self = .space
+        } else {
+            return nil
+        }
+    }
+}
+
+enum BoardKeyboardActivation: Equatable {
+    case activateConnectorBox(BoardElementID)
+    case editLabel(BoardElementID, String)
+    case ignored
+
+    static func resolve(
+        key: BoardKeyboardActivationKey,
+        tool: BoardEditorTool,
+        selectedElement: BoardElement?
+    ) -> Self {
+        guard let selectedElement else { return .ignored }
+        if tool == .connector {
+            guard case .box(let box) = selectedElement else { return .ignored }
+            return .activateConnectorBox(box.id)
+        }
+        guard key == .returnKey else { return .ignored }
+        switch selectedElement {
+        case .box(let box):
+            return .editLabel(box.id, box.label)
+        case .connector(let connector):
+            return .editLabel(connector.id, connector.label)
+        case .label(let label):
+            return .editLabel(label.id, label.text)
+        case .stroke:
+            return .ignored
+        }
+    }
+}
+
+enum BoardStrokePointerInteraction {
+    static let minimumHitWidth = 44.0
+
+    static func isEnabled(
+        tool: BoardEditorTool,
+        isReadOnly: Bool
+    ) -> Bool {
+        tool == .select && !isReadOnly
+    }
+
+    static func hitWidth(for visibleWidth: Double) -> Double {
+        max(minimumHitWidth, visibleWidth)
+    }
+}
+
 enum BoardGestureSampling {
     static let minimumEraserDistance = 6.0
 
@@ -797,15 +1866,124 @@ enum BoardGestureSampling {
     }
 }
 
+enum BoardLayoutMetrics {
+    static let revisionRailHeight: CGFloat = 54
+    static let toolRailHeight: CGFloat = 58
+    static let sectionLabelHeight: CGFloat = 44
+    static let minimumHitTarget: CGFloat = 44
+    static let toolControlHeight: CGFloat = minimumHitTarget
+    static let emptyStateMaximumWidth: CGFloat = 360
+}
+
+enum BoardRailWidthBudget {
+    static let supportedBoardWidth: CGFloat = 680
+    static let compactHorizontalPadding: CGFloat = 8
+    static let compactRevisionSpacing: CGFloat = 6
+    static let compactToolbarSpacing: CGFloat = 4
+    static let compactTabWidth: CGFloat = 64
+    static let compactStatusWidth: CGFloat = 132
+    static let compactRevisionSpacerWidth: CGFloat = 4
+    static let compactZoomWidth: CGFloat = 68
+    static let dividerWidth: CGFloat = 1
+    static let wideRevisionRequiredWidth: CGFloat = 820
+    static let wideToolbarRequiredWidth: CGFloat = 780
+
+    static func compactRevisionRequiredWidth(actionCount: Int) -> CGFloat {
+        let actions = max(0, actionCount)
+        let itemCount = 3 + actions // Board, status, spacer, then actions.
+        return compactHorizontalPadding * 2
+            + compactTabWidth
+            + compactStatusWidth
+            + compactRevisionSpacerWidth
+            + CGFloat(actions) * BoardLayoutMetrics.minimumHitTarget
+            + CGFloat(max(0, itemCount - 1)) * compactRevisionSpacing
+    }
+
+    static var compactToolbarRequiredWidth: CGFloat {
+        let iconControlCount = 8
+        let dividerCount = 3
+        let itemCount = iconControlCount + dividerCount + 1 // Zoom.
+        return compactHorizontalPadding * 2
+            + CGFloat(iconControlCount) * BoardLayoutMetrics.minimumHitTarget
+            + CGFloat(dividerCount) * dividerWidth
+            + compactZoomWidth
+            + CGFloat(itemCount - 1) * compactToolbarSpacing
+    }
+}
+
+enum BoardRailPresentation {
+    static func compactRevisionStatus(
+        _ status: BoardRevisionStatusPresentation
+    ) -> String {
+        status.compactText
+    }
+}
+
+enum BoardRevisionHistoryPresentation {
+    static let recentLimit = 5
+
+    static func recent(_ revisions: [BoardRevision]) -> [BoardRevision] {
+        Array(revisions.suffix(recentLimit).reversed())
+    }
+
+    static func all(_ revisions: [BoardRevision]) -> [BoardRevision] {
+        Array(revisions.reversed())
+    }
+
+    static func hasMore(_ revisions: [BoardRevision]) -> Bool {
+        revisions.count > recentLimit
+    }
+}
+
 enum BoardPalette {
     static let paper = Color(red: 252 / 255, green: 252 / 255, blue: 254 / 255)
+    static let toolbar = Color(red: 248 / 255, green: 248 / 255, blue: 252 / 255)
     static let canvas = Color(red: 250 / 255, green: 251 / 255, blue: 254 / 255)
     static let ink = Color(red: 14 / 255, green: 17 / 255, blue: 30 / 255)
     static let navy = Color(red: 24 / 255, green: 35 / 255, blue: 89 / 255)
     static let violet = Color(red: 75 / 255, green: 58 / 255, blue: 191 / 255)
     static let orange = Color(red: 237 / 255, green: 78 / 255, blue: 47 / 255)
+    static let errorText = Color(red: 169 / 255, green: 54 / 255, blue: 30 / 255)
     static let muted = Color(red: 82 / 255, green: 98 / 255, blue: 139 / 255)
     static let line = Color(red: 224 / 255, green: 226 / 255, blue: 237 / 255)
+}
+
+private struct BoardNodeVisualLayer: View {
+    let visual: BoardNodeVisual
+    let fill: Color
+    let stroke: Color
+    let isSelected: Bool
+
+    var body: some View {
+        Canvas { context, size in
+            let rect = CGRect(origin: .zero, size: size)
+            let outline = Path(visual.outlinePath(in: rect).cgPath)
+            let strokeWidth = visual.strokeWidth(in: rect)
+            context.fill(outline, with: .color(fill))
+            context.stroke(
+                outline,
+                with: .color(stroke),
+                style: StrokeStyle(
+                    lineWidth: visual.strokeWidth(
+                        in: rect,
+                        isSelected: isSelected
+                    ),
+                    lineJoin: .round
+                )
+            )
+            for vector in visual.detailPaths(in: rect) + visual.pictogramPaths(in: rect) {
+                context.stroke(
+                    Path(vector.cgPath),
+                    with: .color(stroke),
+                    style: StrokeStyle(
+                        lineWidth: strokeWidth,
+                        lineCap: .round,
+                        lineJoin: .round
+                    )
+                )
+            }
+        }
+    }
 }
 
 private struct BoardDotGrid: View {
@@ -814,8 +1992,8 @@ private struct BoardDotGrid: View {
             for x in stride(from: 10.0, through: size.width, by: 20) {
                 for y in stride(from: 10.0, through: size.height, by: 20) {
                     context.fill(
-                        Path(ellipseIn: CGRect(x: x, y: y, width: 1.3, height: 1.3)),
-                        with: .color(BoardPalette.line.opacity(0.78))
+                        Path(ellipseIn: CGRect(x: x, y: y, width: 1.5, height: 1.5)),
+                        with: .color(BoardPalette.line.opacity(0.9))
                     )
                 }
             }
@@ -832,30 +2010,42 @@ private struct BoardConnectorPath: View {
 
     var body: some View {
         Canvas { context, _ in
+            let route = BoardOrthogonalConnectorRoute(start: start, end: end)
+            guard let first = route.points.first,
+                  let last = route.points.last else {
+                return
+            }
             var line = Path()
-            line.move(to: CGPoint(x: start.x, y: start.y))
-            line.addLine(to: CGPoint(x: end.x, y: end.y))
+            line.move(to: CGPoint(x: first.x, y: first.y))
+            for point in route.points.dropFirst() {
+                line.addLine(to: CGPoint(x: point.x, y: point.y))
+            }
             context.stroke(
                 line,
                 with: .color(color),
-                style: StrokeStyle(lineWidth: 1.7, lineCap: .round)
+                style: StrokeStyle(
+                    lineWidth: 1.7,
+                    lineCap: .round,
+                    lineJoin: .round
+                )
             )
 
-            let angle = atan2(end.y - start.y, end.x - start.x)
+            let arrowStart = route.points.dropLast().last ?? first
+            let angle = atan2(last.y - arrowStart.y, last.x - arrowStart.x)
             let length = 10.0
             let wing = 0.5
             var arrow = Path()
-            arrow.move(to: CGPoint(x: end.x, y: end.y))
+            arrow.move(to: CGPoint(x: last.x, y: last.y))
             arrow.addLine(
                 to: CGPoint(
-                    x: end.x - length * cos(angle - wing),
-                    y: end.y - length * sin(angle - wing)
+                    x: last.x - length * cos(angle - wing),
+                    y: last.y - length * sin(angle - wing)
                 )
             )
             arrow.addLine(
                 to: CGPoint(
-                    x: end.x - length * cos(angle + wing),
-                    y: end.y - length * sin(angle + wing)
+                    x: last.x - length * cos(angle + wing),
+                    y: last.y - length * sin(angle + wing)
                 )
             )
             arrow.closeSubpath()
@@ -893,12 +2083,49 @@ private struct BoardStrokePath: View {
     }
 }
 
-private enum SelectionCorner: CaseIterable {
-    case topLeading
-    case topTrailing
-    case bottomLeading
-    case bottomTrailing
+private struct BoardStrokeHitTarget: View {
+    let points: [BoardPoint]
+    let width: Double
 
+    var body: some View {
+        BoardStrokeHitShape(points: points, width: width)
+            .fill(Color.clear)
+            .contentShape(BoardStrokeHitShape(points: points, width: width))
+    }
+}
+
+private struct BoardStrokeHitShape: Shape {
+    let points: [BoardPoint]
+    let width: Double
+
+    func path(in rect: CGRect) -> Path {
+        guard let first = points.first else { return Path() }
+        guard points.count > 1 else {
+            return Path(
+                ellipseIn: CGRect(
+                    x: first.x - width / 2,
+                    y: first.y - width / 2,
+                    width: width,
+                    height: width
+                )
+            )
+        }
+        var line = Path()
+        line.move(to: CGPoint(x: first.x, y: first.y))
+        for point in points.dropFirst() {
+            line.addLine(to: CGPoint(x: point.x, y: point.y))
+        }
+        return line.strokedPath(
+            StrokeStyle(
+                lineWidth: width,
+                lineCap: .round,
+                lineJoin: .round
+            )
+        )
+    }
+}
+
+private extension BoardResizeHandle {
     var alignment: Alignment {
         switch self {
         case .topLeading: .topLeading
@@ -906,5 +2133,96 @@ private enum SelectionCorner: CaseIterable {
         case .bottomLeading: .bottomLeading
         case .bottomTrailing: .bottomTrailing
         }
+    }
+
+    var displayName: String {
+        switch self {
+        case .topLeading: "top-left"
+        case .topTrailing: "top-right"
+        case .bottomLeading: "bottom-left"
+        case .bottomTrailing: "bottom-right"
+        }
+    }
+}
+
+enum BoardKeyboardDirection: Equatable {
+    case left
+    case right
+    case up
+    case down
+
+    init?(key: KeyEquivalent) {
+        if key == .leftArrow {
+            self = .left
+        } else if key == .rightArrow {
+            self = .right
+        } else if key == .upArrow {
+            self = .up
+        } else if key == .downArrow {
+            self = .down
+        } else {
+            return nil
+        }
+    }
+
+    var delta: BoardPoint {
+        switch self {
+        case .left: BoardPoint(x: -10, y: 0)
+        case .right: BoardPoint(x: 10, y: 0)
+        case .up: BoardPoint(x: 0, y: -10)
+        case .down: BoardPoint(x: 0, y: 10)
+        }
+    }
+
+    var displayName: String {
+        switch self {
+        case .left: "left"
+        case .right: "right"
+        case .up: "up"
+        case .down: "down"
+        }
+    }
+}
+
+enum BoardKeyboardCreationOutcome {
+    static func didCreateElement(
+        documentChanged: Bool,
+        previousSelection: BoardElementID?,
+        currentSelection: BoardElementID?
+    ) -> Bool {
+        documentChanged
+            && currentSelection != nil
+            && currentSelection != previousSelection
+    }
+}
+
+enum BoardKeyboardPlacement {
+    static func nextBoxFrame(in document: BoardDocument) -> BoardRect {
+        let canvas = document.canvas.size
+        let width = min(160, canvas.width)
+        let height = min(90, canvas.height)
+        let horizontalMargin = min(40, max(0, (canvas.width - width) / 2))
+        let verticalMargin = min(40, max(0, (canvas.height - height) / 2))
+        let horizontalStep = width + 24
+        let verticalStep = height + 24
+        let usableWidth = max(width, canvas.width - horizontalMargin * 2)
+        let columns = max(1, Int((usableWidth + 24) / horizontalStep))
+        let boxCount = document.elements.reduce(into: 0) { count, element in
+            if case .box = element { count += 1 }
+        }
+        let column = boxCount % columns
+        let row = boxCount / columns
+        let x = min(
+            max(0, canvas.width - width),
+            horizontalMargin + Double(column) * horizontalStep
+        )
+        let y = min(
+            max(0, canvas.height - height),
+            verticalMargin + Double(row) * verticalStep
+        )
+        return BoardRect(
+            origin: BoardPoint(x: x, y: y),
+            size: BoardSize(width: width, height: height)
+        )
     }
 }

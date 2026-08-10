@@ -95,19 +95,29 @@ final class SystemDesignBoardModelTests: XCTestCase {
         XCTAssertNil(model.boardAttachmentForHandOff)
 
         await model.saveBoardRevision()
+        let second = try XCTUnwrap(model.snapshot?.board.revisions.last)
+        XCTAssertNotEqual(second.id, revision.id)
+        model.applyBoardAction(.updateLabel(id: boxID, text: "Latest gateway"))
+        await model.waitForBoardPersistence()
+        let latestDraft = model.boardEditor.document
+        await model.saveBoardRevision()
         let latest = try XCTUnwrap(model.snapshot?.board.revisions.last)
-        XCTAssertNotEqual(latest.id, revision.id)
+        XCTAssertEqual(model.snapshot?.board.revisions.count, 3)
+        XCTAssertEqual(latest.ordinal, 2)
         XCTAssertEqual(model.boardAttachmentForHandOff, .revision(latest.id))
 
         await model.inspectBoardRevision(revision.id)
         XCTAssertTrue(model.isInspectingBoardRevision)
         XCTAssertEqual(model.boardDocumentForPresentation, revision.document)
-        XCTAssertEqual(model.boardEditor.document, updatedDraft)
+        XCTAssertEqual(model.boardEditor.document, latestDraft)
+        XCTAssertEqual(model.boardRevisionStatus, "Viewing revision 1 · read-only")
+        XCTAssertNil(model.boardSelectedElementIDForPresentation)
         XCTAssertEqual(model.boardAttachmentForHandOff, .revision(revision.id))
 
         await model.returnToBoardDraft()
         XCTAssertFalse(model.isInspectingBoardRevision)
-        XCTAssertEqual(model.boardDocumentForPresentation, updatedDraft)
+        XCTAssertEqual(model.boardDocumentForPresentation, latestDraft)
+        XCTAssertEqual(model.boardSelectedElementIDForPresentation, boxID)
         XCTAssertEqual(model.boardAttachmentForHandOff, .revision(latest.id))
 
         model.applyBoardAction(.updateLabel(id: boxID, text: "Dirty gateway"))

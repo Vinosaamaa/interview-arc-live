@@ -179,7 +179,7 @@ struct CandidateSegmentCard: View {
 
     private var lifecycleColor: Color {
         switch segment.lifecycle {
-        case .ready: LivePalette.candidate
+        case .ready: LivePalette.candidateText
         case .recording: LivePalette.handoff
         case .partial, .recoverable, .failed: LivePalette.warning
         case .preserved: LivePalette.interviewer
@@ -208,7 +208,7 @@ struct CandidateSegmentCard: View {
                 Label(action.title, systemImage: action.symbol)
             }
             .buttonStyle(.borderedProminent)
-            .tint(LivePalette.candidate)
+            .tint(LivePalette.candidateText)
             .disabled(isBusy)
             .accessibilityHint(
                 action == .initial
@@ -229,7 +229,7 @@ struct CandidateSegmentCard: View {
 
     private func qualityColor(_ quality: CandidateSegmentPresentation.Quality) -> Color {
         switch quality {
-        case .verified: LivePalette.candidate
+        case .verified: LivePalette.candidateText
         case .bestAvailable: LivePalette.interviewer
         case .possibleContamination: LivePalette.warning
         }

@@ -1,3 +1,4 @@
+import Foundation
 import InterviewArcLiveCore
 import SwiftUI
 
@@ -25,11 +26,20 @@ struct SystemDesignRoomView: View {
                 codexReadinessBanner(codexMessage)
             }
 
-            HSplitView {
-                transcript
-                    .frame(minWidth: 330, idealWidth: 410, maxWidth: 520)
-                board
-                    .frame(minWidth: 560)
+            GeometryReader { workspace in
+                HSplitView {
+                    transcript
+                        .frame(
+                            minWidth: FullRoomLayout.turnlineMinimumWidth,
+                            idealWidth: FullRoomLayout.turnlineIdealWidth(
+                                for: workspace.size.width
+                            ),
+                            maxWidth: FullRoomLayout.turnlineMaximumWidth
+                        )
+                    board
+                        .frame(minWidth: FullRoomLayout.boardMinimumWidth)
+                        .accessibilityIdentifier(FullRoomAccessibility.board)
+                }
             }
 
             floorRail
@@ -60,29 +70,108 @@ struct SystemDesignRoomView: View {
     }
 
     private var header: some View {
-        HStack(spacing: 14) {
-            LiveMark()
-                .frame(width: 30, height: 30)
-            Text("Interview Arc Live")
-                .font(.system(.headline, design: .rounded, weight: .semibold))
-            Spacer()
+        GeometryReader { geometry in
+            let state = FullRoomHeaderLayout.state(
+                windowWidth: geometry.size.width,
+                hasSpeechAttention: !model.isSpeechReady,
+                hasRoomAttention: model.errorMessage != nil
+                    || model.codexAttentionMessage != nil
+            )
 
-            Menu {
-                Picker("Turn-taking", selection: turnModeRawSelection) {
-                    ForEach(model.availableTurnModes, id: \.rawValue) { mode in
-                        Text(model.turnModeTitle(mode)).tag(mode.rawValue)
+            Group {
+                if state.usesAttentionCompactHeader {
+                    compactHeaderContent
+                } else {
+                    ViewThatFits(in: .horizontal) {
+                        fullHeaderContent
+                            .fixedSize(horizontal: true, vertical: false)
+                        compactHeaderContent
                     }
                 }
-                Divider()
-                Text(model.endpointShadowPresentation.title)
-                Text(model.endpointShadowPresentation.detail)
-                if model.needsGroqCredential {
-                    Button("Add Groq key") { model.presentCredentialSetup() }
+            }
+            .font(.system(.body, design: .rounded))
+            .foregroundStyle(LivePalette.ink)
+            .padding(.leading, FullRoomLayout.trafficLightClearance)
+            .padding(.trailing, 22)
+            .frame(
+                width: geometry.size.width,
+                height: geometry.size.height,
+                alignment: .leading
+            )
+        }
+        .frame(height: FullRoomLayout.headerHeight)
+        .background(LivePalette.paper)
+        .overlay(alignment: .bottom) {
+            Rectangle().fill(LivePalette.line).frame(height: 1)
+        }
+    }
+
+    private var fullHeaderContent: some View {
+        HStack(spacing: 16) {
+            headerBrand
+            Spacer(minLength: 22)
+            roomStatusMenu(isCompact: false)
+            headerDivider
+            personaMenu(isCompact: false)
+            Spacer(minLength: 22)
+            privacyStatus(isCompact: false)
+            collapseButton
+        }
+    }
+
+    private var compactHeaderContent: some View {
+        HStack(spacing: 12) {
+            headerBrand
+            Spacer(minLength: 12)
+            roomStatusMenu(isCompact: true)
+            headerDivider
+            personaMenu(isCompact: true)
+            Spacer(minLength: 12)
+            privacyStatus(isCompact: true)
+            collapseButton
+        }
+    }
+
+    private var headerBrand: some View {
+        HStack(spacing: 14) {
+            LiveMark()
+                .frame(width: 34, height: 34)
+            Text("Interview Arc Live")
+                .font(.system(.title3, design: .rounded, weight: .semibold))
+                .fixedSize()
+        }
+        .accessibilityElement(children: .combine)
+    }
+
+    private func roomStatusMenu(isCompact: Bool) -> some View {
+        Menu {
+            Picker("Turn-taking", selection: turnModeRawSelection) {
+                ForEach(model.availableTurnModes, id: \.rawValue) { mode in
+                    Text(model.turnModeTitle(mode)).tag(mode.rawValue)
                 }
-                Button("Check Codex") { Task { await model.checkCodex() } }
-            } label: {
+            }
+            Divider()
+            Text(model.endpointShadowPresentation.title)
+            Text(model.endpointShadowPresentation.detail)
+            if model.needsGroqCredential {
+                Button("Add Groq key") { model.presentCredentialSetup() }
+            }
+            Button("Check Codex") { Task { await model.checkCodex() } }
+        } label: {
+            if isCompact {
                 HStack(spacing: 7) {
                     Text("System design")
+                        .fontWeight(.semibold)
+                    Circle()
+                        .fill(headerRoomStatusColor)
+                        .frame(width: 8, height: 8)
+                        .accessibilityHidden(true)
+                }
+                .help("System design · \(model.statusMessage)")
+            } else {
+                HStack(spacing: 7) {
+                    Text("System design")
+                        .fontWeight(.semibold)
                     Text("·")
                         .foregroundStyle(LivePalette.muted)
                     Text(model.statusMessage)
@@ -92,78 +181,104 @@ struct SystemDesignRoomView: View {
                         .help(model.statusMessage)
                 }
             }
-            .menuStyle(.borderlessButton)
-            .fixedSize(horizontal: true, vertical: false)
-            .accessibilityLabel("System design room status")
-            .accessibilityValue(model.statusMessage)
+        }
+        .menuStyle(.borderlessButton)
+        .accessibilityLabel(FullRoomHeaderAccessibility.roomStatusLabel)
+        .accessibilityValue(model.statusMessage)
+    }
 
-            headerDivider
-
-            Menu {
-                Text(model.speechReadinessPresentation.title)
-                Text(model.speechReadinessPresentation.detail)
-                if model.speechReadinessPresentation.canDownload {
-                    Button("Download local voice model") {
-                        model.startSpeechModelDownload()
-                    }
+    private func personaMenu(isCompact: Bool) -> some View {
+        Menu {
+            Text("Mara · Staff Engineer")
+            Divider()
+            Text(model.speechReadinessPresentation.title)
+            Text(model.speechReadinessPresentation.detail)
+            if model.speechReadinessPresentation.canDownload {
+                Button("Download local voice model") {
+                    model.startSpeechModelDownload()
                 }
-                if model.speechReadinessPresentation.canCancel {
-                    Button("Cancel model download") {
-                        model.cancelSpeechModelDownload()
-                    }
+            }
+            if model.speechReadinessPresentation.canCancel {
+                Button("Cancel model download") {
+                    model.cancelSpeechModelDownload()
                 }
-                if model.showsSpeechMuteControl {
-                    Button(model.isSpeechMuted ? "Unmute Mara" : "Mute Mara") {
-                        Task { await model.toggleSpeechMute() }
-                    }
+            }
+            if model.showsSpeechMuteControl {
+                Button(model.isSpeechMuted ? "Unmute Mara" : "Mute Mara") {
+                    Task { await model.toggleSpeechMute() }
                 }
-                if model.speechReadinessPresentation.canRemove {
-                    Button("Remove local voice model", role: .destructive) {
-                        isModelRemovalConfirmationPresented = true
-                    }
+            }
+            if model.speechReadinessPresentation.canRemove {
+                Button("Remove local voice model", role: .destructive) {
+                    isModelRemovalConfirmationPresented = true
                 }
-            } label: {
-                HStack(spacing: 7) {
-                    Text("Mara")
+            }
+        } label: {
+            HStack(spacing: 7) {
+                Text("Mara")
+                    .fontWeight(.semibold)
+                if !isCompact {
                     Text("·")
                     Text("Staff Engineer")
-                    if !model.isSpeechReady {
-                        speechAttentionBadge
-                    }
                 }
-                .foregroundStyle(LivePalette.navy)
+                if !model.isSpeechReady {
+                    speechAttentionBadge
+                }
             }
-            .menuStyle(.borderlessButton)
+            .foregroundStyle(LivePalette.navy)
+        }
+        .menuStyle(.borderlessButton)
+        .accessibilityLabel(FullRoomHeaderAccessibility.personaLabel)
+        .accessibilityValue(model.speechReadinessPresentation.title)
+    }
 
-            Spacer()
-
+    private func privacyStatus(isCompact: Bool) -> some View {
+        HStack(spacing: 7) {
             Label("Private", systemImage: "lock")
-            Text("·")
-                .foregroundStyle(LivePalette.muted)
-            Text(
-                model.latestBoardRevision != nil && !model.isBoardDraftDirty
-                    ? "Saved"
-                    : "Local"
-            )
-                .foregroundStyle(LivePalette.muted)
-            Button(action: onCollapse) {
-                Image(systemName: "sidebar.trailing")
-                    .frame(width: 30, height: 30)
+            if isCompact {
+                Image(systemName: isBoardSaved ? "checkmark.circle.fill" : "internaldrive")
+                    .foregroundStyle(LivePalette.muted)
+                    .accessibilityHidden(true)
+            } else {
+                Text("·")
+                    .foregroundStyle(LivePalette.muted)
+                Text(boardSaveStatus)
+                    .foregroundStyle(LivePalette.muted)
             }
-            .buttonStyle(.plain)
-            .accessibilityIdentifier("full-room-collapse")
-            .accessibilityLabel("Collapse interview room")
-            .accessibilityHint("Keeps the same room and board in compact controls")
         }
-        .font(.system(.body, design: .rounded))
-        .foregroundStyle(LivePalette.ink)
-        .padding(.leading, FullRoomHeaderLayout.trafficLightClearance)
-        .padding(.trailing, 22)
-        .frame(minHeight: FullRoomHeaderLayout.height)
-        .background(LivePalette.paper)
-        .overlay(alignment: .bottom) {
-            Rectangle().fill(LivePalette.line).frame(height: 1)
+        .fixedSize()
+        .help("Private · \(boardSaveStatus)")
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(FullRoomHeaderAccessibility.privacyLabel)
+        .accessibilityValue(boardSaveStatus)
+    }
+
+    private var collapseButton: some View {
+        Button(action: onCollapse) {
+            Image(systemName: "sidebar.trailing")
+                .frame(
+                    width: FullRoomLayout.minimumActionHitTarget,
+                    height: FullRoomLayout.minimumActionHitTarget
+                )
         }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier(FullRoomAccessibility.collapse)
+        .accessibilityLabel(FullRoomHeaderAccessibility.collapseLabel)
+        .accessibilityHint("Keeps the same room and board in compact controls")
+    }
+
+    private var boardSaveStatus: String {
+        isBoardSaved ? "Saved" : "Local"
+    }
+
+    private var isBoardSaved: Bool {
+        model.latestBoardRevision != nil && !model.isBoardDraftDirty
+    }
+
+    private var headerRoomStatusColor: Color {
+        model.errorMessage == nil && model.codexAttentionMessage == nil
+            ? LivePalette.interviewer
+            : LivePalette.warning
     }
 
     private var headerDivider: some View {
@@ -200,16 +315,27 @@ struct SystemDesignRoomView: View {
     private var question: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("QUESTION")
-                .font(.system(.caption, design: .monospaced, weight: .semibold))
+                .font(.system(.callout, design: .monospaced, weight: .semibold))
                 .tracking(1.4)
-                .foregroundStyle(LivePalette.muted)
+                .foregroundStyle(LivePalette.navy)
             Text(model.question)
-                .font(.system(size: 31, weight: .semibold, design: .rounded))
+                .font(.system(size: 35, weight: .semibold, design: .rounded))
+                .tracking(-0.35)
+                .lineLimit(FullRoomLayout.questionLineLimit)
+                .minimumScaleFactor(FullRoomLayout.questionMinimumScaleFactor)
+                .fixedSize(horizontal: false, vertical: true)
+                .accessibilityAddTraits(.isHeader)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 34)
-        .padding(.vertical, 22)
+        .padding(.horizontal, 40)
+        .padding(.vertical, 20)
+        .frame(
+            maxWidth: .infinity,
+            minHeight: FullRoomLayout.questionBandMinimumHeight,
+            alignment: .leading
+        )
         .background(LivePalette.paper)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier(FullRoomAccessibility.question)
         .overlay(alignment: .bottom) {
             Rectangle().fill(LivePalette.line).frame(height: 1)
         }
@@ -230,28 +356,49 @@ struct SystemDesignRoomView: View {
     }
 
     private var transcript: some View {
-        ScrollView {
-            LazyVStack(alignment: .leading, spacing: 0) {
-                if let snapshot = model.snapshot {
-                    ForEach(snapshot.turns.indices, id: \.self) { index in
-                        turnlineEntry(
-                            snapshot.turns[index],
-                            isLast: index == snapshot.turns.count - 1
-                                && snapshot.phase != .candidateFloor
-                        )
-                    }
+        VStack(spacing: 0) {
+            HStack(alignment: .firstTextBaseline, spacing: 12) {
+                Text("TURNLINE")
+                    .font(.system(.callout, design: .monospaced, weight: .bold))
+                    .tracking(1.1)
+                    .foregroundStyle(LivePalette.navy)
+                Spacer(minLength: 12)
+                Text(turnlineSummary)
+                    .font(.system(.caption, design: .monospaced, weight: .semibold))
+                    .foregroundStyle(LivePalette.muted)
+                    .lineLimit(1)
+            }
+            .padding(.horizontal, 30)
+            .frame(minHeight: FullRoomLayout.turnlineHeaderHeight)
+            .overlay(alignment: .bottom) {
+                Rectangle().fill(LivePalette.line).frame(height: 1)
+            }
 
-                    if snapshot.phase == .candidateFloor {
-                        candidateFloorEntry
-                    } else if snapshot.turns.isEmpty {
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 0) {
+                    if let snapshot = model.snapshot {
+                        ForEach(snapshot.turns.indices, id: \.self) { index in
+                            turnlineEntry(
+                                snapshot.turns[index],
+                                isLast: index == snapshot.turns.count - 1
+                                    && snapshot.phase != .candidateFloor
+                            )
+                        }
+
+                        if snapshot.phase == .candidateFloor {
+                            candidateFloorEntry
+                        } else if snapshot.turns.isEmpty {
+                            preparingEmptyState
+                        }
+                    } else {
                         preparingEmptyState
                     }
-                } else {
-                    preparingEmptyState
                 }
+                .padding(.top, 26)
             }
         }
         .background(LivePalette.paper)
+        .accessibilityIdentifier(FullRoomAccessibility.turnline)
     }
 
     private var preparingEmptyState: some View {
@@ -270,21 +417,21 @@ struct SystemDesignRoomView: View {
         HStack(alignment: .top, spacing: 18) {
             VStack(spacing: 0) {
                 Circle()
-                    .fill(LivePalette.candidate)
-                    .frame(width: 11, height: 11)
+                    .fill(LivePalette.candidateText)
+                    .frame(width: 12, height: 12)
                 Rectangle()
-                    .fill(Color.clear)
+                    .fill(LivePalette.candidateText.opacity(0.22))
                     .frame(width: 1)
-                    .frame(minHeight: 82)
+                    .frame(minHeight: 96)
             }
             .padding(.top, 4)
             .accessibilityHidden(true)
 
-            VStack(alignment: .leading, spacing: 14) {
+            VStack(alignment: .leading, spacing: 16) {
                 HStack(alignment: .firstTextBaseline) {
-                    Text("YOUR ANSWER DRAFT")
-                        .font(.system(.caption, design: .monospaced, weight: .bold))
-                        .foregroundStyle(LivePalette.candidate)
+                    Text("YOU · CURRENT TURN")
+                        .font(.system(.callout, design: .monospaced, weight: .bold))
+                        .foregroundStyle(LivePalette.candidateText)
                     Spacer()
                     Text(segmentCountLabel)
                         .font(.system(.caption, design: .monospaced))
@@ -293,22 +440,15 @@ struct SystemDesignRoomView: View {
 
                 if model.segments.isEmpty {
                     VStack(alignment: .leading, spacing: 10) {
-                        Text("Record your first segment")
-                            .font(.system(.title3, design: .rounded, weight: .semibold))
-                        Text("Working pauses can become separate segments. Only Hand off commits them as one answer.")
+                        Text("Ready for your next answer.")
+                            .font(.system(size: 21, weight: .semibold, design: .rounded))
+                        Text("Record one or more segments here. Working pauses stay in this Candidate Turn until you choose Hand off.")
                             .font(.system(.body, design: .rounded))
                             .foregroundStyle(LivePalette.muted)
+                            .lineSpacing(3)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
-                    .padding(14)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(
-                        LivePalette.room.opacity(0.48),
-                        in: RoundedRectangle(cornerRadius: 12)
-                    )
-                    .overlay {
-                        RoundedRectangle(cornerRadius: 12)
-                            .stroke(LivePalette.line, style: StrokeStyle(lineWidth: 1, dash: [5]))
-                    }
+                    .frame(maxWidth: 360, alignment: .leading)
                 } else {
                     ForEach(model.segments) { segment in
                         CandidateSegmentCard(
@@ -328,9 +468,9 @@ struct SystemDesignRoomView: View {
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.bottom, 24)
+            .padding(.bottom, 30)
         }
-        .padding(.horizontal, 28)
+        .padding(.horizontal, 30)
     }
 
     private func turnlineEntry(_ turn: InterviewTurn, isLast: Bool) -> some View {
@@ -345,7 +485,7 @@ struct SystemDesignRoomView: View {
         case .candidate(let candidate):
             role = "YOU"
             body = candidate.transcript.body
-            color = LivePalette.candidate
+            color = LivePalette.candidateText
             rendersMarkdown = false
             interviewerTurnID = nil
             if case .revision(let revisionID) = candidate.boardAttachment {
@@ -377,7 +517,7 @@ struct SystemDesignRoomView: View {
 
             VStack(alignment: .leading, spacing: 10) {
                 Text(role)
-                    .font(.system(.caption, design: .monospaced, weight: .bold))
+                    .font(.system(.callout, design: .monospaced, weight: .bold))
                     .foregroundStyle(color)
                 Group {
                     if rendersMarkdown {
@@ -386,7 +526,8 @@ struct SystemDesignRoomView: View {
                         Text(body)
                     }
                 }
-                    .font(.system(.title3, design: .rounded))
+                    .font(.system(size: 21, weight: .medium, design: .rounded))
+                    .lineSpacing(4)
                     .textSelection(.enabled)
                     .fixedSize(horizontal: false, vertical: true)
 
@@ -413,9 +554,9 @@ struct SystemDesignRoomView: View {
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.bottom, 24)
+            .padding(.bottom, 30)
         }
-        .padding(.horizontal, 28)
+        .padding(.horizontal, 30)
         .accessibilityElement(children: .contain)
     }
 
@@ -517,7 +658,7 @@ struct SystemDesignRoomView: View {
         case .quiet: return LivePalette.muted
         case .working: return LivePalette.interviewer
         case .speaking: return LivePalette.interviewer
-        case .ready: return LivePalette.candidate
+        case .ready: return LivePalette.candidateText
         case .warning: return LivePalette.warning
         }
     }
@@ -527,52 +668,72 @@ struct SystemDesignRoomView: View {
     }
 
     private var floorRail: some View {
-        HStack(spacing: 16) {
-            Text(floorLabel.uppercased())
-                .font(.system(.caption, design: .rounded, weight: .bold))
-                .foregroundStyle(LivePalette.violet)
+        let floorState = model.floorStatePresentation
+
+        return HStack(spacing: 14) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(floorState.full.label.uppercased())
+                    .font(.system(.callout, design: .rounded, weight: .bold))
+                    .foregroundStyle(LivePalette.violet)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+                Text(floorState.full.detail)
+                    .font(.system(.caption, design: .rounded, weight: .medium))
+                    .foregroundStyle(LivePalette.muted)
+                    .lineLimit(1)
+            }
+            .frame(width: 164, alignment: .leading)
 
             LiveWaveform(isActive: model.canStopRecording)
-                .frame(minWidth: 180, maxWidth: .infinity)
-                .frame(height: 32)
+                .frame(minWidth: 140, maxWidth: .infinity)
+                .frame(height: FullRoomLayout.minimumActionHitTarget)
 
             Button {
                 Task { await model.performPrimaryAction() }
             } label: {
                 Label(model.actionTitle, systemImage: model.actionIcon)
                     .font(.system(.body, design: .rounded, weight: .semibold))
-                    .padding(.horizontal, 8)
+                    .frame(
+                        minWidth: 132,
+                        minHeight: FullRoomLayout.minimumActionHitTarget
+                    )
             }
-            .buttonStyle(.bordered)
+            .buttonStyle(.borderedProminent)
             .buttonBorderShape(.capsule)
             .tint(LivePalette.violet)
             .disabled(!model.canAct)
             .keyboardShortcut(.return, modifiers: [.command])
-
-            headerDivider
+            .accessibilityIdentifier(FullRoomAccessibility.primaryAction)
+            .accessibilityHint(floorState.primaryActionHint)
 
             if model.canStopRecording {
+                headerDivider
                 Button {
                     Task { await model.stopRecording() }
                 } label: {
                     Label("Pause", systemImage: "pause.fill")
                         .font(.system(.body, design: .rounded, weight: .semibold))
+                        .frame(minWidth: 86, minHeight: FullRoomLayout.minimumActionHitTarget)
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(LivePalette.navy)
                 .disabled(model.isWorking)
                 .keyboardShortcut(.space, modifiers: [.command])
+                .accessibilityIdentifier(FullRoomAccessibility.recordingAction)
             } else if model.showsRecordControl {
+                headerDivider
                 Button {
                     Task { await model.recordSegment() }
                 } label: {
                     Label("Record", systemImage: "record.circle")
                         .font(.system(.body, design: .rounded, weight: .semibold))
+                        .frame(minWidth: 86, minHeight: FullRoomLayout.minimumActionHitTarget)
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(LivePalette.navy)
                 .disabled(!model.canRecordSegment)
                 .keyboardShortcut(.space, modifiers: [.command])
+                .accessibilityIdentifier(FullRoomAccessibility.recordingAction)
             }
 
             headerDivider
@@ -582,14 +743,18 @@ struct SystemDesignRoomView: View {
             } label: {
                 Label("End", systemImage: "stop.fill")
                     .font(.system(.body, design: .rounded, weight: .medium))
+                    .frame(minWidth: 70, minHeight: FullRoomLayout.minimumActionHitTarget)
             }
             .buttonStyle(.plain)
-            .foregroundStyle(LivePalette.orange)
+            .foregroundStyle(LivePalette.warning)
+            .accessibilityIdentifier(FullRoomAccessibility.endAction)
         }
         .foregroundStyle(LivePalette.navy)
-        .padding(.horizontal, 22)
-        .frame(minHeight: 76)
+        .padding(.horizontal, 24)
+        .frame(minHeight: FullRoomLayout.floorRailHeight)
         .background(LivePalette.paper)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier(FullRoomAccessibility.floorRail)
         .overlay {
             RoundedRectangle(cornerRadius: 13, style: .continuous)
                 .stroke(LivePalette.line, lineWidth: 1)
@@ -598,24 +763,17 @@ struct SystemDesignRoomView: View {
         }
     }
 
-    private var floorLabel: String {
-        if model.isInterviewerRequestInFlight {
-            return "Answer saved · Codex working"
+    private var turnlineSummary: String {
+        guard let snapshot = model.snapshot else {
+            return "RESTORING SESSION"
         }
-        switch model.snapshot?.phase {
-        case .candidateFloor:
-            return "Your floor"
-        case .interviewerProcessing:
-            return model.isCodexReady
-                ? "Answer saved · interviewer retry required"
-                : "Answer saved · check Codex to retry"
-        case .interviewerTurn:
-            return "Interviewer turn"
-        case .completed:
-            return "Session complete"
-        default:
-            return "Preparing room"
+        if snapshot.phase == .candidateFloor {
+            return model.segments.isEmpty
+                ? "CANDIDATE FLOOR"
+                : "CURRENT TURN · \(segmentCountLabel)"
         }
+        let count = snapshot.turns.count
+        return count == 1 ? "1 SAVED TURN" : "\(count) SAVED TURNS"
     }
 
     private var segmentCountLabel: String {
@@ -676,29 +834,163 @@ struct SystemDesignRoomView: View {
     }
 }
 
-enum FullRoomHeaderLayout {
+enum FullRoomLayout {
+    static let minimumWindowWidth: CGFloat = 1_080
+    static let defaultWindowWidth: CGFloat = 1_180
+    static let minimumWindowHeight: CGFloat = 700
+    static let headerHeight: CGFloat = 70
+    static let questionBandMinimumHeight: CGFloat = 120
+    static let questionLineLimit = 2
+    static let questionMinimumScaleFactor: CGFloat = 0.82
+    static let turnlineHeaderHeight: CGFloat = 58
+    static let turnlineWidthFraction: CGFloat = 0.37
+    static let turnlineMinimumWidth: CGFloat = 380
+    static let turnlineMaximumWidth: CGFloat = 480
+    static let boardMinimumWidth: CGFloat = 620
+    static let floorRailHeight: CGFloat = 88
+    static let minimumActionHitTarget: CGFloat = 44
+
     /// The full-size-content window draws into the titlebar. This keeps the
-    /// brand beyond the standard close/minimize/zoom group while the 62-point
-    /// custom header occupies that same row instead of leaving a blank strip.
+    /// brand beyond the standard close/minimize/zoom group while the custom
+    /// header occupies that same row instead of leaving a blank strip.
     static let trafficLightClearance: CGFloat = 84
-    static let height: CGFloat = 62
+
+    static func turnlineIdealWidth(for workspaceWidth: CGFloat) -> CGFloat {
+        min(
+            max(workspaceWidth * turnlineWidthFraction, turnlineMinimumWidth),
+            turnlineMaximumWidth
+        )
+    }
+
+    static func boardIdealWidth(for workspaceWidth: CGFloat) -> CGFloat {
+        max(boardMinimumWidth, workspaceWidth - turnlineIdealWidth(for: workspaceWidth))
+    }
+
+    static func minimumWorkspaceHeight(for windowHeight: CGFloat) -> CGFloat {
+        max(0, windowHeight - headerHeight - questionBandMinimumHeight - floorRailHeight)
+    }
+}
+
+enum FullRoomHeaderAttention: Equatable {
+    case none
+    case speech
+    case room
+    case speechAndRoom
+}
+
+struct FullRoomHeaderLayoutState: Equatable {
+    let windowWidth: CGFloat
+    let attention: FullRoomHeaderAttention
+
+    var usesAttentionCompactHeader: Bool {
+        attention != .none
+            && windowWidth <= FullRoomHeaderLayout.attentionCompactMaximumWidth
+    }
+}
+
+enum FullRoomHeaderLayout {
+    static let attentionCompactMaximumWidth: CGFloat = 1_100
+
+    static func state(
+        windowWidth: CGFloat,
+        hasSpeechAttention: Bool,
+        hasRoomAttention: Bool
+    ) -> FullRoomHeaderLayoutState {
+        let attention: FullRoomHeaderAttention
+        switch (hasSpeechAttention, hasRoomAttention) {
+        case (false, false): attention = .none
+        case (true, false): attention = .speech
+        case (false, true): attention = .room
+        case (true, true): attention = .speechAndRoom
+        }
+        return FullRoomHeaderLayoutState(
+            windowWidth: windowWidth,
+            attention: attention
+        )
+    }
+}
+
+enum FullRoomHeaderAccessibility {
+    static let roomStatusLabel = "System design room status"
+    static let personaLabel = "Interviewer: Mara, Staff Engineer"
+    static let privacyLabel = "Private local session"
+    static let collapseLabel = "Collapse interview room"
+}
+
+enum FullRoomAccessibility {
+    static let question = "full-room-question"
+    static let turnline = "full-room-turnline"
+    static let board = "full-room-board"
+    static let floorRail = "full-room-floor-rail"
+    static let primaryAction = "full-room-primary-action"
+    static let recordingAction = "full-room-recording-action"
+    static let endAction = "full-room-end-action"
+    static let collapse = "full-room-collapse"
+
+    static let allIdentifiers = [
+        question,
+        turnline,
+        board,
+        floorRail,
+        primaryAction,
+        recordingAction,
+        endAction,
+        collapse,
+    ]
+}
+
+struct LiveRGB: Equatable, Sendable {
+    let red: Int
+    let green: Int
+    let blue: Int
+
+    var color: Color {
+        Color(
+            red: Double(red) / 255,
+            green: Double(green) / 255,
+            blue: Double(blue) / 255
+        )
+    }
+
+    func contrastRatio(against other: LiveRGB) -> Double {
+        let light = max(relativeLuminance, other.relativeLuminance)
+        let dark = min(relativeLuminance, other.relativeLuminance)
+        return (light + 0.05) / (dark + 0.05)
+    }
+
+    private var relativeLuminance: Double {
+        0.2126 * Self.linearized(red)
+            + 0.7152 * Self.linearized(green)
+            + 0.0722 * Self.linearized(blue)
+    }
+
+    private static func linearized(_ component: Int) -> Double {
+        let value = Double(component) / 255
+        return value <= 0.04045
+            ? value / 12.92
+            : pow((value + 0.055) / 1.055, 2.4)
+    }
 }
 
 enum LivePalette {
-    static let room = Color(red: 250 / 255, green: 251 / 255, blue: 254 / 255)
-    static let paper = Color(red: 252 / 255, green: 252 / 255, blue: 254 / 255)
+    static let roomToken = LiveRGB(red: 250, green: 251, blue: 254)
+    static let paperToken = LiveRGB(red: 252, green: 252, blue: 254)
+    static let candidateTextToken = LiveRGB(red: 159, green: 46, blue: 34)
+
+    static let room = roomToken.color
+    static let paper = paperToken.color
     static let ink = Color(red: 14 / 255, green: 17 / 255, blue: 30 / 255)
     static let navy = Color(red: 24 / 255, green: 35 / 255, blue: 89 / 255)
     static let violet = Color(red: 75 / 255, green: 58 / 255, blue: 191 / 255)
-    static let orange = Color(red: 237 / 255, green: 78 / 255, blue: 47 / 255)
+    static let signalOrange = Color(red: 237 / 255, green: 78 / 255, blue: 47 / 255)
+    static let candidateText = candidateTextToken.color
     static let muted = Color(red: 82 / 255, green: 98 / 255, blue: 139 / 255)
     static let line = Color(red: 224 / 255, green: 226 / 255, blue: 237 / 255)
     static let shell = paper
-    static let candidate = orange
     static let interviewer = violet
     static let handoff = violet
     static let liveSignal = violet
-    static let warning = orange
+    static let warning = candidateText
 }
 
 private struct LiveWaveform: View {
@@ -752,7 +1044,7 @@ private struct LiveMark: View {
                 .stroke(LivePalette.navy, style: StrokeStyle(lineWidth: 3, lineCap: .round))
                 .rotationEffect(.degrees(-22))
             Circle()
-                .fill(LivePalette.orange)
+                .fill(LivePalette.signalOrange)
                 .frame(width: 7, height: 7)
                 .offset(x: 10, y: 8)
         }
