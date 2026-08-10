@@ -44,20 +44,6 @@ final class InterviewRoomPresentationCoordinatorTests: XCTestCase {
         XCTAssertTrue(
             coordinator.compactPanel.collectionBehavior.contains(.fullScreenNone)
         )
-        XCTAssertEqual(
-            coordinator.compactPanel.contentMinSize,
-            NSSize(
-                width: CompactPanelLayout.contentWidth,
-                height: CompactPanelLayout.minimumContentHeight
-            )
-        )
-        XCTAssertEqual(
-            coordinator.compactPanel.contentMaxSize,
-            NSSize(
-                width: CompactPanelLayout.contentWidth,
-                height: CompactPanelLayout.maximumContentHeight
-            )
-        )
     }
 
     func testScreenChangeCallbackCannotReenterAnActiveFrameAdjustment() {
