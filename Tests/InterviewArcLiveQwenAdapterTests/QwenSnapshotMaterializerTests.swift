@@ -51,6 +51,25 @@ final class QwenSnapshotMaterializerTests: XCTestCase {
             XCTAssertEqual(error as? QwenModelStoreFailure, .symbolicLinkRejected)
         }
     }
+
+    func testCancellationCheckRunsBeforeCopyingAnyAllowlistedFile() throws {
+        let fixture = try MaterializerFixture.make()
+        defer { fixture.remove() }
+
+        XCTAssertThrowsError(
+            try QwenSnapshotMaterializer().materialize(
+                manifest: fixture.manifest,
+                cachedSnapshot: fixture.snapshot,
+                cacheRoot: fixture.cacheRoot,
+                destination: fixture.destination,
+                cancellationCheck: { throw CancellationError() }
+            )
+        ) { error in
+            XCTAssertTrue(error is CancellationError)
+        }
+        let copiedFiles = try fixture.relativeFiles(in: fixture.destination)
+        XCTAssertTrue(copiedFiles.isEmpty)
+    }
 }
 
 private struct MaterializerFixture {
@@ -95,10 +114,11 @@ private struct MaterializerFixture {
             }
         )
 
+        let escapingPath = ".gitattributes"
         for (index, path) in contents.keys.sorted().enumerated() {
             let data = contents[path]!
             let blob: URL
-            if escapeCache, index == 0 {
+            if escapeCache, path == escapingPath {
                 blob = root.appendingPathComponent("outside-blob")
             } else {
                 blob = blobs.appendingPathComponent("blob-\(index)")

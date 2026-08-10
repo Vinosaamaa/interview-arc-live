@@ -5,9 +5,10 @@ import Foundation
 /// filesystem paths never enter this value.
 public enum Qwen3TTSProvenance {
     public static let providerID = "local-qwen3-tts"
-    public static let packageRepository = "Blaizzy/mlx-audio-swift"
+    public static let packageRepository = "Vinosaamaa/mlx-audio-swift"
     public static let packageVersion = "0.1.3"
-    public static let packageRevision = "d302a5c6080d2bb97bae38c7418f82abb76013b6"
+    public static let packageRevision = "a228dc056c6b298a2f5aff7f10e3aed537577fa0"
+    public static let packageUpstreamRevision = "d302a5c6080d2bb97bae38c7418f82abb76013b6"
 
     public static let modelID = "mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-8bit"
     public static let modelRevision = "049ef77fe8816b536193c0c25f9a214d17921282"

@@ -154,17 +154,14 @@ public actor LiveInterviewerSpeechAudioStore: InterviewerSpeechAudioStoring {
         sessionID: SessionID,
         artifact: InterviewerSpeechAudioArtifact
     ) async throws -> URL {
-        let descriptor = try await store.inspectFinal(
+        let validated = try await store.inspectFinalForPlayback(
             sessionIdentity: sessionID.rawValue,
             fileName: artifact.audioIdentity.fileName
         )
-        guard matches(descriptor, artifact: artifact) else {
+        guard matches(validated.descriptor, artifact: artifact) else {
             throw PrivateInterviewerWaveStoreError.invalidFinalFile
         }
-        return try await store.playbackURL(
-            sessionIdentity: sessionID.rawValue,
-            fileName: artifact.audioIdentity.fileName
-        )
+        return validated.url
     }
 
     private func artifact(

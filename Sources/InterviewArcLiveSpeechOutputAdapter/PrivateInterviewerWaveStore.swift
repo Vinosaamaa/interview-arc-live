@@ -31,6 +31,11 @@ struct PrivateInterviewerWaveDescriptor: Equatable, Sendable {
     let sha256: String
 }
 
+struct PrivateInterviewerValidatedWave: Sendable {
+    let descriptor: PrivateInterviewerWaveDescriptor
+    let url: URL
+}
+
 /// Private, deterministic Float32 WAV persistence used below the Core speech
 /// storage Interface. Tokens and descriptors carry only validated filenames;
 /// absolute paths stay inside this Adapter.
@@ -53,16 +58,19 @@ actor PrivateInterviewerWaveStore {
     private let configuredApplicationSupportRoot: URL?
     private let fileManager: FileManager
     private let maximumFrameCount: Int
+    private let postMoveValidation: @Sendable (URL) throws -> Void
     private var activeWrites: [PrivateInterviewerWaveWriteToken: ActiveWrite] = [:]
 
     init(
         applicationSupportRoot: URL? = nil,
         maximumFrameCount: Int = PrivateInterviewerWaveStore.maximumFrameCount,
-        fileManager: FileManager = .default
+        fileManager: FileManager = .default,
+        postMoveValidation: @escaping @Sendable (URL) throws -> Void = { _ in }
     ) {
         configuredApplicationSupportRoot = applicationSupportRoot
         self.maximumFrameCount = max(1, maximumFrameCount)
         self.fileManager = fileManager
+        self.postMoveValidation = postMoveValidation
     }
 
     func begin(
@@ -143,9 +151,6 @@ actor PrivateInterviewerWaveStore {
         guard !samples.isEmpty else {
             throw PrivateInterviewerWaveStoreError.emptyChunk
         }
-        guard samples.allSatisfy(\.isFinite) else {
-            throw PrivateInterviewerWaveStoreError.nonFiniteSample
-        }
         guard var active = activeWrites[token] else {
             throw PrivateInterviewerWaveStoreError.writeNotActive
         }
@@ -156,7 +161,8 @@ actor PrivateInterviewerWaveStore {
             throw PrivateInterviewerWaveStoreError.durationLimitExceeded
         }
 
-        try active.handle.write(contentsOf: Self.float32LittleEndianData(samples))
+        let encoded = try Self.validatedFloat32LittleEndianData(samples)
+        try active.handle.write(contentsOf: encoded)
         active.frameCount = nextFrameCount
         activeWrites[token] = active
     }
@@ -164,15 +170,17 @@ actor PrivateInterviewerWaveStore {
     func finalize(
         _ token: PrivateInterviewerWaveWriteToken
     ) throws -> PrivateInterviewerWaveDescriptor {
-        guard let active = activeWrites.removeValue(forKey: token) else {
+        guard let active = activeWrites[token] else {
             throw PrivateInterviewerWaveStoreError.writeNotActive
         }
         guard active.frameCount > 0 else {
+            activeWrites.removeValue(forKey: token)
             try? active.handle.close()
             try? fileManager.removeItem(at: active.partialURL)
             throw PrivateInterviewerWaveStoreError.invalidFinalFile
         }
 
+        var movedFinalURL: URL?
         do {
             try writeHeader(
                 Self.wavHeader(frameCount: active.frameCount),
@@ -188,8 +196,11 @@ actor PrivateInterviewerWaveStore {
             let finalURL = active.partialURL.deletingLastPathComponent()
                 .appendingPathComponent(token.finalFileName, isDirectory: false)
             try moveExclusively(from: active.partialURL, to: finalURL)
+            movedFinalURL = finalURL
+            try postMoveValidation(finalURL)
             try enforcePrivateFilePermissions(finalURL)
             try synchronizeDirectory(finalURL.deletingLastPathComponent())
+            activeWrites.removeValue(forKey: token)
             return PrivateInterviewerWaveDescriptor(
                 fileName: token.finalFileName,
                 sampleRate: descriptor.sampleRate,
@@ -200,7 +211,14 @@ actor PrivateInterviewerWaveStore {
                 sha256: descriptor.sha256
             )
         } catch {
+            activeWrites.removeValue(forKey: token)
             try? active.handle.close()
+            if let movedFinalURL {
+                try? fileManager.removeItem(at: movedFinalURL)
+                try? synchronizeDirectory(
+                    movedFinalURL.deletingLastPathComponent()
+                )
+            }
             throw error
         }
     }
@@ -278,11 +296,30 @@ actor PrivateInterviewerWaveStore {
         sessionIdentity: String,
         fileName: String
     ) throws -> URL {
-        _ = try inspectFinal(sessionIdentity: sessionIdentity, fileName: fileName)
-        return try waveURL(
+        try inspectFinalForPlayback(
+            sessionIdentity: sessionIdentity,
+            fileName: fileName
+        ).url
+    }
+
+    func inspectFinalForPlayback(
+        sessionIdentity: String,
+        fileName: String
+    ) throws -> PrivateInterviewerValidatedWave {
+        guard Self.isFinalFileName(fileName) else {
+            throw PrivateInterviewerWaveStoreError.invalidFinalFile
+        }
+        let url = try waveURL(
             sessionDigest: Self.digest(sessionIdentity),
             fileName: fileName,
             createParentDirectory: false
+        )
+        return PrivateInterviewerValidatedWave(
+            descriptor: try inspectWave(
+                at: url,
+                expectedFileName: fileName
+            ),
+            url: url
         )
     }
 
@@ -505,9 +542,14 @@ actor PrivateInterviewerWaveStore {
         return data
     }
 
-    private static func float32LittleEndianData(_ samples: [Float]) -> Data {
+    private static func validatedFloat32LittleEndianData(
+        _ samples: [Float]
+    ) throws -> Data {
         var data = Data(capacity: samples.count * bytesPerSample)
         for sample in samples {
+            guard sample.isFinite else {
+                throw PrivateInterviewerWaveStoreError.nonFiniteSample
+            }
             data.appendLittleEndian(sample.bitPattern)
         }
         return data

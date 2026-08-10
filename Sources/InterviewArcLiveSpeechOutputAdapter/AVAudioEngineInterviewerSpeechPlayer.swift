@@ -88,6 +88,8 @@ private final class AVAudioEngineOutputDriver: InterviewerAudioOutputDriving {
 /// AVAudioEngine graph and never receives transcript text.
 @MainActor
 public final class AVAudioEngineInterviewerSpeechPlayer: InterviewerSpeechPlaying {
+    static let maximumPendingBufferCount = 8
+
     private enum Mode {
         case idle
         case streaming
@@ -102,6 +104,8 @@ public final class AVAudioEngineInterviewerSpeechPlayer: InterviewerSpeechPlayin
     private var pendingBufferCount = 0
     private var hasScheduledAudio = false
     private var streamIsFinishing = false
+    private var streamFormat: AVAudioFormat?
+    private var bufferCapacityWaiters: [CheckedContinuation<Void, Error>] = []
     private var completion: CheckedContinuation<Void, Error>?
 
     public init(audioStore: LiveInterviewerSpeechAudioStore) {
@@ -138,6 +142,7 @@ public final class AVAudioEngineInterviewerSpeechPlayer: InterviewerSpeechPlayin
         pendingBufferCount = 0
         hasScheduledAudio = false
         streamIsFinishing = false
+        streamFormat = format
     }
 
     public func enqueue(
@@ -147,7 +152,8 @@ public final class AVAudioEngineInterviewerSpeechPlayer: InterviewerSpeechPlayin
             throw AVAudioEngineInterviewerSpeechPlayerError.noActiveStream
         }
         guard chunk.sampleRate == PrivateInterviewerWaveStore.sampleRate,
-              chunk.channelCount == PrivateInterviewerWaveStore.channelCount else {
+              chunk.channelCount == PrivateInterviewerWaveStore.channelCount,
+              let format = streamFormat else {
             throw AVAudioEngineInterviewerSpeechPlayerError.invalidFormat
         }
         guard !chunk.samples.isEmpty else {
@@ -156,13 +162,13 @@ public final class AVAudioEngineInterviewerSpeechPlayer: InterviewerSpeechPlayin
         guard chunk.samples.allSatisfy(\.isFinite) else {
             throw AVAudioEngineInterviewerSpeechPlayerError.nonFiniteSample
         }
+        let enqueuingOperationID = operationID
+        try await waitForBufferCapacity(operationID: enqueuingOperationID)
+        guard mode == .streaming,
+              operationID == enqueuingOperationID else {
+            throw CancellationError()
+        }
         guard chunk.samples.count <= Int(AVAudioFrameCount.max),
-              let format = AVAudioFormat(
-                  commonFormat: .pcmFormatFloat32,
-                  sampleRate: Double(chunk.sampleRate),
-                  channels: AVAudioChannelCount(chunk.channelCount),
-                  interleaved: false
-              ),
               let buffer = AVAudioPCMBuffer(
                   pcmFormat: format,
                   frameCapacity: AVAudioFrameCount(chunk.samples.count)
@@ -282,6 +288,7 @@ public final class AVAudioEngineInterviewerSpeechPlayer: InterviewerSpeechPlayin
             return
         }
         pendingBufferCount = max(0, pendingBufferCount - 1)
+        resumeNextBufferCapacityWaiterIfPossible()
         if streamIsFinishing, pendingBufferCount == 0 {
             completeCurrentOperation()
         }
@@ -302,6 +309,8 @@ public final class AVAudioEngineInterviewerSpeechPlayer: InterviewerSpeechPlayin
         pendingBufferCount = 0
         hasScheduledAudio = false
         streamIsFinishing = false
+        streamFormat = nil
+        cancelBufferCapacityWaiters()
         output.releaseOutput()
         waiting?.resume()
     }
@@ -314,7 +323,46 @@ public final class AVAudioEngineInterviewerSpeechPlayer: InterviewerSpeechPlayin
         pendingBufferCount = 0
         hasScheduledAudio = false
         streamIsFinishing = false
+        streamFormat = nil
+        cancelBufferCapacityWaiters()
         output.releaseOutput()
         waiting?.resume(throwing: CancellationError())
+    }
+
+    private func waitForBufferCapacity(
+        operationID expectedOperationID: UUID
+    ) async throws {
+        while pendingBufferCount >= Self.maximumPendingBufferCount {
+            try Task.checkCancellation()
+            try await withCheckedThrowingContinuation {
+                (continuation: CheckedContinuation<Void, Error>) in
+                guard mode == .streaming,
+                      operationID == expectedOperationID else {
+                    continuation.resume(throwing: CancellationError())
+                    return
+                }
+                bufferCapacityWaiters.append(continuation)
+            }
+            guard mode == .streaming,
+                  operationID == expectedOperationID else {
+                throw CancellationError()
+            }
+        }
+    }
+
+    private func resumeNextBufferCapacityWaiterIfPossible() {
+        guard pendingBufferCount < Self.maximumPendingBufferCount,
+              !bufferCapacityWaiters.isEmpty else {
+            return
+        }
+        bufferCapacityWaiters.removeFirst().resume()
+    }
+
+    private func cancelBufferCapacityWaiters() {
+        let waiters = bufferCapacityWaiters
+        bufferCapacityWaiters.removeAll(keepingCapacity: true)
+        for waiter in waiters {
+            waiter.resume(throwing: CancellationError())
+        }
     }
 }

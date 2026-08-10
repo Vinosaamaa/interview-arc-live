@@ -127,6 +127,7 @@ struct InterviewArcLiveSpeechSmoke {
         do {
             try await audioStore.beginWrite(writeRequest)
             var completion: InterviewerSpeechGenerationMetrics?
+            var receivedSampleCount = 0
             let stream = try await provider.synthesize(synthesisRequest)
             for try await event in stream {
                 switch event {
@@ -140,7 +141,16 @@ struct InterviewArcLiveSpeechSmoke {
                             exitCode: 65
                         )
                     }
+                    let (nextSampleCount, overflow) = receivedSampleCount
+                        .addingReportingOverflow(chunk.samples.count)
+                    guard !overflow, nextSampleCount <= 2_400_000 else {
+                        throw SmokeFailure(
+                            message: "The local model exceeded the bounded audio duration.",
+                            exitCode: 65
+                        )
+                    }
                     try await audioStore.append(chunk, attemptID: attemptID)
+                    receivedSampleCount = nextSampleCount
                 case .completed(let metrics):
                     guard completion == nil else {
                         throw SmokeFailure(
@@ -154,7 +164,8 @@ struct InterviewArcLiveSpeechSmoke {
             guard let metrics = completion,
                   metrics.chunkCount > 0,
                   metrics.generatedSampleCount > 0,
-                  metrics.generatedSampleCount <= 2_400_000 else {
+                  metrics.generatedSampleCount <= 2_400_000,
+                  metrics.generatedSampleCount == receivedSampleCount else {
                 throw SmokeFailure(
                     message: "The local model produced no complete bounded audio.",
                     exitCode: 65

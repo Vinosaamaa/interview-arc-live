@@ -46,6 +46,7 @@ jobs:
             -destination 'platform=macOS' \
             -derivedDataPath "$INTERVIEW_ARC_LIVE_DERIVED_DATA_PATH" \
             MACOSX_DEPLOYMENT_TARGET=14.0 \
+            ENABLE_TESTABILITY=YES \
             CODE_SIGNING_ALLOWED=NO
       - name: Test package
         env:
@@ -58,6 +59,7 @@ jobs:
             -derivedDataPath "$INTERVIEW_ARC_LIVE_DERIVED_DATA_PATH" \
             -parallel-testing-enabled NO \
             MACOSX_DEPLOYMENT_TARGET=14.0 \
+            ENABLE_TESTABILITY=YES \
             CODE_SIGNING_ALLOWED=NO
       - name: Test installer safety
         run: Tests/ScriptTests/install-app-tests.zsh

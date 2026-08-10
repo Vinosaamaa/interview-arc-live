@@ -93,6 +93,7 @@ actor QwenModelStore {
     private let freeSpaceReader: any QwenFreeSpaceReading
     private let fileManager: FileManager
     private let minimumFreeBytes: Int64
+    private let postReplacementValidation: @Sendable (URL, URL) throws -> Void
 
     private var activePreparationID: UUID?
     private var latestProgress: QwenModelStoreProgress?
@@ -105,7 +106,8 @@ actor QwenModelStore {
         downloader: any QwenSnapshotDownloading = HuggingFaceQwenSnapshotDownloader(),
         freeSpaceReader: any QwenFreeSpaceReading = FoundationQwenFreeSpaceReader(),
         fileManager: FileManager = .default,
-        minimumFreeBytes: Int64 = Qwen3TTSProvenance.minimumFreeByteCount
+        minimumFreeBytes: Int64 = Qwen3TTSProvenance.minimumFreeByteCount,
+        postReplacementValidation: @escaping @Sendable (URL, URL) throws -> Void = { _, _ in }
     ) {
         self.modelRoot = modelRoot.standardizedFileURL
         self.privateStorageRoot = (privateStorageRoot ?? modelRoot).standardizedFileURL
@@ -114,6 +116,7 @@ actor QwenModelStore {
         self.freeSpaceReader = freeSpaceReader
         self.fileManager = fileManager
         self.minimumFreeBytes = minimumFreeBytes
+        self.postReplacementValidation = postReplacementValidation
     }
 
     /// Read-only inspection. A process-local metadata signature avoids hashing
@@ -184,6 +187,7 @@ actor QwenModelStore {
             preparationID.uuidString.lowercased(),
             isDirectory: true
         )
+        var promotion: SnapshotPromotion?
 
         do {
             try createPrivateStorageHierarchy()
@@ -215,14 +219,14 @@ actor QwenModelStore {
             // Upstream may mutate tokenizer.json and has a corruption branch
             // that can remove its model directory. It therefore never receives
             // the promoted directory during first installation.
-            try await validateLoadSafely(from: staging, using: validateStagedLoad)
+            try await loadSafely(from: staging, using: validateStagedLoad)
             try Task.checkCancellation()
             try recordDerivedTokenizer(at: staging)
             try validateReadySnapshot(at: staging, hashesRequired: true)
             try Task.checkCancellation()
 
             publishProgress(.promoting, completedBytes: manifest.byteCount, to: progress)
-            try promote(staging: staging)
+            try promote(staging: staging, promotion: &promotion)
             // Reload from the promoted path. Even though the audited upstream
             // implementation eagerly reads weights/tokenizers today, this
             // avoids retaining a future lazy reference to the renamed staging
@@ -236,22 +240,28 @@ actor QwenModelStore {
             try Task.checkCancellation()
             try validateReadySnapshot(at: snapshotDirectory, hashesRequired: true)
             try Task.checkCancellation()
-            cachedReadySignature = try snapshotMetadataSignature(at: snapshotDirectory)
+            let readySignature = try snapshotMetadataSignature(at: snapshotDirectory)
+            try Task.checkCancellation()
+            try commit(promotion)
+            cachedReadySignature = readySignature
             activePreparationID = nil
             latestProgress = nil
             return (snapshotDirectory, loadedModel)
-        } catch is CancellationError {
-            try? removeScopedItem(staging, inside: stagingRoot)
-            clearPreparation()
-            throw QwenModelStoreFailure.cancelled
-        } catch let failure as QwenModelStoreFailure {
-            try? removeScopedItem(staging, inside: stagingRoot)
-            clearPreparation()
-            throw failure
         } catch {
-            try? removeScopedItem(staging, inside: stagingRoot)
+            let originalError = error
+            do {
+                try rollback(promotion)
+                if fileManager.fileExists(atPath: staging.path) {
+                    try removeScopedItem(staging, inside: stagingRoot)
+                }
+            } catch {
+                cachedReadySignature = nil
+                clearPreparation()
+                throw QwenModelStoreFailure.storageFailure
+            }
+            cachedReadySignature = nil
             clearPreparation()
-            throw QwenModelStoreFailure.downloadFailed
+            throw preparationFailure(for: originalError)
         }
     }
 
@@ -298,21 +308,6 @@ actor QwenModelStore {
     ) async throws -> LoadedModel {
         do {
             return try await loader(directory)
-        } catch is CancellationError {
-            throw QwenModelStoreFailure.cancelled
-        } catch let failure as QwenModelStoreFailure {
-            throw failure
-        } catch {
-            throw QwenModelStoreFailure.loaderValidationFailed
-        }
-    }
-
-    private func validateLoadSafely(
-        from directory: URL,
-        using loader: @escaping @Sendable (URL) async throws -> Void
-    ) async throws {
-        do {
-            try await loader(directory)
         } catch is CancellationError {
             throw QwenModelStoreFailure.cancelled
         } catch let failure as QwenModelStoreFailure {
@@ -653,30 +648,112 @@ actor QwenModelStore {
         return QwenSHA256.string(Data(rows.joined(separator: "\n").utf8))
     }
 
-    private func promote(staging: URL) throws {
+    private struct SnapshotPromotion {
+        let backup: URL?
+    }
+
+    private func promote(
+        staging: URL,
+        promotion: inout SnapshotPromotion?
+    ) throws {
         let final = snapshotDirectory
         do {
             if fileManager.fileExists(atPath: final.path) {
                 try validateExistingDirectory(final)
                 let backupName = "snapshot-backup-\(UUID().uuidString.lowercased())"
+                let backup = revisionRoot.appendingPathComponent(
+                    backupName,
+                    isDirectory: true
+                )
+                guard isStrictDescendant(backup, of: revisionRoot) else {
+                    throw QwenModelStoreFailure.invalidStorageRoot
+                }
                 _ = try fileManager.replaceItemAt(
                     final,
                     withItemAt: staging,
                     backupItemName: backupName,
-                    options: []
+                    options: [.withoutDeletingBackupItem]
                 )
-                let backup = revisionRoot.appendingPathComponent(backupName)
-                if fileManager.fileExists(atPath: backup.path) {
-                    try removeScopedItem(backup, inside: revisionRoot)
+                // Publish the rollback receipt immediately after the atomic
+                // replacement. Any later postcondition failure must be able to
+                // restore the prior verified snapshot from the retained backup.
+                promotion = SnapshotPromotion(backup: backup)
+                try postReplacementValidation(final, backup)
+                guard fileManager.fileExists(atPath: backup.path) else {
+                    throw QwenModelStoreFailure.storageFailure
                 }
+                try validateExistingDirectory(backup)
             } else {
                 try fileManager.moveItem(at: staging, to: final)
+                promotion = SnapshotPromotion(backup: nil)
             }
         } catch let failure as QwenModelStoreFailure {
             throw failure
         } catch {
             throw QwenModelStoreFailure.storageFailure
         }
+    }
+
+    /// The previous snapshot remains available until every post-promotion hash,
+    /// loader, and cancellation gate has succeeded. Committing is therefore
+    /// only the scoped removal of that retained backup.
+    private func commit(_ promotion: SnapshotPromotion?) throws {
+        guard let promotion else {
+            throw QwenModelStoreFailure.storageFailure
+        }
+        guard let backup = promotion.backup else { return }
+        guard fileManager.fileExists(atPath: backup.path) else {
+            throw QwenModelStoreFailure.storageFailure
+        }
+        try validateExistingDirectory(backup)
+        try removeScopedItem(backup, inside: revisionRoot)
+    }
+
+    /// Restores the exact prior directory on replacement failure. A failed
+    /// first installation has no backup, so its promoted candidate is removed.
+    private func rollback(_ promotion: SnapshotPromotion?) throws {
+        guard let promotion else { return }
+        let final = snapshotDirectory
+        guard let backup = promotion.backup else {
+            if fileManager.fileExists(atPath: final.path) {
+                try removeScopedItem(final, inside: revisionRoot)
+            }
+            return
+        }
+
+        try validateExistingDirectory(backup)
+        if fileManager.fileExists(atPath: final.path) {
+            let failedName = "snapshot-rejected-\(UUID().uuidString.lowercased())"
+            let failed = revisionRoot.appendingPathComponent(
+                failedName,
+                isDirectory: true
+            )
+            guard isStrictDescendant(failed, of: revisionRoot) else {
+                throw QwenModelStoreFailure.invalidStorageRoot
+            }
+            _ = try fileManager.replaceItemAt(
+                final,
+                withItemAt: backup,
+                backupItemName: failedName,
+                options: [.withoutDeletingBackupItem]
+            )
+            if fileManager.fileExists(atPath: failed.path) {
+                try removeScopedItem(failed, inside: revisionRoot)
+            }
+        } else {
+            try fileManager.moveItem(at: backup, to: final)
+        }
+        try validateExistingDirectory(final)
+    }
+
+    private func preparationFailure(for error: Error) -> QwenModelStoreFailure {
+        if error is CancellationError {
+            return .cancelled
+        }
+        if let failure = error as? QwenModelStoreFailure {
+            return failure
+        }
+        return .downloadFailed
     }
 
     private func writeVerificationReceipt(to root: URL) throws {

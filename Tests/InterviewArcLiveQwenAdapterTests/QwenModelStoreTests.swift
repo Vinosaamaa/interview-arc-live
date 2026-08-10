@@ -11,6 +11,10 @@ final class QwenModelStoreTests: XCTestCase {
         XCTAssertEqual(Qwen3TTSProvenance.packageVersion, "0.1.3")
         XCTAssertEqual(
             Qwen3TTSProvenance.packageRevision,
+            "a228dc056c6b298a2f5aff7f10e3aed537577fa0"
+        )
+        XCTAssertEqual(
+            Qwen3TTSProvenance.packageUpstreamRevision,
             "d302a5c6080d2bb97bae38c7418f82abb76013b6"
         )
         XCTAssertEqual(
@@ -234,6 +238,196 @@ final class QwenModelStoreTests: XCTestCase {
         XCTAssertTrue(fixture.fileManager.fileExists(atPath: directory.path))
     }
 
+    func testPostPromotionLoaderFailureRestoresPriorReadySnapshot() async throws {
+        let fixture = try Fixture.make(behaviors: [.valid, .valid])
+        defer { fixture.remove() }
+        let directory = try await fixture.prepare(allowDownload: true)
+        let initialReadiness = await fixture.store.readiness()
+        XCTAssertEqual(initialReadiness, .ready(modelDirectory: directory))
+        let originalConfig = try Data(
+            contentsOf: directory.appendingPathComponent("config.json")
+        )
+        let repair = try fixture.invalidateVerificationReceipt(in: directory)
+
+        do {
+            _ = try await fixture.store.prepare(
+                allowDownload: true,
+                validateStagedLoad: { staging in
+                    try await FixtureModelLoader.validateStaged(from: staging)
+                    try repair.restore()
+                },
+                loadPromoted: { _ in throw FixtureLoaderFailure.failed },
+                progress: { _ in }
+            )
+            XCTFail("a promoted loader failure must roll back")
+        } catch let failure as QwenModelStoreFailure {
+            XCTAssertEqual(failure, .loaderValidationFailed)
+        }
+
+        let restoredReadiness = await fixture.store.readiness()
+        let restoredConfig = try Data(
+            contentsOf: directory.appendingPathComponent("config.json")
+        )
+        XCTAssertEqual(restoredReadiness, .ready(modelDirectory: directory))
+        XCTAssertEqual(restoredConfig, originalConfig)
+    }
+
+    func testPostReplacementValidationFailureRestoresPriorReadySnapshot() async throws {
+        let postReplacementGate = FailFirstPostReplacementValidation()
+        let fixture = try Fixture.make(
+            behaviors: [.valid, .valid],
+            postReplacementValidation: { final, backup in
+                try postReplacementGate.validate(final: final, backup: backup)
+            }
+        )
+        defer { fixture.remove() }
+        let directory = try await fixture.prepare(allowDownload: true)
+        let originalConfig = try Data(
+            contentsOf: directory.appendingPathComponent("config.json")
+        )
+        let repair = try fixture.invalidateVerificationReceipt(in: directory)
+
+        do {
+            _ = try await fixture.store.prepare(
+                allowDownload: true,
+                validateStagedLoad: { staging in
+                    try await FixtureModelLoader.validateStaged(from: staging)
+                    try repair.restore()
+                },
+                loadPromoted: { promoted in
+                    try await FixtureModelLoader.loadPromoted(from: promoted)
+                },
+                progress: { _ in }
+            )
+            XCTFail("a post-replacement validation failure must roll back")
+        } catch let failure as QwenModelStoreFailure {
+            XCTAssertEqual(failure, .storageFailure)
+        }
+
+        let restoredReadiness = await fixture.store.readiness()
+        let restoredConfig = try Data(
+            contentsOf: directory.appendingPathComponent("config.json")
+        )
+        let revisionChildren = try fixture.fileManager.contentsOfDirectory(
+            at: directory.deletingLastPathComponent(),
+            includingPropertiesForKeys: nil
+        )
+        XCTAssertTrue(postReplacementGate.didFailAfterSeeingBothDirectories())
+        XCTAssertEqual(restoredReadiness, .ready(modelDirectory: directory))
+        XCTAssertEqual(restoredConfig, originalConfig)
+        XCTAssertFalse(revisionChildren.contains {
+            $0.lastPathComponent.hasPrefix("snapshot-backup-")
+                || $0.lastPathComponent.hasPrefix("snapshot-rejected-")
+        })
+    }
+
+    func testPostPromotionHashFailureRestoresPriorReadySnapshot() async throws {
+        let fixture = try Fixture.make(behaviors: [.valid, .valid])
+        defer { fixture.remove() }
+        let directory = try await fixture.prepare(allowDownload: true)
+        let initialReadiness = await fixture.store.readiness()
+        XCTAssertEqual(initialReadiness, .ready(modelDirectory: directory))
+        let originalConfig = try Data(
+            contentsOf: directory.appendingPathComponent("config.json")
+        )
+        let repair = try fixture.invalidateVerificationReceipt(in: directory)
+
+        do {
+            _ = try await fixture.store.prepare(
+                allowDownload: true,
+                validateStagedLoad: { staging in
+                    try await FixtureModelLoader.validateStaged(from: staging)
+                    try repair.restore()
+                },
+                loadPromoted: { promoted in
+                    let config = promoted.appendingPathComponent("config.json")
+                    let bytes = try Data(contentsOf: config)
+                    try Data(repeating: 0x58, count: bytes.count).write(to: config)
+                    return FixtureLoadedModel()
+                },
+                progress: { _ in }
+            )
+            XCTFail("post-load hash corruption must roll back")
+        } catch let failure as QwenModelStoreFailure {
+            XCTAssertEqual(failure, .hashMismatch)
+        }
+
+        let restoredReadiness = await fixture.store.readiness()
+        let restoredConfig = try Data(
+            contentsOf: directory.appendingPathComponent("config.json")
+        )
+        XCTAssertEqual(restoredReadiness, .ready(modelDirectory: directory))
+        XCTAssertEqual(restoredConfig, originalConfig)
+    }
+
+    func testPostPromotionCancellationRestoresPriorReadySnapshot() async throws {
+        let fixture = try Fixture.make(behaviors: [.valid, .valid])
+        defer { fixture.remove() }
+        let directory = try await fixture.prepare(allowDownload: true)
+        let initialReadiness = await fixture.store.readiness()
+        XCTAssertEqual(initialReadiness, .ready(modelDirectory: directory))
+        let repair = try fixture.invalidateVerificationReceipt(in: directory)
+        let gate = NoncancellableLoaderGate()
+
+        let task = Task {
+            try await fixture.store.prepare(
+                allowDownload: true,
+                validateStagedLoad: { staging in
+                    try await FixtureModelLoader.validateStaged(from: staging)
+                    try repair.restore()
+                },
+                loadPromoted: { _ in
+                    await gate.wait()
+                    return FixtureLoadedModel()
+                },
+                progress: { _ in }
+            )
+        }
+        await gate.waitUntilStarted()
+        task.cancel()
+        await gate.release()
+
+        do {
+            _ = try await task.value
+            XCTFail("cancellation after promotion must roll back")
+        } catch let failure as QwenModelStoreFailure {
+            XCTAssertEqual(failure, .cancelled)
+        }
+
+        let restoredReadiness = await fixture.store.readiness()
+        XCTAssertEqual(restoredReadiness, .ready(modelDirectory: directory))
+    }
+
+    func testSuccessfulReplacementRemovesBackupOnlyAfterFinalGates() async throws {
+        let fixture = try Fixture.make(behaviors: [.valid, .valid])
+        defer { fixture.remove() }
+        let directory = try await fixture.prepare(allowDownload: true)
+        let repair = try fixture.invalidateVerificationReceipt(in: directory)
+
+        let prepared = try await fixture.store.prepare(
+            allowDownload: true,
+            validateStagedLoad: { staging in
+                try await FixtureModelLoader.validateStaged(from: staging)
+                try repair.restore()
+            },
+            loadPromoted: { promoted in
+                try await FixtureModelLoader.loadPromoted(from: promoted)
+            },
+            progress: { _ in }
+        )
+
+        let revisionChildren = try fixture.fileManager.contentsOfDirectory(
+            at: directory.deletingLastPathComponent(),
+            includingPropertiesForKeys: nil
+        )
+        let readiness = await fixture.store.readiness()
+        XCTAssertEqual(prepared.modelDirectory, directory)
+        XCTAssertEqual(readiness, .ready(modelDirectory: directory))
+        XCTAssertFalse(revisionChildren.contains {
+            $0.lastPathComponent.hasPrefix("snapshot-backup-")
+        })
+    }
+
     func testLoaderDerivedTokenizerIsReceiptedBeforePromotionAndIsNotPublicProvenance() async throws {
         let fixture = try Fixture.make()
         defer { fixture.remove() }
@@ -281,6 +475,30 @@ final class QwenModelStoreTests: XCTestCase {
         let readiness = await fixture.store.readiness()
         XCTAssertEqual(readiness, .notInstalled)
         let snapshots = try fixture.findDirectories(named: "snapshot")
+        XCTAssertTrue(snapshots.isEmpty)
+    }
+
+    func testNewInstallPostPromotionLoaderFailureRemovesPromotedCandidate() async throws {
+        let fixture = try Fixture.make()
+        defer { fixture.remove() }
+
+        do {
+            _ = try await fixture.store.prepare(
+                allowDownload: true,
+                validateStagedLoad: { directory in
+                    try await FixtureModelLoader.validateStaged(from: directory)
+                },
+                loadPromoted: { _ in throw FixtureLoaderFailure.failed },
+                progress: { _ in }
+            )
+            XCTFail("a failed first promoted load must not remain installed")
+        } catch let failure as QwenModelStoreFailure {
+            XCTAssertEqual(failure, .loaderValidationFailed)
+        }
+
+        let readiness = await fixture.store.readiness()
+        let snapshots = try fixture.findDirectories(named: "snapshot")
+        XCTAssertEqual(readiness, .notInstalled)
         XCTAssertTrue(snapshots.isEmpty)
     }
 
@@ -408,7 +626,8 @@ private struct Fixture {
         behaviors: [FixtureDownloader.Behavior] = [.valid],
         availableBytes: Int64 = 1_000,
         minimumFreeBytes: Int64 = 100,
-        manifestFiles: [QwenSnapshotFile]? = nil
+        manifestFiles: [QwenSnapshotFile]? = nil,
+        postReplacementValidation: @escaping @Sendable (URL, URL) throws -> Void = { _, _ in }
     ) throws -> Fixture {
         let fileManager = FileManager.default
         let root = fileManager.temporaryDirectory.appendingPathComponent(
@@ -444,7 +663,8 @@ private struct Fixture {
             downloader: downloader,
             freeSpaceReader: FixedFreeSpaceReader(availableBytes: availableBytes),
             fileManager: fileManager,
-            minimumFreeBytes: minimumFreeBytes
+            minimumFreeBytes: minimumFreeBytes,
+            postReplacementValidation: postReplacementValidation
         )
         return Fixture(
             temporaryRoot: root,
@@ -494,10 +714,52 @@ private struct Fixture {
         }
         return matches
     }
+
+    func invalidateVerificationReceipt(in directory: URL) throws -> FixtureReceiptRepair {
+        let receipt = directory.appendingPathComponent(QwenModelStore.verificationReceiptName)
+        let repair = FixtureReceiptRepair(url: receipt, data: try Data(contentsOf: receipt))
+        try fileManager.removeItem(at: receipt)
+        return repair
+    }
+}
+
+private struct FixtureReceiptRepair: Sendable {
+    let url: URL
+    let data: Data
+
+    func restore() throws {
+        try data.write(to: url, options: .atomic)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o600],
+            ofItemAtPath: url.path
+        )
+    }
 }
 
 private enum FixtureLoaderFailure: Error {
     case failed
+}
+
+private final class FailFirstPostReplacementValidation: @unchecked Sendable {
+    private let lock = NSLock()
+    private var shouldFail = true
+    private var sawBothDirectories = false
+
+    func validate(final: URL, backup: URL) throws {
+        let didSeeBoth = FileManager.default.fileExists(atPath: final.path)
+            && FileManager.default.fileExists(atPath: backup.path)
+        let fail = lock.withLock { () -> Bool in
+            sawBothDirectories = sawBothDirectories || didSeeBoth
+            guard shouldFail else { return false }
+            shouldFail = false
+            return true
+        }
+        if fail { throw QwenModelStoreFailure.storageFailure }
+    }
+
+    func didFailAfterSeeingBothDirectories() -> Bool {
+        lock.withLock { sawBothDirectories && !shouldFail }
+    }
 }
 
 private struct FixtureLoadedModel: Sendable {}
@@ -661,15 +923,19 @@ private final class ProgressRecorder: @unchecked Sendable {
 private actor NoncancellableLoaderGate {
     private var continuation: CheckedContinuation<Void, Never>?
     private var didStart = false
+    private var startWaiters = [CheckedContinuation<Void, Never>]()
 
     func wait() async {
         didStart = true
+        startWaiters.forEach { $0.resume() }
+        startWaiters.removeAll()
         await withCheckedContinuation { continuation = $0 }
     }
 
     func waitUntilStarted() async {
-        while !didStart {
-            await Task.yield()
+        if didStart { return }
+        await withCheckedContinuation { waiter in
+            startWaiters.append(waiter)
         }
     }
 

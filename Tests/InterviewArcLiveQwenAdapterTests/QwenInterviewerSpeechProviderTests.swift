@@ -142,6 +142,168 @@ final class QwenInterviewerSpeechProviderTests: XCTestCase {
         ])
     }
 
+    func testSlowConsumerBackpressuresAndCompletesMoreThanTwentyFourChunks() async throws {
+        let chunks = Array(repeating: [Float(0.1)], count: 32)
+        let fixture = try ProviderFixture.make(runtimeBehavior: .chunks(chunks))
+        defer { fixture.remove() }
+        _ = try await fixture.provider.prepare(.userAuthorizedDownload) { _ in }
+        let stream = try await fixture.provider.synthesize(
+            Self.request(text: "Backpressure valid long-form interviewer speech.")
+        )
+        var events = [InterviewerSpeechEvent]()
+
+        for try await event in stream {
+            events.append(event)
+            if case .pcm = event {
+                try await Task.sleep(for: .milliseconds(2))
+            }
+        }
+        let highWaterMark = await fixture.provider.outputBufferHighWaterMark()
+
+        XCTAssertEqual(events.count, 33)
+        XCTAssertEqual(events.compactMap(Self.pcmChunk).count, 32)
+        XCTAssertTrue(highWaterMark > 0)
+        XCTAssertTrue(highWaterMark <= QwenInterviewerSpeechProvider.outputBufferCapacity)
+    }
+
+    func testCancellationJoinsProducerSuspendedByBackpressure() async throws {
+        let chunks = Array(repeating: [Float(0.1)], count: 32)
+        let fixture = try ProviderFixture.make(runtimeBehavior: .chunks(chunks))
+        defer { fixture.remove() }
+        _ = try await fixture.provider.prepare(.userAuthorizedDownload) { _ in }
+        let stream = try await fixture.provider.synthesize(
+            Self.request(text: "Cancel while bounded output is full.")
+        )
+        var iterator = stream.makeAsyncIterator()
+        guard case .pcm = try await iterator.next() else {
+            return XCTFail("expected the first PCM chunk")
+        }
+        try await Task.sleep(for: .milliseconds(20))
+
+        await fixture.provider.cancelSynthesis()
+
+        do {
+            while try await iterator.next() != nil {}
+            XCTFail("joined producer cancellation must terminate the stream")
+        } catch let error as QwenInterviewerSpeechError {
+            XCTAssertEqual(error, .cancelled)
+        }
+        let highWaterMark = await fixture.provider.outputBufferHighWaterMark()
+        XCTAssertTrue(highWaterMark <= QwenInterviewerSpeechProvider.outputBufferCapacity)
+
+        let retry = try await Self.collect(
+            try await fixture.provider.synthesize(
+                Self.request(text: "Prepared model remains retryable after cancellation.")
+            )
+        )
+        XCTAssertEqual(retry.count, 33)
+    }
+
+    func testCancelSynthesisJoinsDelayedUpstreamTeardownBeforeImmediateRetry() async throws {
+        let fixture = try ProviderFixture.make(
+            runtimeBehavior: .delayedCancellationTeardown(
+                chunks: Array(repeating: [Float(0.1)], count: 32),
+                delay: .milliseconds(75)
+            )
+        )
+        defer { fixture.remove() }
+        _ = try await fixture.provider.prepare(.userAuthorizedDownload) { _ in }
+        let firstStream = try await fixture.provider.synthesize(
+            Self.request(text: "Join the first upstream producer.")
+        )
+        await fixture.runtime.waitUntilDelayedProducerStarts(1)
+        await fixture.runtime.waitUntilDelayedProducerYieldsAllChunks(1)
+
+        await fixture.provider.cancelSynthesis()
+
+        XCTAssertEqual(fixture.runtime.activeDelayedProducerCount(), 0)
+        XCTAssertEqual(fixture.runtime.delayedTeardownCompletionCount(), 1)
+        let retryStream = try await fixture.provider.synthesize(
+            Self.request(text: "Retry only after teardown completes.")
+        )
+        await fixture.runtime.waitUntilDelayedProducerStarts(2)
+        XCTAssertFalse(fixture.runtime.hadDelayedProducerOverlap())
+
+        await fixture.provider.cancelSynthesis()
+
+        XCTAssertEqual(fixture.runtime.activeDelayedProducerCount(), 0)
+        XCTAssertEqual(fixture.runtime.delayedTeardownCompletionCount(), 2)
+        XCTAssertFalse(fixture.runtime.hadDelayedProducerOverlap())
+        withExtendedLifetime((firstStream, retryStream)) {}
+    }
+
+    func testInvalidAudioJoinsDelayedUpstreamTeardownBeforeOwnershipRelease() async throws {
+        let fixture = try ProviderFixture.make(
+            runtimeBehavior: .delayedCancellationTeardown(
+                chunks: [[.nan]],
+                delay: .milliseconds(75)
+            )
+        )
+        defer { fixture.remove() }
+        _ = try await fixture.provider.prepare(.userAuthorizedDownload) { _ in }
+
+        for attempt in 1 ... 2 {
+            do {
+                _ = try await Self.collect(
+                    try await fixture.provider.synthesize(
+                        Self.request(text: "Reject invalid audio after joining its producer.")
+                    )
+                )
+                XCTFail("non-finite audio must fail")
+            } catch let error as QwenInterviewerSpeechError {
+                XCTAssertEqual(error, .invalidAudio)
+            }
+            XCTAssertEqual(fixture.runtime.activeDelayedProducerCount(), 0)
+            XCTAssertEqual(fixture.runtime.delayedTeardownCompletionCount(), attempt)
+            XCTAssertFalse(fixture.runtime.hadDelayedProducerOverlap())
+        }
+    }
+
+    func testOversizedPCMChunkFailsBeforeEnteringBoundedBuffer() async throws {
+        let oversized = [Float](
+            repeating: 0.1,
+            count: QwenInterviewerSpeechProvider.maximumChunkSampleCount + 1
+        )
+        let fixture = try ProviderFixture.make(runtimeBehavior: .chunks([oversized]))
+        defer { fixture.remove() }
+        _ = try await fixture.provider.prepare(.userAuthorizedDownload) { _ in }
+
+        do {
+            _ = try await Self.collect(
+                try await fixture.provider.synthesize(
+                    Self.request(text: "Reject an unexpectedly large provider chunk.")
+                )
+            )
+            XCTFail("an oversized upstream chunk must not enter the output buffer")
+        } catch let error as QwenInterviewerSpeechError {
+            XCTAssertEqual(error, .invalidAudio)
+        }
+    }
+
+    func testTotalGeneratedSamplesCannotExceedProviderBoundary() async throws {
+        let fullChunk = [Float](
+            repeating: 0.1,
+            count: QwenInterviewerSpeechProvider.maximumChunkSampleCount
+        )
+        let fullChunkCount = QwenInterviewerSpeechProvider.maximumGeneratedSampleCount
+            / QwenInterviewerSpeechProvider.maximumChunkSampleCount
+        let chunks = Array(repeating: fullChunk, count: fullChunkCount) + [[0.1]]
+        let fixture = try ProviderFixture.make(runtimeBehavior: .chunks(chunks))
+        defer { fixture.remove() }
+        _ = try await fixture.provider.prepare(.userAuthorizedDownload) { _ in }
+
+        do {
+            _ = try await Self.collect(
+                try await fixture.provider.synthesize(
+                    Self.request(text: "Enforce the total generated sample boundary.")
+                )
+            )
+            XCTFail("provider output must not exceed 2,400,000 samples")
+        } catch let error as QwenInterviewerSpeechError {
+            XCTAssertEqual(error, .invalidAudio)
+        }
+    }
+
     func testRejectsEmptyNonFiniteAndWrongProfileWithoutLeakingText() async throws {
         let fixture = try ProviderFixture.make(runtimeBehavior: .chunks([[.nan]]))
         defer { fixture.remove() }
@@ -279,6 +441,13 @@ final class QwenInterviewerSpeechProviderTests: XCTestCase {
         var result = [InterviewerSpeechEvent]()
         for try await event in stream { result.append(event) }
         return result
+    }
+
+    private static func pcmChunk(
+        _ event: InterviewerSpeechEvent
+    ) -> InterviewerSpeechPCMChunk? {
+        guard case .pcm(let chunk) = event else { return nil }
+        return chunk
     }
 }
 
@@ -423,6 +592,7 @@ private final class ProviderRuntime: QwenStreamingSpeechModel, @unchecked Sendab
     enum Behavior: Sendable {
         case chunks([[Float]])
         case waitForCancellation
+        case delayedCancellationTeardown(chunks: [[Float]], delay: Duration)
     }
 
     struct ObservedRequest: Equatable {
@@ -436,35 +606,69 @@ private final class ProviderRuntime: QwenStreamingSpeechModel, @unchecked Sendab
     private var requests = [ObservedRequest]()
     private var started = false
     private var cancelled = false
+    private var activeDelayedProducers = 0
+    private var delayedProducerOverlap = false
+    private let delayedProducerStarts = ProviderCountSignal()
+    private let delayedProducerYields = ProviderCountSignal()
+    private let delayedTeardownCompletions = ProviderCountSignal()
 
     init(behavior: Behavior) {
         self.behavior = behavior
     }
 
-    func generateSamples(
+    func startGeneration(
         text: String,
         profile: InterviewerSpeechProfile
-    ) -> AsyncThrowingStream<[Float], Error> {
+    ) -> any QwenSpeechGeneration {
         lock.withLock { requests.append(ObservedRequest(text: text, profile: profile)) }
         switch behavior {
         case .chunks(let chunks):
-            return AsyncThrowingStream { continuation in
+            let stream = AsyncThrowingStream<[Float], Error> { continuation in
                 for chunk in chunks { continuation.yield(chunk) }
                 continuation.finish()
             }
+            return ProviderTestGeneration(stream: stream, producerTask: nil)
         case .waitForCancellation:
-            return AsyncThrowingStream { continuation in
-                let task = Task { [weak self] in
-                    self?.lock.withLock { self?.started = true }
-                    do {
-                        while true { try await Task.sleep(for: .seconds(10)) }
-                    } catch {
-                        self?.lock.withLock { self?.cancelled = true }
-                        continuation.finish(throwing: CancellationError())
-                    }
+            let (stream, continuation) = AsyncThrowingStream<[Float], Error>.makeStream()
+            let task = Task.detached { [weak self] in
+                self?.lock.withLock { self?.started = true }
+                do {
+                    while true { try await Task.sleep(for: .seconds(10)) }
+                } catch {
+                    self?.lock.withLock { self?.cancelled = true }
+                    continuation.finish(throwing: CancellationError())
                 }
-                continuation.onTermination = { @Sendable _ in task.cancel() }
             }
+            continuation.onTermination = { @Sendable _ in task.cancel() }
+            return ProviderTestGeneration(stream: stream, producerTask: task)
+        case .delayedCancellationTeardown(let chunks, let delay):
+            let (stream, continuation) = AsyncThrowingStream<[Float], Error>.makeStream()
+            let task = Task.detached { [weak self] in
+                guard let self else {
+                    continuation.finish()
+                    return
+                }
+                self.beginDelayedProducer()
+                do {
+                    for chunk in chunks {
+                        try Task.checkCancellation()
+                        continuation.yield(chunk)
+                    }
+                    self.delayedProducerYields.increment()
+                    while true {
+                        try await Task.sleep(for: .seconds(10))
+                    }
+                } catch {
+                    let teardown = Task.detached {
+                        try? await Task.sleep(for: delay)
+                    }
+                    await teardown.value
+                    self.finishDelayedProducer()
+                    continuation.finish(throwing: CancellationError())
+                }
+            }
+            continuation.onTermination = { @Sendable _ in task.cancel() }
+            return ProviderTestGeneration(stream: stream, producerTask: task)
         }
     }
 
@@ -487,6 +691,103 @@ private final class ProviderRuntime: QwenStreamingSpeechModel, @unchecked Sendab
             try? await Task.sleep(for: .milliseconds(10))
         }
     }
+
+    func waitUntilDelayedProducerStarts(_ count: Int) async {
+        await delayedProducerStarts.wait(until: count)
+    }
+
+    func waitUntilDelayedProducerYieldsAllChunks(_ count: Int) async {
+        await delayedProducerYields.wait(until: count)
+    }
+
+    func activeDelayedProducerCount() -> Int {
+        lock.withLock { activeDelayedProducers }
+    }
+
+    func delayedTeardownCompletionCount() -> Int {
+        delayedTeardownCompletions.value
+    }
+
+    func hadDelayedProducerOverlap() -> Bool {
+        lock.withLock { delayedProducerOverlap }
+    }
+
+    private func beginDelayedProducer() {
+        lock.withLock {
+            activeDelayedProducers += 1
+            if activeDelayedProducers > 1 {
+                delayedProducerOverlap = true
+            }
+        }
+        delayedProducerStarts.increment()
+    }
+
+    private func finishDelayedProducer() {
+        lock.withLock { activeDelayedProducers -= 1 }
+        delayedTeardownCompletions.increment()
+    }
+}
+
+/// Test double for the pinned upstream Qwen handle. `cancelAndWait` joins the
+/// exact producer Task, including deliberately non-cancellable teardown.
+private final class ProviderTestGeneration: QwenSpeechGeneration, @unchecked Sendable {
+    private var iterator: AsyncThrowingStream<[Float], Error>.Iterator
+    private let producerTask: Task<Void, Never>?
+
+    init(
+        stream: AsyncThrowingStream<[Float], Error>,
+        producerTask: Task<Void, Never>?
+    ) {
+        iterator = stream.makeAsyncIterator()
+        self.producerTask = producerTask
+    }
+
+    func nextSamples() async throws -> [Float]? {
+        try await iterator.next()
+    }
+
+    func cancelAndWait() async {
+        guard let producerTask else { return }
+        producerTask.cancel()
+        await producerTask.value
+    }
+}
+
+private final class ProviderCountSignal: @unchecked Sendable {
+    private struct Waiter {
+        let target: Int
+        let continuation: CheckedContinuation<Void, Never>
+    }
+
+    private let lock = NSLock()
+    private var count = 0
+    private var waiters = [Waiter]()
+
+    var value: Int {
+        lock.withLock { count }
+    }
+
+    func increment() {
+        let ready = lock.withLock { () -> [Waiter] in
+            count += 1
+            let ready = waiters.filter { $0.target <= count }
+            waiters.removeAll { $0.target <= count }
+            return ready
+        }
+        ready.forEach { $0.continuation.resume() }
+    }
+
+    func wait(until target: Int) async {
+        await withCheckedContinuation { continuation in
+            let resumeNow = lock.withLock { () -> Bool in
+                guard count < target else { return true }
+                waiters.append(Waiter(target: target, continuation: continuation))
+                return false
+            }
+            if resumeNow { continuation.resume() }
+        }
+    }
+
 }
 
 private final class ProviderProgressRecorder: @unchecked Sendable {

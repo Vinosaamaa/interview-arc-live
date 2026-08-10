@@ -34,8 +34,12 @@ enters that FIFO. Stop and Mute share one joined cancellation finalizer; it
 cancels both the Core consumer and provider producer, stops output immediately,
 and preserves the prepared model for an explicit Retry.
 
-The production provider pins `Blaizzy/mlx-audio-swift` v0.1.3 at commit
-`d302a5c6080d2bb97bae38c7418f82abb76013b6` and the immutable
+The production provider pins the reviewed `Vinosaamaa/mlx-audio-swift` fork at
+commit `a228dc056c6b298a2f5aff7f10e3aed537577fa0`, based on upstream
+`Blaizzy/mlx-audio-swift` v0.1.3 commit
+`d302a5c6080d2bb97bae38c7418f82abb76013b6`. The fork adds a source-compatible,
+joinable Qwen generation handle so Stop/Mute can await the actual MLX producer
+before a retry owns the model. The provider also pins the immutable
 `mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-8bit` model revision
 `049ef77fe8816b536193c0c25f9a214d17921282`. The `mara-v1` fingerprint includes
 language, conditioning, max tokens, temperature, top-p, resolved top-k/min-p,

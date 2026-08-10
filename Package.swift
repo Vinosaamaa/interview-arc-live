@@ -26,8 +26,8 @@ let package = Package(
             revision: "e68767d92431c1b909fc4c8771d79b0b0d3b1ea9"
         ),
         .package(
-            url: "https://github.com/Blaizzy/mlx-audio-swift.git",
-            revision: "d302a5c6080d2bb97bae38c7418f82abb76013b6"
+            url: "https://github.com/Vinosaamaa/mlx-audio-swift.git",
+            revision: "a228dc056c6b298a2f5aff7f10e3aed537577fa0"
         ),
         .package(
             url: "https://github.com/huggingface/swift-huggingface.git",

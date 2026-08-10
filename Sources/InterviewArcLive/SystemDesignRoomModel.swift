@@ -22,6 +22,13 @@ protocol LiveInterviewerSpeechMuteControlling: AnyObject {
 extension InterviewerSpeechCoordinator: LiveInterviewerSpeechMuteControlling {}
 
 @MainActor
+struct LiveInterviewerSpeechDependencies {
+    let provider: any InterviewerSpeechProvider
+    let player: any InterviewerSpeechPlaying
+    let audioStore: any InterviewerSpeechAudioStoring
+}
+
+@MainActor
 final class SystemDesignRoomModel: ObservableObject {
     @Published private(set) var snapshot: InterviewRoomSnapshot?
     @Published private(set) var segments: [CandidateSegmentPresentation] = []
@@ -73,15 +80,12 @@ final class SystemDesignRoomModel: ObservableObject {
     private let activityPrompt: ActivityPrompt
     private let credentialStore: LiveGroqCredentialStore
     private let codexRuntime: any LiveCodexInterviewerRuntime
+    private let speechDependencies: LiveInterviewerSpeechDependencies?
     private let preferences: UserDefaults
-    private var speechProvider: (any InterviewerSpeechProvider)?
-    private var speechPlayer: (any InterviewerSpeechPlaying)?
-    private var speechAudioStore: (any InterviewerSpeechAudioStoring)?
     private var credentialState: CredentialState = .checking
     private var errorWasCodexFailure = false
     private var coordinator: SegmentSpeechCoordinator?
     private var interviewerSpeechCoordinator: InterviewerSpeechCoordinator?
-    private var speechMuteController: (any LiveInterviewerSpeechMuteControlling)?
     private var speechPreparationTask: Task<Void, Never>?
     private var audioPlayer: AVAudioPlayer?
 
@@ -92,19 +96,13 @@ final class SystemDesignRoomModel: ObservableObject {
         credentialStore: LiveGroqCredentialStore = LiveGroqCredentialStore(),
         codexRuntime: (any LiveCodexInterviewerRuntime)? = nil,
         activityPrompt: ActivityPrompt? = nil,
-        speechProvider: (any InterviewerSpeechProvider)? = nil,
-        speechPlayer: (any InterviewerSpeechPlaying)? = nil,
-        speechAudioStore: (any InterviewerSpeechAudioStoring)? = nil,
-        speechMuteController: (any LiveInterviewerSpeechMuteControlling)? = nil,
+        speechDependencies: LiveInterviewerSpeechDependencies? = nil,
         preferences: UserDefaults = .standard
     ) {
         self.credentialStore = credentialStore
         self.codexRuntime = codexRuntime ?? Self.makeDefaultCodexRuntime()
         self.activityPrompt = activityPrompt ?? Self.tracerActivityPrompt
-        self.speechProvider = speechProvider
-        self.speechPlayer = speechPlayer
-        self.speechAudioStore = speechAudioStore
-        self.speechMuteController = speechMuteController
+        self.speechDependencies = speechDependencies
         self.preferences = preferences
         isSpeechMuted = preferences.bool(
             forKey: Self.speechMutedPreferenceKey
@@ -179,7 +177,7 @@ final class SystemDesignRoomModel: ObservableObject {
     }
 
     var canToggleSpeechMute: Bool {
-        speechMuteController != nil
+        interviewerSpeechCoordinator != nil
     }
 
     var canStartSpeechModelDownload: Bool {
@@ -189,7 +187,7 @@ final class SystemDesignRoomModel: ObservableObject {
     }
 
     var showsSpeechMuteControl: Bool {
-        speechMuteController != nil
+        interviewerSpeechCoordinator != nil
     }
 
     func utterance(
@@ -697,7 +695,13 @@ final class SystemDesignRoomModel: ObservableObject {
     }
 
     func toggleSpeechMute() async {
-        guard let speechMuteController else { return }
+        guard let interviewerSpeechCoordinator else { return }
+        await toggleSpeechMute(using: interviewerSpeechCoordinator)
+    }
+
+    func toggleSpeechMute(
+        using speechMuteController: any LiveInterviewerSpeechMuteControlling
+    ) async {
         let next = !isSpeechMuted
         do {
             try await speechMuteController.setMuted(
@@ -831,37 +835,21 @@ final class SystemDesignRoomModel: ObservableObject {
         to conversation: SegmentSpeechCoordinator
     ) async {
         do {
-            let provider: any InterviewerSpeechProvider
-            let player: any InterviewerSpeechPlaying
-            let audioStore: any InterviewerSpeechAudioStoring
-
-            if let injectedProvider = speechProvider,
-               let injectedPlayer = speechPlayer,
-               let injectedAudioStore = speechAudioStore {
-                provider = injectedProvider
-                player = injectedPlayer
-                audioStore = injectedAudioStore
+            let dependencies: LiveInterviewerSpeechDependencies
+            if let speechDependencies {
+                dependencies = speechDependencies
             } else {
-                let liveAudioStore = LiveInterviewerSpeechAudioStore()
-                provider = try QwenInterviewerSpeechProvider()
-                player = AVAudioEngineInterviewerSpeechPlayer(
-                    audioStore: liveAudioStore
-                )
-                audioStore = liveAudioStore
-                speechProvider = provider
-                speechPlayer = player
-                speechAudioStore = audioStore
+                dependencies = try Self.makeLiveSpeechDependencies()
             }
 
             let speech = try await InterviewerSpeechCoordinator.attach(
                 to: conversation,
-                provider: provider,
-                player: player,
-                audioStore: audioStore,
+                provider: dependencies.provider,
+                player: dependencies.player,
+                audioStore: dependencies.audioStore,
                 initiallyMuted: isSpeechMuted
             )
             interviewerSpeechCoordinator = speech
-            speechMuteController = speech
             speech.setSnapshotHandler { [weak self, weak speech] next in
                 guard let self,
                       let speech,
@@ -888,6 +876,19 @@ final class SystemDesignRoomModel: ObservableObject {
             speechReadiness = .unavailable(.storageFailure)
             speechErrorMessage = "Local interviewer voice could not start. The written interview remains fully usable."
         }
+    }
+
+    private static func makeLiveSpeechDependencies() throws
+        -> LiveInterviewerSpeechDependencies
+    {
+        let audioStore = LiveInterviewerSpeechAudioStore()
+        return LiveInterviewerSpeechDependencies(
+            provider: try QwenInterviewerSpeechProvider(),
+            player: AVAudioEngineInterviewerSpeechPlayer(
+                audioStore: audioStore
+            ),
+            audioStore: audioStore
+        )
     }
 
     private static func makeDefaultCodexRuntime(

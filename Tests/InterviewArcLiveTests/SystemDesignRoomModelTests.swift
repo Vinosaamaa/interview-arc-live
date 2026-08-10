@@ -117,11 +117,10 @@ final class SystemDesignRoomModelTests: XCTestCase {
         let controller = MutingThenFailingSpeechController()
         let model = SystemDesignRoomModel(
             codexRuntime: CodexRuntimeFixture(readiness: .ready),
-            speechMuteController: controller,
             preferences: preferences
         )
 
-        await model.toggleSpeechMute()
+        await model.toggleSpeechMute(using: controller)
 
         XCTAssertTrue(controller.isMuted)
         XCTAssertTrue(model.isSpeechMuted)

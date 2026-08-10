@@ -1684,8 +1684,8 @@ public actor InterviewRoomSession {
             )
         }
 
-        let commandIDs = manifest.appliedCommands.map(\.commandID)
-        guard Set(commandIDs).count == commandIDs.count,
+        let commandIDSet = Set(manifest.appliedCommands.lazy.map(\.commandID))
+        guard commandIDSet.count == manifest.appliedCommands.count,
               manifest.appliedCommands.allSatisfy({
                   $0.resultingRevision > 0 && $0.resultingRevision <= manifest.revision
               }) else {
@@ -1820,7 +1820,7 @@ public actor InterviewRoomSession {
                 sessionID: manifest.sessionID,
                 commandID: evaluation.authorizationCommandID
             ),
-                  commandIDs.contains(evaluation.authorizationCommandID),
+                  commandIDSet.contains(evaluation.authorizationCommandID),
                   !evaluation.selectedCandidateIDs.isEmpty,
                   Set(evaluation.selectedCandidateIDs).count
                     == evaluation.selectedCandidateIDs.count,
@@ -1897,19 +1897,32 @@ public actor InterviewRoomSession {
                 return (interviewer.id, interviewer)
             }
         )
-        let utteranceIDs = manifest.interviewerUtterances.map(\.id)
-        let utteranceTurnIDs = manifest.interviewerUtterances.map(\.turnID)
-        let allSynthesisAttempts = manifest.interviewerUtterances.flatMap(
-            \.synthesisAttempts
-        )
-        let synthesisAttemptIDs = allSynthesisAttempts.map(\.id)
-        guard Set(utteranceIDs).count == utteranceIDs.count,
-              Set(utteranceTurnIDs).count == utteranceTurnIDs.count,
-              Set(synthesisAttemptIDs).count == synthesisAttemptIDs.count,
-              allSynthesisAttempts.filter(isActiveSynthesisAttempt).count <= 1 else {
-            throw InterviewRoomSessionError.invalidManifest(
-                reason: "invalid interviewer speech identity or single-flight state"
-            )
+        var utteranceIDs = Set<InterviewerUtteranceID>()
+        var utteranceTurnIDs = Set<TurnID>()
+        var synthesisAttemptIDs = Set<SynthesisAttemptID>()
+        var activeSynthesisAttemptCount = 0
+        for utterance in manifest.interviewerUtterances {
+            guard utteranceIDs.insert(utterance.id).inserted,
+                  utteranceTurnIDs.insert(utterance.turnID).inserted else {
+                throw InterviewRoomSessionError.invalidManifest(
+                    reason: "invalid interviewer speech identity or single-flight state"
+                )
+            }
+            for attempt in utterance.synthesisAttempts {
+                guard synthesisAttemptIDs.insert(attempt.id).inserted else {
+                    throw InterviewRoomSessionError.invalidManifest(
+                        reason: "invalid interviewer speech identity or single-flight state"
+                    )
+                }
+                if isActiveSynthesisAttempt(attempt) {
+                    activeSynthesisAttemptCount += 1
+                    guard activeSynthesisAttemptCount <= 1 else {
+                        throw InterviewRoomSessionError.invalidManifest(
+                            reason: "invalid interviewer speech identity or single-flight state"
+                        )
+                    }
+                }
+            }
         }
 
         for utterance in manifest.interviewerUtterances {
@@ -1927,12 +1940,6 @@ public actor InterviewRoomSession {
                 )
             }
 
-            let attemptIDs = utterance.synthesisAttempts.map(\.id)
-            guard Set(attemptIDs).count == attemptIDs.count else {
-                throw InterviewRoomSessionError.invalidManifest(
-                    reason: "duplicate Synthesis Attempt identity"
-                )
-            }
             for (attemptIndex, attempt) in utterance.synthesisAttempts.enumerated() {
                 do {
                     try validateSpeechProvenance(attempt.provenance)
@@ -1944,7 +1951,7 @@ public actor InterviewRoomSession {
                     ),
                     attempt.partialAudioIdentity == expectedIdentities.partial,
                     attempt.finalAudioIdentity == expectedIdentities.final,
-                    commandIDs.contains(attempt.authorizationCommandID),
+                    commandIDSet.contains(attempt.authorizationCommandID),
                     (attemptIndex == 0 ? attempt.kind == .initial : attempt.kind == .retry)
                     else {
                         throw InterviewRoomSessionError.invalidManifest(

@@ -21,10 +21,18 @@ protocol QwenSpeechModelLoading: Sendable {
 protocol QwenStreamingSpeechModel: Sendable {
     var sampleRate: Int { get }
 
-    func generateSamples(
+    func startGeneration(
         text: String,
         profile: InterviewerSpeechProfile
-    ) -> AsyncThrowingStream<[Float], Error>
+    ) -> any QwenSpeechGeneration
+}
+
+/// Joinable, single-consumer generation Seam. The production implementation
+/// iterates the upstream Qwen handle directly so cancellation can await the
+/// actual MLX producer instead of an unjoinable proxy stream.
+protocol QwenSpeechGeneration: Sendable {
+    func nextSamples() async throws -> [Float]?
+    func cancelAndWait() async
 }
 
 /// Production Adapter at the Core interviewer-speech Seam. A model is usable
@@ -47,6 +55,7 @@ public actor QwenInterviewerSpeechProvider: InterviewerSpeechProvider {
     private var activeGenerationID: UUID?
     private var activeGenerationTask: Task<Void, Never>?
     private var isCancellingSynthesis = false
+    private var lastOutputBufferHighWaterMark = 0
 
     /// Derives the Live-owned Application Support model root internally. The
     /// app never supplies or persists a provider-specific filesystem path.
@@ -177,9 +186,20 @@ public actor QwenInterviewerSpeechProvider: InterviewerSpeechProvider {
             throw QwenInterviewerSpeechError.incompatibleRuntime
         }
 
-        let upstream = model.generateSamples(text: request.spokenText, profile: request.profile)
+        let generation = model.startGeneration(
+            text: request.spokenText,
+            profile: request.profile
+        )
         let generationID = UUID()
-        let (stream, continuation) = AsyncThrowingStream<InterviewerSpeechEvent, Error>.makeStream()
+        let channel = QwenBoundedSpeechEventChannel(capacity: Self.outputBufferCapacity)
+        let cancellationRelay = QwenGenerationCancellationRelay()
+        let stream = AsyncThrowingStream<InterviewerSpeechEvent, Error>(unfolding: {
+            try await withTaskCancellationHandler {
+                try await channel.next()
+            } onCancel: {
+                cancellationRelay.cancel()
+            }
+        })
         // Register single-flight ownership before even a synchronous fixture
         // stream can finish. This keeps terminal cleanup from racing the
         // assignment below and stranding a completed Task as active.
@@ -197,9 +217,10 @@ public actor QwenInterviewerSpeechProvider: InterviewerSpeechProvider {
                     throw CancellationError()
                 }
                 try Task.checkCancellation()
-                for try await samples in upstream {
+                while let samples = try await generation.nextSamples() {
                     try Task.checkCancellation()
                     guard !samples.isEmpty,
+                          samples.count <= Self.maximumChunkSampleCount,
                           samples.allSatisfy(\.isFinite) else {
                         throw QwenInterviewerSpeechError.invalidAudio
                     }
@@ -211,8 +232,11 @@ public actor QwenInterviewerSpeechProvider: InterviewerSpeechProvider {
                     guard !overflow else {
                         throw QwenInterviewerSpeechError.invalidAudio
                     }
+                    guard nextCount <= Self.maximumGeneratedSampleCount else {
+                        throw QwenInterviewerSpeechError.invalidAudio
+                    }
                     sampleCount = nextCount
-                    continuation.yield(
+                    try await channel.send(
                         .pcm(
                             InterviewerSpeechPCMChunk(
                                 samples: samples,
@@ -226,7 +250,7 @@ public actor QwenInterviewerSpeechProvider: InterviewerSpeechProvider {
                 guard chunkCount > 0, sampleCount > 0 else {
                     throw QwenInterviewerSpeechError.invalidAudio
                 }
-                continuation.yield(
+                try await channel.send(
                     .completed(
                         InterviewerSpeechGenerationMetrics(
                             chunkCount: chunkCount,
@@ -236,28 +260,42 @@ public actor QwenInterviewerSpeechProvider: InterviewerSpeechProvider {
                         )
                     )
                 )
-                await self?.generationDidFinish(generationID)
-                continuation.finish()
-            } catch is CancellationError {
-                await self?.generationDidFinish(generationID)
-                continuation.finish(throwing: QwenInterviewerSpeechError.cancelled)
-            } catch let error as QwenInterviewerSpeechError {
-                await self?.generationDidFinish(generationID)
-                continuation.finish(throwing: error)
-            } catch {
-                await self?.generationDidFinish(generationID)
-                continuation.finish(
-                    throwing: Task.isCancelled
-                        ? QwenInterviewerSpeechError.cancelled
-                        : QwenInterviewerSpeechError.generationFailed
+                let highWaterMark = await channel.highWaterMark()
+                await self?.generationDidFinish(
+                    generationID,
+                    outputBufferHighWaterMark: highWaterMark
                 )
+                await channel.finish()
+            } catch is CancellationError {
+                await generation.cancelAndWait()
+                let highWaterMark = await channel.highWaterMark()
+                await self?.generationDidFinish(
+                    generationID,
+                    outputBufferHighWaterMark: highWaterMark
+                )
+                await channel.finish(throwing: .cancelled)
+            } catch let error as QwenInterviewerSpeechError {
+                await generation.cancelAndWait()
+                let highWaterMark = await channel.highWaterMark()
+                await self?.generationDidFinish(
+                    generationID,
+                    outputBufferHighWaterMark: highWaterMark
+                )
+                await channel.finish(throwing: error)
+            } catch {
+                await generation.cancelAndWait()
+                let failure: QwenInterviewerSpeechError = Task.isCancelled
+                    ? .cancelled
+                    : .generationFailed
+                let highWaterMark = await channel.highWaterMark()
+                await self?.generationDidFinish(
+                    generationID,
+                    outputBufferHighWaterMark: highWaterMark
+                )
+                await channel.finish(throwing: failure)
             }
         }
-        continuation.onTermination = { @Sendable termination in
-            if case .cancelled = termination {
-                task.cancel()
-            }
-        }
+        cancellationRelay.register(task)
         activeGenerationID = generationID
         activeGenerationTask = task
         startContinuation.yield(())
@@ -301,10 +339,18 @@ public actor QwenInterviewerSpeechProvider: InterviewerSpeechProvider {
         }
     }
 
-    private func generationDidFinish(_ generationID: UUID) {
+    private func generationDidFinish(
+        _ generationID: UUID,
+        outputBufferHighWaterMark: Int
+    ) {
         guard activeGenerationID == generationID else { return }
+        lastOutputBufferHighWaterMark = outputBufferHighWaterMark
         activeGenerationID = nil
         activeGenerationTask = nil
+    }
+
+    func outputBufferHighWaterMark() -> Int {
+        lastOutputBufferHighWaterMark
     }
 
     private func recordPreparationProgress(
@@ -316,6 +362,9 @@ public actor QwenInterviewerSpeechProvider: InterviewerSpeechProvider {
     }
 
     private static let requiredSampleRate = 24_000
+    static let outputBufferCapacity = 8
+    static let maximumChunkSampleCount = requiredSampleRate * 5
+    static let maximumGeneratedSampleCount = 2_400_000
 
     private static func elapsedMilliseconds(since start: UInt64) -> Int64 {
         let now = DispatchTime.now().uptimeNanoseconds
@@ -394,6 +443,196 @@ public actor QwenInterviewerSpeechProvider: InterviewerSpeechProvider {
     }
 }
 
+/// One-producer bounded channel behind the public AsyncThrowingStream. `send`
+/// suspends at capacity and resumes only after the consumer removes an event,
+/// so valid audio is neither dropped nor retained without a fixed bound.
+private actor QwenBoundedSpeechEventChannel {
+    private struct PendingSend {
+        let id: UUID
+        let event: InterviewerSpeechEvent
+        let continuation: CheckedContinuation<Void, Error>
+    }
+
+    private struct PendingReceive {
+        let id: UUID
+        let continuation: CheckedContinuation<InterviewerSpeechEvent?, Error>
+    }
+
+    private enum TerminalState {
+        case open
+        case finished
+        case failed(QwenInterviewerSpeechError)
+    }
+
+    private let capacity: Int
+    private var buffer = [InterviewerSpeechEvent]()
+    private var pendingSends = [PendingSend]()
+    private var pendingReceives = [PendingReceive]()
+    private var terminalState = TerminalState.open
+    private var observedHighWaterMark = 0
+
+    init(capacity: Int) {
+        precondition(capacity > 0)
+        self.capacity = capacity
+    }
+
+    func send(_ event: InterviewerSpeechEvent) async throws {
+        try Task.checkCancellation()
+        let id = UUID()
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                enqueueSend(id: id, event: event, continuation: continuation)
+            }
+            try Task.checkCancellation()
+        } onCancel: {
+            Task { await self.cancelSend(id: id) }
+        }
+    }
+
+    func next() async throws -> InterviewerSpeechEvent? {
+        try Task.checkCancellation()
+        let id = UUID()
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                enqueueReceive(id: id, continuation: continuation)
+            }
+        } onCancel: {
+            Task { await self.cancelReceive(id: id) }
+        }
+    }
+
+    func finish(throwing failure: QwenInterviewerSpeechError? = nil) {
+        guard case .open = terminalState else { return }
+        terminalState = failure.map(TerminalState.failed) ?? .finished
+
+        let sendFailure = failure ?? .generationFailed
+        let sends = pendingSends
+        pendingSends.removeAll()
+        sends.forEach { $0.continuation.resume(throwing: sendFailure) }
+        resumeTerminalReceiversIfDrained()
+    }
+
+    func highWaterMark() -> Int {
+        observedHighWaterMark
+    }
+
+    private func enqueueSend(
+        id: UUID,
+        event: InterviewerSpeechEvent,
+        continuation: CheckedContinuation<Void, Error>
+    ) {
+        switch terminalState {
+        case .finished:
+            continuation.resume(throwing: QwenInterviewerSpeechError.generationFailed)
+        case .failed(let failure):
+            continuation.resume(throwing: failure)
+        case .open:
+            if !pendingReceives.isEmpty {
+                let receive = pendingReceives.removeFirst()
+                receive.continuation.resume(returning: event)
+                continuation.resume()
+            } else if buffer.count < capacity {
+                buffer.append(event)
+                observedHighWaterMark = max(observedHighWaterMark, buffer.count)
+                continuation.resume()
+            } else {
+                pendingSends.append(
+                    PendingSend(id: id, event: event, continuation: continuation)
+                )
+            }
+        }
+    }
+
+    private func enqueueReceive(
+        id: UUID,
+        continuation: CheckedContinuation<InterviewerSpeechEvent?, Error>
+    ) {
+        if !buffer.isEmpty {
+            let event = buffer.removeFirst()
+            admitOldestPendingSend()
+            continuation.resume(returning: event)
+            return
+        }
+        if !pendingSends.isEmpty {
+            let send = pendingSends.removeFirst()
+            send.continuation.resume()
+            continuation.resume(returning: send.event)
+            return
+        }
+
+        switch terminalState {
+        case .open:
+            pendingReceives.append(PendingReceive(id: id, continuation: continuation))
+        case .finished:
+            continuation.resume(returning: nil)
+        case .failed(let failure):
+            continuation.resume(throwing: failure)
+        }
+    }
+
+    private func admitOldestPendingSend() {
+        guard !pendingSends.isEmpty else { return }
+        let send = pendingSends.removeFirst()
+        buffer.append(send.event)
+        observedHighWaterMark = max(observedHighWaterMark, buffer.count)
+        send.continuation.resume()
+    }
+
+    private func cancelSend(id: UUID) {
+        guard let index = pendingSends.firstIndex(where: { $0.id == id }) else { return }
+        let send = pendingSends.remove(at: index)
+        send.continuation.resume(throwing: CancellationError())
+    }
+
+    private func cancelReceive(id: UUID) {
+        guard let index = pendingReceives.firstIndex(where: { $0.id == id }) else { return }
+        let receive = pendingReceives.remove(at: index)
+        receive.continuation.resume(throwing: CancellationError())
+    }
+
+    private func resumeTerminalReceiversIfDrained() {
+        guard buffer.isEmpty, pendingSends.isEmpty else { return }
+        let receives = pendingReceives
+        pendingReceives.removeAll()
+        switch terminalState {
+        case .open:
+            return
+        case .finished:
+            receives.forEach { $0.continuation.resume(returning: nil) }
+        case .failed(let failure):
+            receives.forEach { $0.continuation.resume(throwing: failure) }
+        }
+    }
+}
+
+/// The unfolding stream has no throwing `onCancel` overload. This relay keeps
+/// cancellation/deinitialization connected to the registered producer Task.
+private final class QwenGenerationCancellationRelay: @unchecked Sendable {
+    private let lock = NSLock()
+    private var task: Task<Void, Never>?
+    private var cancellationRequested = false
+
+    func register(_ task: Task<Void, Never>) {
+        let shouldCancel = lock.withLock {
+            self.task = task
+            return cancellationRequested
+        }
+        if shouldCancel { task.cancel() }
+    }
+
+    func cancel() {
+        let task = lock.withLock {
+            cancellationRequested = true
+            return self.task
+        }
+        task?.cancel()
+    }
+
+    deinit {
+        cancel()
+    }
+}
+
 struct MLXQwenSpeechModelLoader: QwenSpeechModelLoading {
     func loadModel(from directory: URL) async throws -> any QwenStreamingSpeechModel {
         let model = try await Qwen3TTSModel.fromModelDirectory(directory)
@@ -413,10 +652,10 @@ final class MLXQwenStreamingSpeechModel: QwenStreamingSpeechModel, @unchecked Se
         sampleRate = model.sampleRate
     }
 
-    func generateSamples(
+    func startGeneration(
         text: String,
         profile: InterviewerSpeechProfile
-    ) -> AsyncThrowingStream<[Float], Error> {
+    ) -> any QwenSpeechGeneration {
         let resolved = QwenResolvedGenerationOptions(profile: profile)
         var parameters = model.defaultGenerationParameters
         parameters.maxTokens = resolved.maxTokens
@@ -427,7 +666,7 @@ final class MLXQwenStreamingSpeechModel: QwenStreamingSpeechModel, @unchecked Se
         parameters.repetitionPenalty = resolved.repetitionPenalty
         parameters.repetitionContextSize = resolved.repetitionContextSize
 
-        return model.generateSamplesStream(
+        let handle = model.generateStreamHandle(
             text: text,
             voice: resolved.conditioning,
             refAudio: nil,
@@ -436,6 +675,32 @@ final class MLXQwenStreamingSpeechModel: QwenStreamingSpeechModel, @unchecked Se
             generationParameters: parameters,
             streamingInterval: resolved.streamingInterval
         )
+        return MLXQwenSpeechGeneration(handle: handle)
+    }
+}
+
+/// The handle is consumed by exactly one provider Task. Keeping the upstream
+/// iterator here avoids the library's `generateSamplesStream` proxy and retains
+/// the true producer handle needed for cancellation joins.
+private final class MLXQwenSpeechGeneration: QwenSpeechGeneration, @unchecked Sendable {
+    private let handle: Qwen3TTSGenerationHandle
+    private var iterator: AsyncThrowingStream<AudioGeneration, Error>.Iterator
+
+    init(handle: Qwen3TTSGenerationHandle) {
+        self.handle = handle
+        iterator = handle.stream.makeAsyncIterator()
+    }
+
+    func nextSamples() async throws -> [Float]? {
+        while let event = try await iterator.next() {
+            guard case .audio(let samples) = event else { continue }
+            return samples.asArray(Float.self)
+        }
+        return nil
+    }
+
+    func cancelAndWait() async {
+        await handle.cancelAndWait()
     }
 }
 

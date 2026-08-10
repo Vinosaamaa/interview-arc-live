@@ -22,6 +22,9 @@ public enum InterviewerSpeechCoordinatorError: Error, Sendable, Equatable {
 /// The canonical Interviewer Turn remains usable regardless of every outcome.
 @MainActor
 public final class InterviewerSpeechCoordinator {
+    private static let maximumAutomaticDrainRetryAttempts = 3
+    private static let automaticDrainRetryBaseDelayMilliseconds = 100
+
     public private(set) var snapshot: InterviewRoomSnapshot
     public private(set) var readiness: InterviewerSpeechReadiness
     public private(set) var isMuted: Bool
@@ -50,6 +53,10 @@ public final class InterviewerSpeechCoordinator {
     private var pendingAutomaticTurnIDs: [TurnID] = []
     private var pendingAutomaticTurnIDSet: Set<TurnID> = []
     private var isDrainingAutomaticTurns = false
+    private var automaticDrainRetryTask: Task<Void, Never>?
+    private var automaticDrainRetryID: UUID?
+    private var automaticDrainRetryTurnID: TurnID?
+    private var automaticDrainRetryAttemptCount = 0
     private var activeOperation: ActiveOperation?
     private var cancellationFinalizer: CancellationFinalizer?
     private var isPlayingSavedAudio = false
@@ -120,6 +127,10 @@ public final class InterviewerSpeechCoordinator {
     public func refreshReadiness() async -> InterviewerSpeechReadiness {
         let next = await provider.readiness()
         publishReadiness(next)
+        if next == .ready {
+            resetAutomaticDrainRetry()
+            await startNextPendingAutomaticTurnIfEligible()
+        }
         return next
     }
 
@@ -136,7 +147,6 @@ public final class InterviewerSpeechCoordinator {
             throw InterviewerSpeechCoordinatorError.modelPreparationInProgress
         }
         isPreparingModel = true
-        defer { isPreparingModel = false }
         preparationToken += 1
         let token = preparationToken
         do {
@@ -151,11 +161,22 @@ public final class InterviewerSpeechCoordinator {
             preparationToken += 1
             preparationProgress = nil
             publishReadiness(next)
+            isPreparingModel = false
+            if next == .ready {
+                resetAutomaticDrainRetry()
+                await startNextPendingAutomaticTurnIfEligible()
+            }
             return next
         } catch {
             preparationToken += 1
             preparationProgress = nil
-            publishReadiness(await provider.readiness())
+            let recoveredReadiness = await provider.readiness()
+            publishReadiness(recoveredReadiness)
+            isPreparingModel = false
+            if recoveredReadiness == .ready {
+                resetAutomaticDrainRetry()
+                await startNextPendingAutomaticTurnIfEligible()
+            }
             throw error
         }
     }
@@ -167,6 +188,7 @@ public final class InterviewerSpeechCoordinator {
         }
         isPreparingModel = true
         defer { isPreparingModel = false }
+        resetAutomaticDrainRetry()
         pendingAutomaticTurnIDs.removeAll()
         pendingAutomaticTurnIDSet.removeAll()
         if let operation = activeOperation {
@@ -205,10 +227,11 @@ public final class InterviewerSpeechCoordinator {
         publish(await session.snapshot())
 
         guard readiness == .ready, !isMuted else { return }
+        let pendingTurnIDs = Set(snapshot.interviewerUtterances.lazy.compactMap { utterance in
+            utterance.lifecycle == .pending ? utterance.turnID : nil
+        })
         for turnID in newlyPersisted {
-            guard snapshot.interviewerUtterances.contains(where: {
-                $0.turnID == turnID && $0.lifecycle == .pending
-            }) else {
+            guard pendingTurnIDs.contains(turnID) else {
                 continue
             }
             if pendingAutomaticTurnIDSet.insert(turnID).inserted {
@@ -340,6 +363,7 @@ public final class InterviewerSpeechCoordinator {
         guard muted != isMuted else { return }
         isMuted = muted
         guard muted else { return }
+        resetAutomaticDrainRetry()
         pendingAutomaticTurnIDs.removeAll()
         pendingAutomaticTurnIDSet.removeAll()
         await player.stop()
@@ -393,8 +417,16 @@ public final class InterviewerSpeechCoordinator {
     /// Deterministic verification hook. Production presentation need not wait;
     /// generation continues in the coordinator-owned Task.
     public func waitUntilIdle() async {
-        while let task = activeOperation?.task {
-            await task.value
+        while true {
+            if let task = activeOperation?.task {
+                await task.value
+                continue
+            }
+            if let task = automaticDrainRetryTask {
+                await task.value
+                continue
+            }
+            return
         }
     }
 
@@ -725,6 +757,7 @@ public final class InterviewerSpeechCoordinator {
             }), utterance.lifecycle == .pending else {
                 pendingAutomaticTurnIDs.removeFirst()
                 pendingAutomaticTurnIDSet.remove(turnID)
+                resetAutomaticDrainRetry(for: turnID)
                 continue
             }
             do {
@@ -737,12 +770,57 @@ public final class InterviewerSpeechCoordinator {
                     )
                 )
             } catch {
+                scheduleAutomaticDrainRetry(for: turnID)
                 return
             }
             pendingAutomaticTurnIDs.removeFirst()
             pendingAutomaticTurnIDSet.remove(turnID)
+            resetAutomaticDrainRetry(for: turnID)
             if activeOperation != nil { return }
         }
+    }
+
+    /// A failed durable authorization retains the FIFO head and schedules one
+    /// delayed retry at a time. The deterministic command ID makes every retry
+    /// idempotent, while the capped attempts and backoff prevent a busy loop.
+    private func scheduleAutomaticDrainRetry(for turnID: TurnID) {
+        guard pendingAutomaticTurnIDs.first == turnID,
+              automaticDrainRetryTask == nil else {
+            return
+        }
+        if automaticDrainRetryTurnID != turnID {
+            automaticDrainRetryTurnID = turnID
+            automaticDrainRetryAttemptCount = 0
+        }
+        guard automaticDrainRetryAttemptCount < Self.maximumAutomaticDrainRetryAttempts else {
+            return
+        }
+
+        let delayMilliseconds = Self.automaticDrainRetryBaseDelayMilliseconds
+            * (1 << automaticDrainRetryAttemptCount)
+        automaticDrainRetryAttemptCount += 1
+        let retryID = UUID()
+        automaticDrainRetryID = retryID
+        automaticDrainRetryTask = Task { @MainActor [weak self] in
+            do {
+                try await Task.sleep(for: .milliseconds(delayMilliseconds))
+            } catch {
+                return
+            }
+            guard let self, automaticDrainRetryID == retryID else { return }
+            automaticDrainRetryTask = nil
+            automaticDrainRetryID = nil
+            await startNextPendingAutomaticTurnIfEligible()
+        }
+    }
+
+    private func resetAutomaticDrainRetry(for turnID: TurnID? = nil) {
+        guard turnID == nil || automaticDrainRetryTurnID == turnID else { return }
+        automaticDrainRetryTask?.cancel()
+        automaticDrainRetryTask = nil
+        automaticDrainRetryID = nil
+        automaticDrainRetryTurnID = nil
+        automaticDrainRetryAttemptCount = 0
     }
 
     /// The first Stop/Mute caller owns the durable outcome. Reentrant callers

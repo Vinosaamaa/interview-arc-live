@@ -47,6 +47,45 @@ final class InterviewerSpeechCoordinatorTests: XCTestCase {
         XCTAssertEqual(speech.snapshot.turns, completed.turns)
     }
 
+    func testTransientAutomaticAuthorizationFailureRetriesWithoutDuplicateProviderEffect() async throws {
+        let manifestStore = AuthorizationFailingStore()
+        let audioStore = SpeechAudioStoreFixture()
+        let provider = ScriptedSpeechProvider(
+            readiness: .ready,
+            events: validEvents(),
+            manifestStore: manifestStore
+        )
+        let conversation = try await makeConversation(manifestStore: manifestStore)
+        let speech = try await InterviewerSpeechCoordinator.attach(
+            to: conversation,
+            provider: provider,
+            player: SpeechPlayerFixture(),
+            audioStore: audioStore
+        )
+        let completed = try await completeTurn(in: conversation.interviewRoomSession)
+        await manifestStore.failNextAuthorizationOnce()
+
+        await speech.observeNewlyPersistedSnapshot(completed)
+        await speech.waitUntilIdle()
+
+        let authorizationSaveCount = await manifestStore.authorizationSaveCount()
+        let authorizationFailureCount = await manifestStore.authorizationFailureCount()
+        let synthesisCount = await provider.synthesisCount()
+        let prepareCount = await provider.prepareCount()
+        let authorizationWasDurable = await provider.authorizationWasDurable()
+        let beginCount = await audioStore.beginCount()
+        XCTAssertEqual(authorizationSaveCount, 2)
+        XCTAssertEqual(authorizationFailureCount, 1)
+        XCTAssertEqual(synthesisCount, 1)
+        XCTAssertEqual(prepareCount, 1)
+        XCTAssertTrue(authorizationWasDurable)
+        XCTAssertEqual(beginCount, 1)
+        let utterance = try XCTUnwrap(speech.snapshot.interviewerUtterances.first)
+        XCTAssertEqual(utterance.synthesisAttempts.count, 1)
+        XCTAssertEqual(utterance.lifecycle, .ready)
+        XCTAssertNotNil(utterance.selectedAudio)
+    }
+
     func testAttachRestoreAndUnavailableModelNeverSpeakHistoryOrDownload() async throws {
         let manifestStore = InMemorySessionManifestStore()
         let conversation = try await makeConversation(manifestStore: manifestStore)
@@ -424,7 +463,7 @@ final class InterviewerSpeechCoordinatorTests: XCTestCase {
             utteranceID: utteranceID,
             commandID: CommandID("cancel-producer-first")
         )
-        await provider.waitUntilFirstProducerStarts()
+        try await provider.waitUntilFirstProducerStarts()
 
         try await speech.stop(commandID: CommandID("cancel-producer-stop"))
         try await speech.retry(
@@ -805,13 +844,20 @@ private actor CancellationJoiningSpeechProvider: InterviewerSpeechProvider {
     private var cancellations = 0
     private var firstProducer: Task<Void, Never>?
     private var firstProducerStarted = false
+    private let firstProducerStartedEvents: AsyncStream<Void>
+    private let firstProducerStartedContinuation: AsyncStream<Void>.Continuation
 
     init(
         subsequentEvents: [InterviewerSpeechEvent],
         manifestStore: any SessionManifestStore
     ) {
+        let (events, continuation) = AsyncStream<Void>.makeStream(
+            bufferingPolicy: .bufferingNewest(1)
+        )
         self.subsequentEvents = subsequentEvents
         self.manifestStore = manifestStore
+        firstProducerStartedEvents = events
+        firstProducerStartedContinuation = continuation
     }
 
     func readiness() -> InterviewerSpeechReadiness { .ready }
@@ -867,12 +913,30 @@ private actor CancellationJoiningSpeechProvider: InterviewerSpeechProvider {
     func synthesisCount() -> Int { calls }
     func cancellationCount() -> Int { cancellations }
 
-    func waitUntilFirstProducerStarts() async {
-        while !firstProducerStarted { await Task.yield() }
+    func waitUntilFirstProducerStarts() async throws {
+        if firstProducerStarted { return }
+        let events = firstProducerStartedEvents
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            defer { group.cancelAll() }
+            group.addTask {
+                var iterator = events.makeAsyncIterator()
+                guard await iterator.next() != nil else {
+                    throw SpeechFixtureError.producerDidNotStart
+                }
+            }
+            group.addTask {
+                try await Task.sleep(for: .seconds(2))
+                throw SpeechFixtureError.producerDidNotStart
+            }
+            _ = try await group.next()
+        }
     }
 
     private func markFirstProducerStarted() {
+        guard !firstProducerStarted else { return }
         firstProducerStarted = true
+        firstProducerStartedContinuation.yield(())
+        firstProducerStartedContinuation.finish()
     }
 }
 
@@ -1119,8 +1183,39 @@ private actor ReadyOutcomeFailingStore: SessionManifestStore {
     }
 }
 
+private actor AuthorizationFailingStore: SessionManifestStore {
+    private let backing = InMemorySessionManifestStore()
+    private var authorizationFailuresRemaining = 0
+    private var observedAuthorizationSaves = 0
+    private var observedAuthorizationFailures = 0
+
+    func failNextAuthorizationOnce() { authorizationFailuresRemaining = 1 }
+    func authorizationSaveCount() -> Int { observedAuthorizationSaves }
+    func authorizationFailureCount() -> Int { observedAuthorizationFailures }
+
+    func load(sessionID: SessionID) async throws -> SessionManifest? {
+        await backing.load(sessionID: sessionID)
+    }
+
+    func save(_ manifest: SessionManifest, expectedRevision: Int?) async throws {
+        let storesAuthorization = manifest.interviewerUtterances.contains(where: {
+            $0.synthesisAttempts.last?.lifecycle == .authorized
+        })
+        if storesAuthorization {
+            observedAuthorizationSaves += 1
+            if authorizationFailuresRemaining > 0 {
+                authorizationFailuresRemaining -= 1
+                observedAuthorizationFailures += 1
+                throw SpeechFixtureError.manifestWriteFailed
+            }
+        }
+        try await backing.save(manifest, expectedRevision: expectedRevision)
+    }
+}
+
 private enum SpeechFixtureError: Error {
     case unused
     case missingWrite
     case manifestWriteFailed
+    case producerDidNotStart
 }

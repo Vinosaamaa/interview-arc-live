@@ -93,6 +93,60 @@ final class PrivateInterviewerWaveStoreTests: XCTestCase {
         )
     }
 
+    func testPostMoveFailureRemovesFinalArtifactAndAllowsSameAttemptRetry() async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let postMoveGate = FailFirstPostMoveValidation()
+        let store = PrivateInterviewerWaveStore(
+            applicationSupportRoot: fixture.root,
+            postMoveValidation: { finalURL in
+                try postMoveGate.validate(finalURL)
+            }
+        )
+        let token = try await beginWrite(
+            in: store,
+            session: "post-move-session",
+            attempt: "post-move-attempt"
+        )
+        try await store.append(
+            [0.125, 0.25],
+            sampleRate: 24_000,
+            channelCount: 1,
+            to: token
+        )
+
+        do {
+            _ = try await store.finalize(token)
+            XCTFail("Expected the injected post-move gate to fail")
+        } catch let failure as InjectedWaveStoreFailure {
+            XCTAssertEqual(failure, .afterFinalMove)
+        }
+
+        let remainingNames = FileManager.default
+            .enumerator(at: fixture.root, includingPropertiesForKeys: nil)?
+            .compactMap { ($0 as? URL)?.lastPathComponent } ?? []
+        XCTAssertFalse(remainingNames.contains(token.finalFileName))
+        XCTAssertFalse(remainingNames.contains(token.partialFileName))
+
+        let retry = try await beginWrite(
+            in: store,
+            session: "post-move-session",
+            attempt: "post-move-attempt"
+        )
+        try await store.append(
+            [0.375, 0.5],
+            sampleRate: 24_000,
+            channelCount: 1,
+            to: retry
+        )
+        let retriedDescriptor = try await store.finalize(retry)
+        let retriedURL = try await store.playbackURL(
+            sessionIdentity: "post-move-session",
+            fileName: retriedDescriptor.fileName
+        )
+        XCTAssertTrue(FileManager.default.fileExists(atPath: retriedURL.path))
+    }
+
     func testRejectsWrongFormatNonFiniteEmptyAndBoundedOverflow() async throws {
         for rejected in [
             RejectedAppend.wrongRate,
@@ -344,6 +398,84 @@ final class PrivateInterviewerWaveStoreTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(output.releaseCount, 2)
     }
 
+    func testStreamingQueueBackpressuresUntilAPlayedBufferReleasesCapacity() async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let store = LiveInterviewerSpeechAudioStore(
+            applicationSupportRoot: fixture.root
+        )
+        let output = AudioOutputSpy(
+            completesScheduledBuffersImmediately: false
+        )
+        let player = AVAudioEngineInterviewerSpeechPlayer(
+            audioStore: store,
+            output: output
+        )
+        let chunk = InterviewerSpeechPCMChunk(
+            samples: [0.125],
+            sampleRate: 24_000,
+            channelCount: 1
+        )
+        try await player.beginStreaming(sampleRate: 24_000, channelCount: 1)
+        for _ in 0..<AVAudioEngineInterviewerSpeechPlayer.maximumPendingBufferCount {
+            try await player.enqueue(chunk)
+        }
+
+        let blockedEnqueue = Task { @MainActor in
+            try await player.enqueue(chunk)
+        }
+        await Task.yield()
+        XCTAssertEqual(
+            output.scheduledBufferCount,
+            AVAudioEngineInterviewerSpeechPlayer.maximumPendingBufferCount
+        )
+
+        output.completeNextScheduledBuffer()
+        try await blockedEnqueue.value
+        XCTAssertEqual(
+            output.scheduledBufferCount,
+            AVAudioEngineInterviewerSpeechPlayer.maximumPendingBufferCount + 1
+        )
+        await player.stop()
+    }
+
+    func testStopCancelsAnEnqueueWaitingForBufferCapacity() async throws {
+        let fixture = try Fixture()
+        defer { fixture.remove() }
+        let store = LiveInterviewerSpeechAudioStore(
+            applicationSupportRoot: fixture.root
+        )
+        let output = AudioOutputSpy(
+            completesScheduledBuffersImmediately: false
+        )
+        let player = AVAudioEngineInterviewerSpeechPlayer(
+            audioStore: store,
+            output: output
+        )
+        let chunk = InterviewerSpeechPCMChunk(
+            samples: [0.125],
+            sampleRate: 24_000,
+            channelCount: 1
+        )
+        try await player.beginStreaming(sampleRate: 24_000, channelCount: 1)
+        for _ in 0..<AVAudioEngineInterviewerSpeechPlayer.maximumPendingBufferCount {
+            try await player.enqueue(chunk)
+        }
+        let blockedEnqueue = Task { @MainActor in
+            try await player.enqueue(chunk)
+        }
+        await Task.yield()
+
+        await player.stop()
+
+        do {
+            try await blockedEnqueue.value
+            XCTFail("Expected Stop to cancel the capacity waiter")
+        } catch is CancellationError {
+            // Expected.
+        }
+    }
+
     private func write(
         samples: [Float],
         fixture: Fixture,
@@ -439,12 +571,19 @@ final class PrivateInterviewerWaveStoreTests: XCTestCase {
 
 @MainActor
 private final class AudioOutputSpy: InterviewerAudioOutputDriving {
+    private let completesScheduledBuffersImmediately: Bool
+    private var scheduledBufferCompletions: [@Sendable () -> Void] = []
     private(set) var configureCount = 0
     private(set) var scheduledFileCount = 0
     private(set) var scheduledBufferCount = 0
     private(set) var playCount = 0
     private(set) var releaseCount = 0
     private(set) var isOutputRouteHeld = false
+
+    init(completesScheduledBuffersImmediately: Bool = true) {
+        self.completesScheduledBuffersImmediately =
+            completesScheduledBuffersImmediately
+    }
 
     var isPlaying: Bool { isOutputRouteHeld && playCount > 0 }
 
@@ -458,7 +597,11 @@ private final class AudioOutputSpy: InterviewerAudioOutputDriving {
         completion: @escaping @Sendable () -> Void
     ) {
         scheduledBufferCount += 1
-        completion()
+        if completesScheduledBuffersImmediately {
+            completion()
+        } else {
+            scheduledBufferCompletions.append(completion)
+        }
     }
 
     func schedule(
@@ -476,6 +619,11 @@ private final class AudioOutputSpy: InterviewerAudioOutputDriving {
     func releaseOutput() {
         releaseCount += 1
         isOutputRouteHeld = false
+    }
+
+    func completeNextScheduledBuffer() {
+        guard !scheduledBufferCompletions.isEmpty else { return }
+        scheduledBufferCompletions.removeFirst()()
     }
 }
 
@@ -507,6 +655,27 @@ private enum RejectedAppend: CustomStringConvertible {
         case .notFinite: return "not-finite"
         case .tooLong: return "too-long"
         }
+    }
+}
+
+private enum InjectedWaveStoreFailure: Error, Equatable {
+    case afterFinalMove
+    case finalMissingBeforeGate
+}
+
+private final class FailFirstPostMoveValidation: @unchecked Sendable {
+    private let lock = NSLock()
+    private var shouldFail = true
+
+    func validate(_ finalURL: URL) throws {
+        lock.lock()
+        defer { lock.unlock() }
+        guard shouldFail else { return }
+        shouldFail = false
+        guard FileManager.default.fileExists(atPath: finalURL.path) else {
+            throw InjectedWaveStoreFailure.finalMissingBeforeGate
+        }
+        throw InjectedWaveStoreFailure.afterFinalMove
     }
 }
 

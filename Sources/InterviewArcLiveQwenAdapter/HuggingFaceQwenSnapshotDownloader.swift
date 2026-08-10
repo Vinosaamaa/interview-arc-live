@@ -45,7 +45,7 @@ struct HuggingFaceQwenSnapshotDownloader: QwenSnapshotDownloading {
                 }
             )
             try Task.checkCancellation()
-            try QwenSnapshotMaterializer().materialize(
+            try await QwenSnapshotMaterializationExecutor.run(
                 manifest: manifest,
                 cachedSnapshot: cachedSnapshot,
                 cacheRoot: cacheRoot,
@@ -72,7 +72,10 @@ struct QwenSnapshotMaterializer {
         manifest: QwenSnapshotManifest,
         cachedSnapshot: URL,
         cacheRoot: URL,
-        destination: URL
+        destination: URL,
+        cancellationCheck: @escaping @Sendable () throws -> Void = {
+            try Task.checkCancellation()
+        }
     ) throws {
         try validateDirectory(cachedSnapshot, permitsSymlink: false)
         try validateDirectory(cacheRoot, permitsSymlink: false)
@@ -85,7 +88,7 @@ struct QwenSnapshotMaterializer {
         }
 
         for file in manifest.files {
-            try Task.checkCancellation()
+            try cancellationCheck()
             guard isSafeRelativePath(file.path) else {
                 throw QwenModelStoreFailure.unexpectedSnapshotShape
             }
@@ -125,6 +128,7 @@ struct QwenSnapshotMaterializer {
                 throw QwenModelStoreFailure.unexpectedSnapshotShape
             }
             try fileManager.copyItem(at: resolvedSource, to: target)
+            try cancellationCheck()
         }
     }
 
@@ -155,5 +159,62 @@ struct QwenSnapshotMaterializer {
         let childPath = child.standardizedFileURL.path
         let prefix = parentPath.hasSuffix("/") ? parentPath : parentPath + "/"
         return childPath.hasPrefix(prefix)
+    }
+}
+
+/// Runs blocking multi-gigabyte cache materialization away from Swift's
+/// cooperative executor. Cancellation is checked between allowlisted files;
+/// a single in-flight filesystem copy remains atomic from this layer's view.
+private enum QwenSnapshotMaterializationExecutor {
+    private static let queue = DispatchQueue(
+        label: "interview-arc-live.qwen-snapshot-materialization",
+        qos: .utility
+    )
+
+    static func run(
+        manifest: QwenSnapshotManifest,
+        cachedSnapshot: URL,
+        cacheRoot: URL,
+        destination: URL
+    ) async throws {
+        let cancellation = MaterializationCancellation()
+        try await withTaskCancellationHandler {
+            try Task.checkCancellation()
+            try await withCheckedThrowingContinuation {
+                (continuation: CheckedContinuation<Void, Error>) in
+                queue.async {
+                    do {
+                        try QwenSnapshotMaterializer().materialize(
+                            manifest: manifest,
+                            cachedSnapshot: cachedSnapshot,
+                            cacheRoot: cacheRoot,
+                            destination: destination,
+                            cancellationCheck: cancellation.check
+                        )
+                        continuation.resume()
+                    } catch {
+                        continuation.resume(throwing: error)
+                    }
+                }
+            }
+            try Task.checkCancellation()
+        } onCancel: {
+            cancellation.cancel()
+        }
+    }
+}
+
+private final class MaterializationCancellation: @unchecked Sendable {
+    private let lock = NSLock()
+    private var isCancelled = false
+
+    func cancel() {
+        lock.withLock { isCancelled = true }
+    }
+
+    func check() throws {
+        if lock.withLock({ isCancelled }) {
+            throw CancellationError()
+        }
     }
 }
