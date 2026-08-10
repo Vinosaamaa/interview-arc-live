@@ -33,8 +33,7 @@ struct SystemDesignRoomView: View {
                             minWidth: FullRoomLayout.turnlineMinimumWidth,
                             idealWidth: FullRoomLayout.turnlineIdealWidth(
                                 for: workspace.size.width
-                            ),
-                            maxWidth: FullRoomLayout.turnlineMaximumWidth
+                            )
                         )
                     board
                         .frame(minWidth: FullRoomLayout.boardMinimumWidth)
@@ -79,14 +78,10 @@ struct SystemDesignRoomView: View {
             )
 
             Group {
-                if state.usesAttentionCompactHeader {
+                if state.presentation == .compact {
                     compactHeaderContent
                 } else {
-                    ViewThatFits(in: .horizontal) {
-                        fullHeaderContent
-                            .fixedSize(horizontal: true, vertical: false)
-                        compactHeaderContent
-                    }
+                    fullHeaderContent
                 }
             }
             .font(.system(.body, design: .rounded))
@@ -117,6 +112,7 @@ struct SystemDesignRoomView: View {
             privacyStatus(isCompact: false)
             collapseButton
         }
+        .frame(maxWidth: .infinity)
     }
 
     private var compactHeaderContent: some View {
@@ -130,6 +126,7 @@ struct SystemDesignRoomView: View {
             privacyStatus(isCompact: true)
             collapseButton
         }
+        .frame(maxWidth: .infinity)
     }
 
     private var headerBrand: some View {
@@ -313,25 +310,32 @@ struct SystemDesignRoomView: View {
     }
 
     private var question: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: FullRoomLayout.questionStackSpacing) {
             Text("QUESTION")
                 .font(.system(.callout, design: .monospaced, weight: .semibold))
                 .tracking(1.4)
                 .foregroundStyle(LivePalette.navy)
             Text(model.question)
-                .font(.system(size: 35, weight: .semibold, design: .rounded))
+                .font(
+                    .system(
+                        size: FullRoomLayout.questionTitleSize,
+                        weight: .semibold,
+                        design: .rounded
+                    )
+                )
                 .tracking(-0.35)
                 .lineLimit(FullRoomLayout.questionLineLimit)
                 .minimumScaleFactor(FullRoomLayout.questionMinimumScaleFactor)
                 .fixedSize(horizontal: false, vertical: true)
                 .accessibilityAddTraits(.isHeader)
         }
-        .padding(.horizontal, 40)
-        .padding(.vertical, 20)
+        .padding(.horizontal, FullRoomLayout.questionHorizontalPadding)
+        .padding(.top, FullRoomLayout.questionTopPadding)
+        .padding(.bottom, FullRoomLayout.questionBottomPadding)
         .frame(
             maxWidth: .infinity,
             minHeight: FullRoomLayout.questionBandMinimumHeight,
-            alignment: .leading
+            alignment: .topLeading
         )
         .background(LivePalette.paper)
         .accessibilityElement(children: .contain)
@@ -414,7 +418,7 @@ struct SystemDesignRoomView: View {
     }
 
     private var candidateFloorEntry: some View {
-        HStack(alignment: .top, spacing: 18) {
+        HStack(alignment: .top, spacing: FullRoomLayout.turnlineEntryGap) {
             VStack(spacing: 0) {
                 Circle()
                     .fill(LivePalette.candidateText)
@@ -441,7 +445,13 @@ struct SystemDesignRoomView: View {
                 if model.segments.isEmpty {
                     VStack(alignment: .leading, spacing: 10) {
                         Text("Ready for your next answer.")
-                            .font(.system(size: 21, weight: .semibold, design: .rounded))
+                            .font(
+                                .system(
+                                    size: FullRoomLayout.turnlineBodyFontSize,
+                                    weight: .semibold,
+                                    design: .rounded
+                                )
+                            )
                         Text("Record one or more segments here. Working pauses stay in this Candidate Turn until you choose Hand off.")
                             .font(.system(.body, design: .rounded))
                             .foregroundStyle(LivePalette.muted)
@@ -470,7 +480,7 @@ struct SystemDesignRoomView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.bottom, 30)
         }
-        .padding(.horizontal, 30)
+        .padding(.horizontal, FullRoomLayout.turnlineHorizontalPadding)
     }
 
     private func turnlineEntry(_ turn: InterviewTurn, isLast: Bool) -> some View {
@@ -502,7 +512,10 @@ struct SystemDesignRoomView: View {
             boardRevisionID = nil
         }
 
-        return HStack(alignment: .top, spacing: 18) {
+        return HStack(
+            alignment: .top,
+            spacing: FullRoomLayout.turnlineEntryGap
+        ) {
             VStack(spacing: 0) {
                 Circle()
                     .fill(color)
@@ -526,7 +539,13 @@ struct SystemDesignRoomView: View {
                         Text(body)
                     }
                 }
-                    .font(.system(size: 21, weight: .medium, design: .rounded))
+                    .font(
+                        .system(
+                            size: FullRoomLayout.turnlineBodyFontSize,
+                            weight: .medium,
+                            design: .rounded
+                        )
+                    )
                     .lineSpacing(4)
                     .textSelection(.enabled)
                     .fixedSize(horizontal: false, vertical: true)
@@ -556,7 +575,7 @@ struct SystemDesignRoomView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.bottom, 30)
         }
-        .padding(.horizontal, 30)
+        .padding(.horizontal, FullRoomLayout.turnlineHorizontalPadding)
         .accessibilityElement(children: .contain)
     }
 
@@ -682,7 +701,7 @@ struct SystemDesignRoomView: View {
                     .foregroundStyle(LivePalette.muted)
                     .lineLimit(1)
             }
-            .frame(width: 164, alignment: .leading)
+            .frame(width: FullRoomLayout.floorStatusWidth, alignment: .leading)
 
             LiveWaveform(isActive: model.canStopRecording)
                 .frame(minWidth: 140, maxWidth: .infinity)
@@ -750,7 +769,7 @@ struct SystemDesignRoomView: View {
             .accessibilityIdentifier(FullRoomAccessibility.endAction)
         }
         .foregroundStyle(LivePalette.navy)
-        .padding(.horizontal, 24)
+        .padding(.horizontal, FullRoomLayout.floorContentHorizontalPadding)
         .frame(minHeight: FullRoomLayout.floorRailHeight)
         .background(LivePalette.paper)
         .accessibilityElement(children: .contain)
@@ -758,7 +777,10 @@ struct SystemDesignRoomView: View {
         .overlay {
             RoundedRectangle(cornerRadius: 13, style: .continuous)
                 .stroke(LivePalette.line, lineWidth: 1)
-                .padding(.horizontal, 14)
+                .padding(
+                    .horizontal,
+                    FullRoomLayout.floorOutlineHorizontalInset
+                )
                 .padding(.vertical, 8)
         }
     }
@@ -837,18 +859,40 @@ struct SystemDesignRoomView: View {
 enum FullRoomLayout {
     static let minimumWindowWidth: CGFloat = 1_080
     static let defaultWindowWidth: CGFloat = 1_180
-    static let minimumWindowHeight: CGFloat = 700
     static let headerHeight: CGFloat = 70
-    static let questionBandMinimumHeight: CGFloat = 120
+    static let questionTitleSize: CGFloat = 40
+    static let questionHorizontalPadding: CGFloat = 56
+    static let questionTopPadding: CGFloat = 48
+    static let questionBottomPadding: CGFloat = 12
+    static let questionStackSpacing: CGFloat = 24
     static let questionLineLimit = 2
     static let questionMinimumScaleFactor: CGFloat = 0.82
+    /// Keeps the approved single-line mockup band unchanged.
+    static let questionBandOneLineHeight: CGFloat = 148
+    /// Reserves one full rounded 40-point title line without clipping.
+    static let questionAdditionalLineHeight: CGFloat = 48
+    static let questionBandMinimumHeight = questionBandOneLineHeight
     static let turnlineHeaderHeight: CGFloat = 58
     static let turnlineWidthFraction: CGFloat = 0.37
     static let turnlineMinimumWidth: CGFloat = 380
-    static let turnlineMaximumWidth: CGFloat = 480
+    static let turnlineHorizontalPadding: CGFloat = 64
+    static let turnlineEntryGap: CGFloat = 42
+    static let turnlineBodyFontSize: CGFloat = 24
     static let boardMinimumWidth: CGFloat = 620
-    static let floorRailHeight: CGFloat = 88
+    static let floorRailHeight: CGFloat = 96
+    static let floorStatusWidth: CGFloat = 184
+    static let floorContentHorizontalPadding: CGFloat = 48
+    static let floorOutlineHorizontalInset: CGFloat = 24
     static let minimumActionHitTarget: CGFloat = 44
+    static let requiredWorkspaceHeight: CGFloat = 380
+    static let minimumWindowHeight = headerHeight
+        + questionBandMaximumHeight
+        + floorRailHeight
+        + requiredWorkspaceHeight
+
+    static var questionBandMaximumHeight: CGFloat {
+        questionBandHeight(forLineCount: questionLineLimit)
+    }
 
     /// The full-size-content window draws into the titlebar. This keeps the
     /// brand beyond the standard close/minimize/zoom group while the custom
@@ -856,9 +900,13 @@ enum FullRoomLayout {
     static let trafficLightClearance: CGFloat = 84
 
     static func turnlineIdealWidth(for workspaceWidth: CGFloat) -> CGFloat {
-        min(
+        let availableTurnlineWidth = max(
+            turnlineMinimumWidth,
+            workspaceWidth - boardMinimumWidth
+        )
+        return min(
             max(workspaceWidth * turnlineWidthFraction, turnlineMinimumWidth),
-            turnlineMaximumWidth
+            availableTurnlineWidth
         )
     }
 
@@ -866,8 +914,23 @@ enum FullRoomLayout {
         max(boardMinimumWidth, workspaceWidth - turnlineIdealWidth(for: workspaceWidth))
     }
 
-    static func minimumWorkspaceHeight(for windowHeight: CGFloat) -> CGFloat {
-        max(0, windowHeight - headerHeight - questionBandMinimumHeight - floorRailHeight)
+    static func questionBandHeight(forLineCount lineCount: Int) -> CGFloat {
+        let boundedLineCount = min(max(lineCount, 1), questionLineLimit)
+        return questionBandOneLineHeight
+            + CGFloat(boundedLineCount - 1) * questionAdditionalLineHeight
+    }
+
+    static func minimumWorkspaceHeight(
+        for windowHeight: CGFloat,
+        questionLineCount: Int = questionLineLimit
+    ) -> CGFloat {
+        max(
+            0,
+            windowHeight
+                - headerHeight
+                - questionBandHeight(forLineCount: questionLineCount)
+                - floorRailHeight
+        )
     }
 }
 
@@ -882,10 +945,22 @@ struct FullRoomHeaderLayoutState: Equatable {
     let windowWidth: CGFloat
     let attention: FullRoomHeaderAttention
 
-    var usesAttentionCompactHeader: Bool {
-        attention != .none
-            && windowWidth <= FullRoomHeaderLayout.attentionCompactMaximumWidth
+    var presentation: FullRoomHeaderPresentation {
+        if attention != .none,
+           windowWidth <= FullRoomHeaderLayout.attentionCompactMaximumWidth {
+            return .compact
+        }
+        return .wide
     }
+
+    var usesAttentionCompactHeader: Bool {
+        presentation == .compact
+    }
+}
+
+enum FullRoomHeaderPresentation: Equatable {
+    case wide
+    case compact
 }
 
 enum FullRoomHeaderLayout {
@@ -1014,9 +1089,11 @@ private struct LiveWaveform: View {
                 lineWidth: 1
             )
 
-            let spacing = min(7.0, size.width / Double(levels.count + 2))
-            for (index, level) in levels.enumerated() {
-                let x = 10 + Double(index) * spacing
+            let barPositions = FullRoomWaveformLayout.barXPositions(
+                width: size.width,
+                levelCount: levels.count
+            )
+            for (level, x) in zip(levels, barPositions) {
                 let height = max(3, level * size.height * (isActive ? 0.88 : 0.55))
                 var bar = Path()
                 bar.move(to: CGPoint(x: x, y: center - height / 2))
@@ -1029,6 +1106,34 @@ private struct LiveWaveform: View {
             }
         }
         .accessibilityHidden(true)
+    }
+}
+
+enum FullRoomWaveformLayout {
+    static let traceCoverageFraction: CGFloat = 0.58
+    static let horizontalInset: CGFloat = 10
+
+    static func barXPositions(
+        width: CGFloat,
+        levelCount: Int
+    ) -> [CGFloat] {
+        guard width > 0, levelCount > 0 else { return [] }
+        guard levelCount > 1 else {
+            return [min(width, horizontalInset)]
+        }
+
+        let first = min(width, horizontalInset)
+        let last = max(
+            first,
+            min(
+                width,
+                width * traceCoverageFraction - horizontalInset
+            )
+        )
+        let spacing = (last - first) / CGFloat(levelCount - 1)
+        return (0..<levelCount).map { index in
+            first + CGFloat(index) * spacing
+        }
     }
 }
 

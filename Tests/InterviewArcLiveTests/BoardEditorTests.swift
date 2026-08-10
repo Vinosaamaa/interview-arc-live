@@ -899,7 +899,7 @@ final class BoardEditorTests: XCTestCase {
         var document = BoardDocument.empty
         let first = BoardKeyboardPlacement.nextBoxFrame(in: document)
         XCTAssertEqual(first.origin, BoardPoint(x: 40, y: 40))
-        XCTAssertEqual(first.size, BoardSize(width: 160, height: 90))
+        XCTAssertEqual(first.size, BoardSize(width: 120, height: 112))
 
         document = try BoardDocument(
             canvas: document.canvas,
@@ -914,10 +914,35 @@ final class BoardEditorTests: XCTestCase {
             ]
         )
         let second = BoardKeyboardPlacement.nextBoxFrame(in: document)
-        XCTAssertEqual(second.origin, BoardPoint(x: 224, y: 40))
+        XCTAssertEqual(second.origin, BoardPoint(x: 184, y: 40))
         XCTAssertLessThanOrEqual(
             second.origin.x + second.size.width,
             document.canvas.size.width
+        )
+    }
+
+    func testPointerPlacementCentersNearSquareDefaultNodeAndClampsItsExtent() {
+        let canvas = BoardSize(width: 300, height: 220)
+
+        XCTAssertEqual(
+            BoardNodeCreationDefaults.frame(
+                centeredAt: BoardPoint(x: 150, y: 110),
+                in: canvas
+            ),
+            BoardRect(
+                origin: BoardPoint(x: 90, y: 54),
+                size: BoardSize(width: 120, height: 112)
+            )
+        )
+        XCTAssertEqual(
+            BoardNodeCreationDefaults.frame(
+                centeredAt: BoardPoint(x: 298, y: 218),
+                in: canvas
+            ),
+            BoardRect(
+                origin: BoardPoint(x: 180, y: 108),
+                size: BoardSize(width: 120, height: 112)
+            )
         )
     }
 

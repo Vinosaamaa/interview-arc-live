@@ -76,6 +76,7 @@ public struct BoardColor: RawRepresentable, Codable, Hashable, Sendable, CustomS
     public static let ink = BoardColor(hexRGB: "1f2937")
     public static let surface = BoardColor(hexRGB: "f8fafc")
     public static let accent = BoardColor(hexRGB: "2563eb")
+    public static let nodeOutline = BoardColor(hexRGB: "4b3abf")
     public static let white = BoardColor(hexRGB: "ffffff")
 }
 
@@ -101,8 +102,8 @@ public struct BoardBox: Codable, Sendable, Equatable {
         frame: BoardRect,
         label: String,
         kind: BoardNodeKind = .generic,
-        fill: BoardColor = .surface,
-        stroke: BoardColor = .ink
+        fill: BoardColor = .white,
+        stroke: BoardColor = .nodeOutline
     ) {
         self.id = id
         self.frame = frame
