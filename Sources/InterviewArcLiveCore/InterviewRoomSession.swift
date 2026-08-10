@@ -62,8 +62,35 @@ public enum InterviewRoomCommand: Codable, Sendable, Equatable {
         segmentID: SegmentID,
         reason: SegmentExclusionReason
     )
+    case updateBoardDraft(commandID: CommandID, document: BoardDocument)
+    case saveBoardRevision(commandID: CommandID)
+    case selectBoardRevision(commandID: CommandID, revisionID: BoardRevisionID?)
+    case attachBoardRevision(
+        commandID: CommandID,
+        turnID: TurnID,
+        revisionID: BoardRevisionID
+    )
+    case authorizeBoardExport(
+        commandID: CommandID,
+        revisionID: BoardRevisionID,
+        settings: BoardExportSettings
+    )
+    case recordBoardExportOutcome(
+        commandID: CommandID,
+        exportID: BoardExportID,
+        outcome: BoardExportOutcome
+    )
     case handOffSegments(commandID: CommandID)
+    case handOffSegmentsWithBoard(
+        commandID: CommandID,
+        boardAttachment: CandidateTurnBoardAttachment
+    )
     case handOff(commandID: CommandID, transcript: CandidateTranscript)
+    case handOffWithBoard(
+        commandID: CommandID,
+        transcript: CandidateTranscript,
+        boardAttachment: CandidateTurnBoardAttachment
+    )
     case retryInterviewerResponse(commandID: CommandID)
     case finish(commandID: CommandID)
 
@@ -84,8 +111,16 @@ public enum InterviewRoomCommand: Codable, Sendable, Equatable {
              .recordInterviewerSynthesisSpeaking(let commandID, _, _),
              .recordInterviewerSynthesisOutcome(let commandID, _, _, _),
              .excludeSegment(let commandID, _, _),
+             .updateBoardDraft(let commandID, _),
+             .saveBoardRevision(let commandID),
+             .selectBoardRevision(let commandID, _),
+             .attachBoardRevision(let commandID, _, _),
+             .authorizeBoardExport(let commandID, _, _),
+             .recordBoardExportOutcome(let commandID, _, _),
              .handOffSegments(let commandID),
+             .handOffSegmentsWithBoard(let commandID, _),
              .handOff(let commandID, _),
+             .handOffWithBoard(let commandID, _, _),
              .retryInterviewerResponse(let commandID),
              .finish(let commandID):
             commandID
@@ -165,6 +200,12 @@ public enum InterviewRoomSessionError: Error, Sendable, Equatable {
     case noTranscribedSegments
     case unresolvedSegmentsPreventHandOff([SegmentID])
     case uncommittedSegmentsRequireSegmentHandOff
+    case boardRevisionNotFound(BoardRevisionID)
+    case boardTurnNotFound(TurnID)
+    case boardAttachmentImmutable(turnID: TurnID)
+    case boardExportNotFound(BoardExportID)
+    case boardExportAlreadyCompleted(BoardExportID)
+    case invalidBoardExportBundle
 }
 
 /// Deep Module owning Interview Room ordering, transitions, idempotency,
@@ -318,12 +359,34 @@ public actor InterviewRoomSession {
                 commandID: commandID,
                 transcript: transcript,
                 segmentIDs: [],
+                boardAttachment: .noBoard,
+                fingerprint: fingerprint
+            )
+
+        case .handOffWithBoard(
+            let commandID,
+            let transcript,
+            let boardAttachment
+        ):
+            snapshot = try await handOff(
+                commandID: commandID,
+                transcript: transcript,
+                segmentIDs: [],
+                boardAttachment: boardAttachment,
                 fingerprint: fingerprint
             )
 
         case .handOffSegments(let commandID):
             snapshot = try await handOffSegments(
                 commandID: commandID,
+                boardAttachment: .noBoard,
+                fingerprint: fingerprint
+            )
+
+        case .handOffSegmentsWithBoard(let commandID, let boardAttachment):
+            snapshot = try await handOffSegments(
+                commandID: commandID,
+                boardAttachment: boardAttachment,
                 fingerprint: fingerprint
             )
 
@@ -354,6 +417,7 @@ public actor InterviewRoomSession {
         var segments = manifest.segments
         var endpointEvaluations = manifest.endpointEvaluations
         var interviewerUtterances = manifest.interviewerUtterances
+        var board = manifest.board
 
         switch command {
         case .giveCandidateFloor:
@@ -705,7 +769,160 @@ public actor InterviewRoomSession {
             segments[index].lifecycle = .excluded
             segments[index].exclusionReason = reason
 
-        case .handOff, .handOffSegments, .retryInterviewerResponse:
+        case .updateBoardDraft(_, let document):
+            guard phase != .completed else {
+                throw invalidTransition("updateBoardDraft")
+            }
+            board = BoardWorkspace(
+                draft: document,
+                revisions: board.revisions,
+                selectedRevisionID: board.selectedRevisionID,
+                exports: board.exports
+            )
+
+        case .saveBoardRevision(let commandID):
+            guard phase != .completed else {
+                throw invalidTransition("saveBoardRevision")
+            }
+            let saved = BoardRevision(
+                id: Self.boardRevisionID(
+                    sessionID: manifest.sessionID,
+                    commandID: commandID
+                ),
+                ordinal: board.revisions.count,
+                saveCommandID: commandID,
+                document: board.draft
+            )
+            board = BoardWorkspace(
+                draft: board.draft,
+                revisions: board.revisions + [saved],
+                selectedRevisionID: nil,
+                exports: board.exports
+            )
+
+        case .selectBoardRevision(_, let revisionID):
+            if let revisionID,
+               !board.revisions.contains(where: { $0.id == revisionID }) {
+                throw InterviewRoomSessionError.boardRevisionNotFound(revisionID)
+            }
+            board = BoardWorkspace(
+                draft: board.draft,
+                revisions: board.revisions,
+                selectedRevisionID: revisionID,
+                exports: board.exports
+            )
+
+        case .attachBoardRevision(_, let turnID, let revisionID):
+            guard phase != .completed else {
+                throw invalidTransition("attachBoardRevision")
+            }
+            guard board.revisions.contains(where: { $0.id == revisionID }) else {
+                throw InterviewRoomSessionError.boardRevisionNotFound(revisionID)
+            }
+            var turns = manifest.turns
+            guard let turnIndex = turns.firstIndex(where: { $0.id == turnID }),
+                  case .candidate(let candidate) = turns[turnIndex] else {
+                throw InterviewRoomSessionError.boardTurnNotFound(turnID)
+            }
+            switch candidate.boardAttachment {
+            case .noBoard:
+                turns[turnIndex] = .candidate(
+                    CandidateTurn(
+                        id: candidate.id,
+                        commandID: candidate.commandID,
+                        transcript: candidate.transcript,
+                        segmentIDs: candidate.segmentIDs,
+                        boardAttachment: .revision(revisionID)
+                    )
+                )
+            case .revision(let existing) where existing == revisionID:
+                break
+            case .revision:
+                throw InterviewRoomSessionError.boardAttachmentImmutable(turnID: turnID)
+            }
+            return appendingReceipt(
+                command: command,
+                fingerprint: fingerprint,
+                phase: phase,
+                turnMode: mode,
+                turns: turns,
+                segments: segments,
+                endpointEvaluations: endpointEvaluations,
+                interviewerUtterances: interviewerUtterances,
+                board: board
+            )
+
+        case .authorizeBoardExport(let commandID, let revisionID, let settings):
+            guard board.revisions.contains(where: { $0.id == revisionID }) else {
+                throw InterviewRoomSessionError.boardRevisionNotFound(revisionID)
+            }
+            let exportID = Self.boardExportID(
+                sessionID: manifest.sessionID,
+                commandID: commandID
+            )
+            let identities = try Self.boardArtifactIdentities(exportID: exportID)
+            board = BoardWorkspace(
+                draft: board.draft,
+                revisions: board.revisions,
+                selectedRevisionID: board.selectedRevisionID,
+                exports: board.exports + [
+                    BoardExportOperation(
+                        id: exportID,
+                        authorizationCommandID: commandID,
+                        revisionID: revisionID,
+                        settings: settings,
+                        artifactIdentities: identities
+                    )
+                ]
+            )
+
+        case .recordBoardExportOutcome(_, let exportID, let outcome):
+            guard let exportIndex = board.exports.firstIndex(where: { $0.id == exportID }) else {
+                throw InterviewRoomSessionError.boardExportNotFound(exportID)
+            }
+            let operation = board.exports[exportIndex]
+            guard operation.lifecycle == .authorized else {
+                throw InterviewRoomSessionError.boardExportAlreadyCompleted(exportID)
+            }
+            var exports = board.exports
+            switch outcome {
+            case .ready(let bundle):
+                try Self.validateBoardArtifactBundle(
+                    bundle,
+                    expected: operation.artifactIdentities
+                )
+                exports[exportIndex] = BoardExportOperation(
+                    id: operation.id,
+                    authorizationCommandID: operation.authorizationCommandID,
+                    revisionID: operation.revisionID,
+                    settings: operation.settings,
+                    artifactIdentities: operation.artifactIdentities,
+                    lifecycle: .ready,
+                    bundle: bundle
+                )
+            case .failed(let failure):
+                exports[exportIndex] = BoardExportOperation(
+                    id: operation.id,
+                    authorizationCommandID: operation.authorizationCommandID,
+                    revisionID: operation.revisionID,
+                    settings: operation.settings,
+                    artifactIdentities: operation.artifactIdentities,
+                    lifecycle: .failed,
+                    failure: failure
+                )
+            }
+            board = BoardWorkspace(
+                draft: board.draft,
+                revisions: board.revisions,
+                selectedRevisionID: board.selectedRevisionID,
+                exports: exports
+            )
+
+        case .handOff,
+             .handOffWithBoard,
+             .handOffSegments,
+             .handOffSegmentsWithBoard,
+             .retryInterviewerResponse:
             preconditionFailure("Provider commands use their durable two-stage paths")
 
         case .finish:
@@ -723,7 +940,8 @@ public actor InterviewRoomSession {
             turns: manifest.turns,
             segments: segments,
             endpointEvaluations: endpointEvaluations,
-            interviewerUtterances: interviewerUtterances
+            interviewerUtterances: interviewerUtterances,
+            board: board
         )
     }
 
@@ -831,6 +1049,7 @@ public actor InterviewRoomSession {
 
     private func handOffSegments(
         commandID: CommandID,
+        boardAttachment: CandidateTurnBoardAttachment,
         fingerprint: String
     ) async throws -> InterviewRoomSnapshot {
         guard manifest.phase == .candidateFloor else {
@@ -892,6 +1111,7 @@ public actor InterviewRoomSession {
             segmentIDs: (selectedSegments + excludedSegments)
                 .sorted { $0.ordinal < $1.ordinal }
                 .map(\.id),
+            boardAttachment: boardAttachment,
             fingerprint: fingerprint
         )
     }
@@ -902,6 +1122,7 @@ public actor InterviewRoomSession {
         commandID: CommandID,
         transcript: CandidateTranscript,
         segmentIDs: [SegmentID],
+        boardAttachment: CandidateTurnBoardAttachment,
         fingerprint: String
     ) async throws -> InterviewRoomSnapshot {
         guard manifest.phase == .candidateFloor else {
@@ -919,6 +1140,7 @@ public actor InterviewRoomSession {
            manifest.segments.contains(where: { $0.committedTurnID == nil }) {
             throw InterviewRoomSessionError.uncommittedSegmentsRequireSegmentHandOff
         }
+        try validateBoardAttachment(boardAttachment, in: manifest.board)
 
         let candidate = CandidateTurn(
             id: Self.turnID(
@@ -928,7 +1150,8 @@ public actor InterviewRoomSession {
             ),
             commandID: commandID,
             transcript: transcript,
-            segmentIDs: segmentIDs
+            segmentIDs: segmentIDs,
+            boardAttachment: boardAttachment
         )
         var segments = manifest.segments
         for segmentID in segmentIDs {
@@ -957,6 +1180,7 @@ public actor InterviewRoomSession {
             segments: segments,
             endpointEvaluations: manifest.endpointEvaluations,
             interviewerUtterances: manifest.interviewerUtterances,
+            board: manifest.board,
             revision: candidateRevision,
             appliedCommands: manifest.appliedCommands + [receipt]
         )
@@ -988,6 +1212,7 @@ public actor InterviewRoomSession {
             segments: manifest.segments,
             endpointEvaluations: manifest.endpointEvaluations,
             interviewerUtterances: manifest.interviewerUtterances,
+            board: manifest.board,
             revision: manifest.revision + 1,
             appliedCommands: manifest.appliedCommands + [receipt]
         )
@@ -1044,6 +1269,7 @@ public actor InterviewRoomSession {
             segments: manifest.segments,
             endpointEvaluations: manifest.endpointEvaluations,
             interviewerUtterances: manifest.interviewerUtterances + [utterance],
+            board: manifest.board,
             revision: manifest.revision + 1,
             appliedCommands: manifest.appliedCommands
         )
@@ -1059,7 +1285,8 @@ public actor InterviewRoomSession {
         turns: [InterviewTurn],
         segments: [CandidateSegment],
         endpointEvaluations: [EndpointEvaluation],
-        interviewerUtterances: [InterviewerUtterance]? = nil
+        interviewerUtterances: [InterviewerUtterance]? = nil,
+        board: BoardWorkspace? = nil
     ) -> SessionManifest {
         let nextRevision = manifest.revision + 1
         let applied = AppliedCommandRecord(
@@ -1077,6 +1304,7 @@ public actor InterviewRoomSession {
             segments: segments,
             endpointEvaluations: endpointEvaluations,
             interviewerUtterances: interviewerUtterances ?? manifest.interviewerUtterances,
+            board: board ?? manifest.board,
             revision: nextRevision,
             appliedCommands: manifest.appliedCommands + [applied]
         )
@@ -1531,6 +1759,76 @@ public actor InterviewRoomSession {
         ))
     }
 
+    private static func boardRevisionID(
+        sessionID: SessionID,
+        commandID: CommandID
+    ) -> BoardRevisionID {
+        BoardRevisionID(stableIdentity(
+            namespace: "board-revision",
+            fields: [sessionID.rawValue, commandID.rawValue]
+        ))
+    }
+
+    private static func boardExportID(
+        sessionID: SessionID,
+        commandID: CommandID
+    ) -> BoardExportID {
+        BoardExportID(stableIdentity(
+            namespace: "board-export",
+            fields: [sessionID.rawValue, commandID.rawValue]
+        ))
+    }
+
+    private static func boardArtifactIdentities(
+        exportID: BoardExportID
+    ) throws -> BoardArtifactIdentities {
+        let suffix = hexDigest(Data(exportID.rawValue.utf8))
+        let exportDirectory = "BoardArtifacts/board-\(suffix)"
+        return BoardArtifactIdentities(
+            source: try BoardArtifactIdentity(
+                validating: "\(exportDirectory)/board.drawio"
+            ),
+            svg: try BoardArtifactIdentity(
+                validating: "\(exportDirectory)/board.svg"
+            ),
+            png: try BoardArtifactIdentity(
+                validating: "\(exportDirectory)/board.png"
+            )
+        )
+    }
+
+    private func validateBoardAttachment(
+        _ attachment: CandidateTurnBoardAttachment,
+        in board: BoardWorkspace
+    ) throws {
+        guard case .revision(let revisionID) = attachment else { return }
+        guard board.revisions.contains(where: { $0.id == revisionID }) else {
+            throw InterviewRoomSessionError.boardRevisionNotFound(revisionID)
+        }
+    }
+
+    private static func validateBoardArtifactBundle(
+        _ bundle: BoardArtifactBundle,
+        expected: BoardArtifactIdentities
+    ) throws {
+        let values: [(BoardArtifactMetadata, BoardArtifactIdentity, Int)] = [
+            (bundle.source, expected.source, 4 * 1_024 * 1_024),
+            (bundle.svg, expected.svg, 16 * 1_024 * 1_024),
+            (bundle.png, expected.png, 64 * 1_024 * 1_024),
+        ]
+        guard values.allSatisfy({ metadata, expectedIdentity, maximumBytes in
+            metadata.identity == expectedIdentity
+                && metadata.byteCount > 0
+                && metadata.byteCount <= maximumBytes
+                && metadata.sha256.count == 64
+                && metadata.sha256.allSatisfy({
+                    ("0"..."9").contains($0) || ("a"..."f").contains($0)
+                })
+        }) else {
+            throw InterviewRoomSessionError.invalidBoardExportBundle
+        }
+    }
+
     private static func turnID(
         sessionID: SessionID,
         commandID: CommandID,
@@ -1634,6 +1932,99 @@ public actor InterviewRoomSession {
         }
     }
 
+    private static func validateBoardWorkspace(
+        _ board: BoardWorkspace,
+        sessionID: SessionID,
+        appliedCommandIDs: Set<CommandID>,
+        candidateTurns: [CandidateTurn]
+    ) throws {
+        let revisionIDs = board.revisions.map(\.id)
+        guard Set(revisionIDs).count == revisionIDs.count,
+              board.revisions.enumerated().allSatisfy({ index, revision in
+                  revision.ordinal == index
+                      && revision.id == boardRevisionID(
+                          sessionID: sessionID,
+                          commandID: revision.saveCommandID
+                      )
+                      && appliedCommandIDs.contains(revision.saveCommandID)
+              }),
+              board.selectedRevisionID.map(Set(revisionIDs).contains) ?? true else {
+            throw InterviewRoomSessionError.invalidManifest(
+                reason: "invalid Board Revision history"
+            )
+        }
+
+        let knownRevisions = Set(revisionIDs)
+        for candidate in candidateTurns {
+            if case .revision(let revisionID) = candidate.boardAttachment,
+               !knownRevisions.contains(revisionID) {
+                throw InterviewRoomSessionError.invalidManifest(
+                    reason: "Candidate Turn references a missing Board Revision"
+                )
+            }
+        }
+
+        let exportIDs = board.exports.map(\.id)
+        let exportCommandIDs = board.exports.map(\.authorizationCommandID)
+        guard Set(exportIDs).count == exportIDs.count,
+              Set(exportCommandIDs).count == exportCommandIDs.count else {
+            throw InterviewRoomSessionError.invalidManifest(
+                reason: "invalid Board Export identity history"
+            )
+        }
+
+        for operation in board.exports {
+            let expectedID = boardExportID(
+                sessionID: sessionID,
+                commandID: operation.authorizationCommandID
+            )
+            let expectedIdentities: BoardArtifactIdentities
+            do {
+                expectedIdentities = try boardArtifactIdentities(exportID: expectedID)
+            } catch {
+                throw InterviewRoomSessionError.invalidManifest(
+                    reason: "invalid Board Export artifact identities"
+                )
+            }
+            guard operation.id == expectedID,
+                  operation.artifactIdentities == expectedIdentities,
+                  appliedCommandIDs.contains(operation.authorizationCommandID),
+                  knownRevisions.contains(operation.revisionID) else {
+                throw InterviewRoomSessionError.invalidManifest(
+                    reason: "Board Export authorization is inconsistent"
+                )
+            }
+
+            switch operation.lifecycle {
+            case .authorized:
+                guard operation.bundle == nil, operation.failure == nil else {
+                    throw InterviewRoomSessionError.invalidManifest(
+                        reason: "authorized Board Export already has an outcome"
+                    )
+                }
+            case .ready:
+                guard let bundle = operation.bundle, operation.failure == nil else {
+                    throw InterviewRoomSessionError.invalidManifest(
+                        reason: "ready Board Export has no complete bundle"
+                    )
+                }
+                do {
+                    try validateBoardArtifactBundle(bundle, expected: expectedIdentities)
+                } catch {
+                    throw InterviewRoomSessionError.invalidManifest(
+                        reason: "ready Board Export bundle is invalid"
+                    )
+                }
+            case .failed:
+                guard operation.bundle == nil, operation.failure != nil else {
+                    throw InterviewRoomSessionError.invalidManifest(
+                        reason: "failed Board Export outcome is incomplete"
+                    )
+                }
+            }
+        }
+    }
+
     private static func validate(_ manifest: SessionManifest) throws {
         try validateIdentifier(manifest.sessionID.rawValue, name: "sessionID")
         try validateIdentifier(manifest.activityID, name: "activityID")
@@ -1709,6 +2100,12 @@ public actor InterviewRoomSession {
                 reason: "duplicate Candidate Turn IDs"
             )
         }
+        try validateBoardWorkspace(
+            manifest.board,
+            sessionID: manifest.sessionID,
+            appliedCommandIDs: commandIDSet,
+            candidateTurns: candidateTurns
+        )
         let turnByID = Dictionary(uniqueKeysWithValues: candidateTurns.map { ($0.id, $0) })
         var referencedSegmentIDs = Set<SegmentID>()
         let segmentByID = Dictionary(uniqueKeysWithValues: manifest.segments.map { ($0.id, $0) })

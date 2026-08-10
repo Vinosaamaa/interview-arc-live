@@ -11,7 +11,11 @@ window and nonactivating compact controls. It records and recovers candidate
 segments, transcribes through Groq, keeps semantic endpointing advisory,
 obtains canonical written interviewer turns through the locally authenticated
 Codex App Server, and can explicitly generate or replay a private local
-interviewer voice. Product decisions live in
+interviewer voice. Its full System Design room follows the checked-in issue #1
+hierarchy and includes a functional Board with editable boxes, connectors,
+labels, freehand annotations, undo/redo, zoom, immutable revisions, exact Turn
+attachments, and private deterministic Draw.io/SVG/PNG exports. Product
+decisions live in
 [issue #1](https://github.com/Vinosaamaa/interview-arc-live/issues/1); the
 foundation is tracked by
 [issue #3](https://github.com/Vinosaamaa/interview-arc-live/issues/3), and the
@@ -45,11 +49,17 @@ xcodebuild test-without-building \
   CODE_SIGNING_ALLOWED=NO
 ```
 
+Board persistence and export use the Reliability lane: run the focused Board,
+Session Manifest, recovery, deterministic-rendering, and presentation tests in
+that Xcode lane. After an authorized merge, package and sign exact `main`, then
+verify the staged and installed artifacts with the public-safe headed Board
+save/attach/export/relaunch recovery smoke from issue #17.
+
 The preview keeps its Session Manifest and source recordings under Live's local
 Application Support root. Manual Hand off joins selected Groq transcripts and
 uses the exactly preflighted, locally authenticated Codex App Server for one
-canonical interviewer response. Automatic endpoint handoff, the functional
-system-design board, and hosted Interview Arc state remain later slices.
+canonical interviewer response. Automatic endpoint handoff and hosted
+Interview Arc state remain later slices.
 
 Interviewer speech is optional and never runs for historical turns
 automatically. The app discloses and downloads only the pinned

@@ -1,5 +1,4 @@
 import InterviewArcLiveCore
-import InterviewArcLiveQwenAdapter
 import SwiftUI
 
 struct SystemDesignRoomView: View {
@@ -25,18 +24,17 @@ struct SystemDesignRoomView: View {
             if let codexMessage = model.codexAttentionMessage {
                 codexReadinessBanner(codexMessage)
             }
-            turnModeBar
-            speechModelBar
 
             HSplitView {
                 transcript
-                    .frame(minWidth: 330, idealWidth: 390, maxWidth: 470)
+                    .frame(minWidth: 330, idealWidth: 410, maxWidth: 520)
                 board
                     .frame(minWidth: 560)
             }
 
             floorRail
         }
+        .ignoresSafeArea(.container, edges: .top)
         .background(LivePalette.room)
         .foregroundStyle(LivePalette.ink)
         .sheet(isPresented: $model.isCredentialSetupPresented) {
@@ -62,67 +60,141 @@ struct SystemDesignRoomView: View {
     }
 
     private var header: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: 14) {
             LiveMark()
-                .frame(width: 34, height: 34)
+                .frame(width: 30, height: 30)
             Text("Interview Arc Live")
                 .font(.system(.headline, design: .rounded, weight: .semibold))
             Spacer()
-            Label("System design", systemImage: "point.3.connected.trianglepath.dotted")
-            Rectangle()
-                .fill(LivePalette.line.opacity(0.45))
-                .frame(width: 1, height: 18)
-            Text(model.statusMessage)
-                .foregroundStyle(LivePalette.line)
-                .lineLimit(1)
-            if model.needsGroqCredential {
-                Button("Add Groq key") {
-                    model.presentCredentialSetup()
+
+            Menu {
+                Picker("Turn-taking", selection: turnModeRawSelection) {
+                    ForEach(model.availableTurnModes, id: \.rawValue) { mode in
+                        Text(model.turnModeTitle(mode)).tag(mode.rawValue)
+                    }
                 }
-                .buttonStyle(.bordered)
-                .tint(LivePalette.liveSignal)
-                .accessibilityHint("Opens secure Groq transcription setup")
+                Divider()
+                Text(model.endpointShadowPresentation.title)
+                Text(model.endpointShadowPresentation.detail)
+                if model.needsGroqCredential {
+                    Button("Add Groq key") { model.presentCredentialSetup() }
+                }
+                Button("Check Codex") { Task { await model.checkCodex() } }
+            } label: {
+                HStack(spacing: 7) {
+                    Text("System design")
+                    Text("·")
+                        .foregroundStyle(LivePalette.muted)
+                    Text(model.statusMessage)
+                        .foregroundStyle(LivePalette.ink)
+                        .lineLimit(1)
+                        .frame(width: 86, alignment: .leading)
+                        .help(model.statusMessage)
+                }
             }
-            Rectangle()
-                .fill(LivePalette.line.opacity(0.45))
-                .frame(width: 1, height: 18)
-            codexStatus
-            Rectangle()
-                .fill(LivePalette.line.opacity(0.45))
-                .frame(width: 1, height: 18)
-            Label("Local source · Groq transcript", systemImage: "lock")
+            .menuStyle(.borderlessButton)
+            .fixedSize(horizontal: true, vertical: false)
+            .accessibilityLabel("System design room status")
+            .accessibilityValue(model.statusMessage)
+
+            headerDivider
+
+            Menu {
+                Text(model.speechReadinessPresentation.title)
+                Text(model.speechReadinessPresentation.detail)
+                if model.speechReadinessPresentation.canDownload {
+                    Button("Download local voice model") {
+                        model.startSpeechModelDownload()
+                    }
+                }
+                if model.speechReadinessPresentation.canCancel {
+                    Button("Cancel model download") {
+                        model.cancelSpeechModelDownload()
+                    }
+                }
+                if model.showsSpeechMuteControl {
+                    Button(model.isSpeechMuted ? "Unmute Mara" : "Mute Mara") {
+                        Task { await model.toggleSpeechMute() }
+                    }
+                }
+                if model.speechReadinessPresentation.canRemove {
+                    Button("Remove local voice model", role: .destructive) {
+                        isModelRemovalConfirmationPresented = true
+                    }
+                }
+            } label: {
+                HStack(spacing: 7) {
+                    Text("Mara")
+                    Text("·")
+                    Text("Staff Engineer")
+                    if !model.isSpeechReady {
+                        speechAttentionBadge
+                    }
+                }
+                .foregroundStyle(LivePalette.navy)
+            }
+            .menuStyle(.borderlessButton)
+
+            Spacer()
+
+            Label("Private", systemImage: "lock")
+            Text("·")
+                .foregroundStyle(LivePalette.muted)
+            Text(
+                model.latestBoardRevision != nil && !model.isBoardDraftDirty
+                    ? "Saved"
+                    : "Local"
+            )
+                .foregroundStyle(LivePalette.muted)
+            Button(action: onCollapse) {
+                Image(systemName: "sidebar.trailing")
+                    .frame(width: 30, height: 30)
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("full-room-collapse")
+            .accessibilityLabel("Collapse interview room")
+            .accessibilityHint("Keeps the same room and board in compact controls")
         }
         .font(.system(.body, design: .rounded))
-        .foregroundStyle(LivePalette.paper)
-        .padding(.horizontal, 22)
-        .frame(height: 60)
-        .background(LivePalette.shell)
+        .foregroundStyle(LivePalette.ink)
+        .padding(.leading, FullRoomHeaderLayout.trafficLightClearance)
+        .padding(.trailing, 22)
+        .frame(minHeight: FullRoomHeaderLayout.height)
+        .background(LivePalette.paper)
+        .overlay(alignment: .bottom) {
+            Rectangle().fill(LivePalette.line).frame(height: 1)
+        }
     }
 
-    private var codexStatus: some View {
-        HStack(spacing: 6) {
-            if model.isCheckingCodex {
-                ProgressView()
-                    .controlSize(.small)
-                    .tint(LivePalette.paper)
-                    .accessibilityHidden(true)
-            } else {
-                Image(systemName: model.codexStatusIcon)
-                    .accessibilityHidden(true)
+    private var headerDivider: some View {
+        Rectangle()
+            .fill(LivePalette.line)
+            .frame(width: 1, height: 22)
+            .accessibilityHidden(true)
+    }
+
+    @ViewBuilder
+    private var speechAttentionBadge: some View {
+        let presentation = model.speechReadinessPresentation
+        if let progress = presentation.progress {
+            HStack(spacing: 5) {
+                ProgressView(value: progress)
+                    .progressViewStyle(.linear)
+                    .frame(width: 42)
+                Text("\(Int((progress * 100).rounded()))%")
+                    .monospacedDigit()
             }
-            Text(model.codexStatusTitle)
-                .lineLimit(1)
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel(presentation.title)
+            .accessibilityValue("\(Int((progress * 100).rounded())) percent")
+        } else {
+            Label(
+                presentation.canDownload ? "Add voice" : "Voice issue",
+                systemImage: presentation.systemImage
+            )
+            .accessibilityLabel(presentation.title)
+            .accessibilityHint("Open Mara’s menu for local voice controls")
         }
-        .foregroundStyle(codexStatusColor)
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("Codex status: \(model.codexStatusTitle)")
-    }
-
-    private var codexStatusColor: Color {
-        if model.isCheckingCodex {
-            return LivePalette.paper
-        }
-        return model.isCodexReady ? LivePalette.liveSignal : LivePalette.handoff
     }
 
     private var question: some View {
@@ -132,64 +204,15 @@ struct SystemDesignRoomView: View {
                 .tracking(1.4)
                 .foregroundStyle(LivePalette.muted)
             Text(model.question)
-                .font(.system(size: 28, weight: .semibold, design: .rounded))
+                .font(.system(size: 31, weight: .semibold, design: .rounded))
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 28)
-        .padding(.vertical, 20)
+        .padding(.horizontal, 34)
+        .padding(.vertical, 22)
         .background(LivePalette.paper)
         .overlay(alignment: .bottom) {
             Rectangle().fill(LivePalette.line).frame(height: 1)
         }
-    }
-
-    private var turnModeBar: some View {
-        let presentation = model.endpointShadowPresentation
-        let statusColor = endpointShadowStatusColor(for: presentation.tone)
-
-        return HStack(spacing: 14) {
-            Text("Turn-taking")
-                .font(.system(.subheadline, design: .rounded, weight: .semibold))
-
-            Picker("Turn-taking mode", selection: turnModeRawSelection) {
-                ForEach(model.availableTurnModes, id: \.rawValue) { mode in
-                    Text(model.turnModeTitle(mode)).tag(mode.rawValue)
-                }
-            }
-            .labelsHidden()
-            .pickerStyle(.segmented)
-            .frame(width: 310)
-            .disabled(!model.canSelectTurnMode)
-            .accessibilityLabel("Turn-taking mode")
-            .accessibilityHint(
-                "Patient Auto observes completed Segment transcripts, but Hand off remains manual"
-            )
-
-            Rectangle()
-                .fill(LivePalette.line)
-                .frame(width: 1, height: 28)
-
-            Image(systemName: presentation.systemImage)
-                .foregroundStyle(statusColor)
-                .accessibilityHidden(true)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(presentation.title)
-                    .font(.system(.callout, design: .rounded, weight: .semibold))
-                    .foregroundStyle(statusColor)
-                Text(presentation.detail)
-                    .font(.system(.caption, design: .rounded))
-                    .foregroundStyle(LivePalette.muted)
-                    .lineLimit(2)
-            }
-            Spacer(minLength: 8)
-        }
-        .padding(.horizontal, 24)
-        .padding(.vertical, 9)
-        .background(LivePalette.paper)
-        .overlay(alignment: .bottom) {
-            Rectangle().fill(LivePalette.line).frame(height: 1)
-        }
-        .accessibilityElement(children: .contain)
     }
 
     private var turnModeRawSelection: Binding<String> {
@@ -204,142 +227,6 @@ struct SystemDesignRoomView: View {
                 Task { await model.selectTurnMode(mode) }
             }
         )
-    }
-
-    private var speechModelBar: some View {
-        let presentation = model.speechReadinessPresentation
-        let color = speechReadinessColor(for: presentation.tone)
-
-        return HStack(alignment: .top, spacing: 12) {
-            Image(systemName: presentation.systemImage)
-                .font(.system(.title3, weight: .semibold))
-                .foregroundStyle(color)
-                .frame(width: 24)
-                .accessibilityHidden(true)
-
-            VStack(alignment: .leading, spacing: 4) {
-                Text(presentation.title)
-                    .font(.system(.callout, design: .rounded, weight: .semibold))
-                    .foregroundStyle(color)
-                Text(presentation.detail)
-                    .font(.system(.caption, design: .rounded))
-                    .foregroundStyle(LivePalette.muted)
-                    .fixedSize(horizontal: false, vertical: true)
-
-                if presentation.showsInstallDisclosure {
-                    Text("Qwen3-TTS 0.6B · revision \(Qwen3TTSProvenance.modelRevision) · \(Qwen3TTSProvenance.snapshotSizeLabel) · \(Qwen3TTSProvenance.modelLicenseIdentifier)")
-                        .font(.system(.caption2, design: .monospaced))
-                        .foregroundStyle(LivePalette.ink)
-                        .textSelection(.enabled)
-                        .fixedSize(horizontal: false, vertical: true)
-                    Text("Requires at least 4 GiB free. Stored in Live-specific Application Support. After verification, synthesis and audio stay local.")
-                        .font(.system(.caption2, design: .rounded))
-                        .foregroundStyle(LivePalette.muted)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-
-                if let progress = presentation.progress {
-                    ProgressView(value: progress)
-                        .progressViewStyle(.linear)
-                        .tint(LivePalette.interviewer)
-                        .frame(maxWidth: 420)
-                        .accessibilityLabel(presentation.title)
-                        .accessibilityValue(
-                            "\(Int((progress * 100).rounded())) percent"
-                        )
-                }
-
-                if let speechErrorMessage = model.speechErrorMessage {
-                    Text(speechErrorMessage)
-                        .font(.system(.caption, design: .rounded, weight: .medium))
-                        .foregroundStyle(LivePalette.warning)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-
-            HStack(spacing: 8) {
-                if presentation.canDownload {
-                    Button("Download 1.838 GiB model") {
-                        model.startSpeechModelDownload()
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .tint(LivePalette.interviewer)
-                    .disabled(!model.canStartSpeechModelDownload)
-                    .accessibilityHint(
-                        "Downloads and verifies the exact public model revision shown"
-                    )
-                }
-                if presentation.canCancel {
-                    Button("Cancel download") {
-                        model.cancelSpeechModelDownload()
-                    }
-                    .buttonStyle(.bordered)
-                }
-                if presentation.canRemove {
-                    Button {
-                        isModelRemovalConfirmationPresented = true
-                    } label: {
-                        Label("Remove model", systemImage: "trash")
-                    }
-                    .buttonStyle(.bordered)
-                    .disabled(model.isSpeechModelActionInFlight)
-                }
-                if model.showsSpeechMuteControl {
-                    Button {
-                        Task { await model.toggleSpeechMute() }
-                    } label: {
-                        Label(
-                            model.isSpeechMuted ? "Unmute Mara" : "Mute Mara",
-                            systemImage: model.isSpeechMuted
-                                ? "speaker.wave.2.fill"
-                                : "speaker.slash.fill"
-                        )
-                    }
-                    .buttonStyle(.bordered)
-                    .disabled(!model.canToggleSpeechMute)
-                    .accessibilityHint(
-                        model.isSpeechMuted
-                            ? "Does not replay prior interviewer turns"
-                            : "Immediately stops current speech and suppresses automatic speech"
-                    )
-                }
-            }
-            .controlSize(.small)
-        }
-        .padding(.horizontal, 24)
-        .padding(.vertical, presentation.showsInstallDisclosure ? 10 : 8)
-        .background(LivePalette.paper)
-        .overlay(alignment: .bottom) {
-            Rectangle().fill(LivePalette.line).frame(height: 1)
-        }
-        .accessibilityElement(children: .contain)
-    }
-
-    private func speechReadinessColor(
-        for tone: InterviewerSpeechReadinessPresentation.Tone
-    ) -> Color {
-        switch tone {
-        case .quiet: return LivePalette.muted
-        case .working: return LivePalette.interviewer
-        case .ready: return LivePalette.candidate
-        case .warning: return LivePalette.warning
-        }
-    }
-
-    private func endpointShadowStatusColor(
-        for tone: EndpointShadowPresentation.Tone
-    ) -> Color {
-        switch tone {
-        case .neutral:
-            return LivePalette.muted
-        case .working:
-            return LivePalette.interviewer
-        case .advisory:
-            return LivePalette.candidate
-        case .warning:
-            return LivePalette.warning
-        }
     }
 
     private var transcript: some View {
@@ -452,6 +339,7 @@ struct SystemDesignRoomView: View {
         let color: Color
         let rendersMarkdown: Bool
         let interviewerTurnID: TurnID?
+        let boardRevisionID: BoardRevisionID?
 
         switch turn {
         case .candidate(let candidate):
@@ -460,12 +348,18 @@ struct SystemDesignRoomView: View {
             color = LivePalette.candidate
             rendersMarkdown = false
             interviewerTurnID = nil
+            if case .revision(let revisionID) = candidate.boardAttachment {
+                boardRevisionID = revisionID
+            } else {
+                boardRevisionID = nil
+            }
         case .interviewer(let interviewer):
             role = "MARA"
             body = interviewer.displayMarkdown
             color = LivePalette.interviewer
             rendersMarkdown = true
             interviewerTurnID = interviewer.id
+            boardRevisionID = nil
         }
 
         return HStack(alignment: .top, spacing: 18) {
@@ -500,12 +394,38 @@ struct SystemDesignRoomView: View {
                    let utterance = model.utterance(for: interviewerTurnID) {
                     interviewerSpeechRow(utterance)
                 }
+
+                if let boardRevisionID {
+                    Button {
+                        Task { await model.inspectBoardRevision(boardRevisionID) }
+                    } label: {
+                        Label(
+                            boardRevisionLabel(boardRevisionID),
+                            systemImage: "point.3.connected.trianglepath.dotted"
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .font(.system(.caption, design: .rounded, weight: .semibold))
+                    .foregroundStyle(LivePalette.violet)
+                    .accessibilityHint(
+                        "Opens the exact immutable board attached to this answer without changing the current draft"
+                    )
+                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.bottom, 24)
         }
         .padding(.horizontal, 28)
         .accessibilityElement(children: .contain)
+    }
+
+    private func boardRevisionLabel(_ revisionID: BoardRevisionID) -> String {
+        guard let revision = model.snapshot?.board.revisions.first(where: {
+            $0.id == revisionID
+        }) else {
+            return "Attached board revision"
+        }
+        return "Board revision \(revision.ordinal + 1) attached"
     }
 
     private func interviewerSpeechRow(
@@ -603,73 +523,18 @@ struct SystemDesignRoomView: View {
     }
 
     private var board: some View {
-        VStack(spacing: 0) {
-            HStack {
-                Text("BOARD")
-                    .font(.system(.caption, design: .monospaced, weight: .bold))
-                    .tracking(1.1)
-                Spacer()
-                Text("Draft revision \(model.snapshot?.revision ?? 0)")
-                    .foregroundStyle(LivePalette.muted)
-                Label("Reference draft · read-only", systemImage: "lock")
-                    .foregroundStyle(LivePalette.muted)
-            }
-            .padding(.horizontal, 20)
-            .frame(height: 52)
-            .background(LivePalette.paper)
-
-            Rectangle().fill(LivePalette.line).frame(height: 1)
-
-            ZStack {
-                DotGrid()
-                HStack(spacing: 34) {
-                    BoardNode(icon: "network", title: "API gateway")
-                    BoardArrow()
-                    BoardNode(icon: "tray.full", title: "Durable queue")
-                    BoardArrow()
-                    BoardNode(icon: "shippingbox", title: "Delivery workers")
-                }
-                .padding(30)
-            }
-        }
-        .background(LivePalette.room)
+        SystemDesignBoardView(model: model)
     }
 
     private var floorRail: some View {
-        HStack(spacing: 18) {
-            Circle()
-                .fill(LivePalette.liveSignal)
-                .frame(width: 8, height: 8)
-                .accessibilityHidden(true)
+        HStack(spacing: 16) {
             Text(floorLabel.uppercased())
-                .font(.system(.caption, design: .monospaced, weight: .bold))
-            Capsule()
-                .fill(LivePalette.liveSignal.opacity(0.72))
-                .frame(height: 3)
+                .font(.system(.caption, design: .rounded, weight: .bold))
+                .foregroundStyle(LivePalette.violet)
 
-            if model.canStopRecording {
-                Button {
-                    Task { await model.stopRecording() }
-                } label: {
-                    Label(model.stopActionTitle, systemImage: model.stopActionIcon)
-                        .font(.system(.body, design: .rounded, weight: .semibold))
-                }
-                .buttonStyle(.borderedProminent)
-                .tint(LivePalette.handoff)
-                .disabled(model.isWorking)
-                .keyboardShortcut(.space, modifiers: [.command])
-            } else if model.showsRecordControl {
-                Button {
-                    Task { await model.recordSegment() }
-                } label: {
-                    Label(model.recordActionTitle, systemImage: "record.circle")
-                        .font(.system(.body, design: .rounded, weight: .semibold))
-                }
-                .buttonStyle(.bordered)
-                .tint(LivePalette.paper)
-                .disabled(!model.canRecordSegment)
-                .keyboardShortcut(.space, modifiers: [.command])
-            }
+            LiveWaveform(isActive: model.canStopRecording)
+                .frame(minWidth: 180, maxWidth: .infinity)
+                .frame(height: 32)
 
             Button {
                 Task { await model.performPrimaryAction() }
@@ -678,26 +543,59 @@ struct SystemDesignRoomView: View {
                     .font(.system(.body, design: .rounded, weight: .semibold))
                     .padding(.horizontal, 8)
             }
-            .buttonStyle(.borderedProminent)
-            .tint(LivePalette.handoff)
+            .buttonStyle(.bordered)
+            .buttonBorderShape(.capsule)
+            .tint(LivePalette.violet)
             .disabled(!model.canAct)
             .keyboardShortcut(.return, modifiers: [.command])
 
-            Button(action: onCollapse) {
-                Label("Collapse", systemImage: "rectangle.compress.vertical")
-                    .font(.system(.body, design: .rounded, weight: .semibold))
+            headerDivider
+
+            if model.canStopRecording {
+                Button {
+                    Task { await model.stopRecording() }
+                } label: {
+                    Label("Pause", systemImage: "pause.fill")
+                        .font(.system(.body, design: .rounded, weight: .semibold))
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(LivePalette.navy)
+                .disabled(model.isWorking)
+                .keyboardShortcut(.space, modifiers: [.command])
+            } else if model.showsRecordControl {
+                Button {
+                    Task { await model.recordSegment() }
+                } label: {
+                    Label("Record", systemImage: "record.circle")
+                        .font(.system(.body, design: .rounded, weight: .semibold))
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(LivePalette.navy)
+                .disabled(!model.canRecordSegment)
+                .keyboardShortcut(.space, modifiers: [.command])
             }
-            .buttonStyle(.bordered)
-            .tint(LivePalette.paper)
-            .accessibilityIdentifier("full-room-collapse")
-            .accessibilityHint(
-                "Keeps this interview running in the compact controls without recreating the room"
-            )
+
+            headerDivider
+
+            Button {
+                Task { _ = await model.finishInterview() }
+            } label: {
+                Label("End", systemImage: "stop.fill")
+                    .font(.system(.body, design: .rounded, weight: .medium))
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(LivePalette.orange)
         }
-        .foregroundStyle(LivePalette.paper)
-        .padding(.horizontal, 24)
-        .frame(height: 72)
-        .background(LivePalette.shell)
+        .foregroundStyle(LivePalette.navy)
+        .padding(.horizontal, 22)
+        .frame(minHeight: 76)
+        .background(LivePalette.paper)
+        .overlay {
+            RoundedRectangle(cornerRadius: 13, style: .continuous)
+                .stroke(LivePalette.line, lineWidth: 1)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 8)
+        }
     }
 
     private var floorLabel: String {
@@ -778,18 +676,68 @@ struct SystemDesignRoomView: View {
     }
 }
 
+enum FullRoomHeaderLayout {
+    /// The full-size-content window draws into the titlebar. This keeps the
+    /// brand beyond the standard close/minimize/zoom group while the 62-point
+    /// custom header occupies that same row instead of leaving a blank strip.
+    static let trafficLightClearance: CGFloat = 84
+    static let height: CGFloat = 62
+}
+
 enum LivePalette {
-    static let room = Color(red: 232 / 255, green: 239 / 255, blue: 236 / 255)
-    static let paper = Color(red: 251 / 255, green: 252 / 255, blue: 250 / 255)
-    static let ink = Color(red: 16 / 255, green: 42 / 255, blue: 42 / 255)
-    static let muted = Color(red: 102 / 255, green: 122 / 255, blue: 118 / 255)
-    static let line = Color(red: 198 / 255, green: 214 / 255, blue: 209 / 255)
-    static let shell = Color(red: 11 / 255, green: 40 / 255, blue: 40 / 255)
-    static let candidate = Color(red: 13 / 255, green: 148 / 255, blue: 136 / 255)
-    static let interviewer = Color(red: 88 / 255, green: 105 / 255, blue: 201 / 255)
-    static let handoff = Color(red: 223 / 255, green: 102 / 255, blue: 63 / 255)
-    static let liveSignal = Color(red: 185 / 255, green: 219 / 255, blue: 87 / 255)
-    static let warning = Color(red: 176 / 255, green: 78 / 255, blue: 39 / 255)
+    static let room = Color(red: 250 / 255, green: 251 / 255, blue: 254 / 255)
+    static let paper = Color(red: 252 / 255, green: 252 / 255, blue: 254 / 255)
+    static let ink = Color(red: 14 / 255, green: 17 / 255, blue: 30 / 255)
+    static let navy = Color(red: 24 / 255, green: 35 / 255, blue: 89 / 255)
+    static let violet = Color(red: 75 / 255, green: 58 / 255, blue: 191 / 255)
+    static let orange = Color(red: 237 / 255, green: 78 / 255, blue: 47 / 255)
+    static let muted = Color(red: 82 / 255, green: 98 / 255, blue: 139 / 255)
+    static let line = Color(red: 224 / 255, green: 226 / 255, blue: 237 / 255)
+    static let shell = paper
+    static let candidate = orange
+    static let interviewer = violet
+    static let handoff = violet
+    static let liveSignal = violet
+    static let warning = orange
+}
+
+private struct LiveWaveform: View {
+    let isActive: Bool
+
+    private let levels: [Double] = [
+        0.18, 0.42, 0.24, 0.66, 0.31, 0.52, 0.2, 0.76, 0.38, 0.24,
+        0.58, 0.33, 0.7, 0.28, 0.45, 0.2, 0.62, 0.35, 0.22, 0.48,
+        0.3, 0.68, 0.26, 0.5, 0.21, 0.4, 0.18, 0.34, 0.2, 0.28,
+    ]
+
+    var body: some View {
+        Canvas { context, size in
+            let center = size.height / 2
+            var baseline = Path()
+            baseline.move(to: CGPoint(x: 0, y: center))
+            baseline.addLine(to: CGPoint(x: size.width, y: center))
+            context.stroke(
+                baseline,
+                with: .color(LivePalette.violet.opacity(0.7)),
+                lineWidth: 1
+            )
+
+            let spacing = min(7.0, size.width / Double(levels.count + 2))
+            for (index, level) in levels.enumerated() {
+                let x = 10 + Double(index) * spacing
+                let height = max(3, level * size.height * (isActive ? 0.88 : 0.55))
+                var bar = Path()
+                bar.move(to: CGPoint(x: x, y: center - height / 2))
+                bar.addLine(to: CGPoint(x: x, y: center + height / 2))
+                context.stroke(
+                    bar,
+                    with: .color(LivePalette.violet),
+                    style: StrokeStyle(lineWidth: 2, lineCap: .round)
+                )
+            }
+        }
+        .accessibilityHidden(true)
+    }
 }
 
 private struct LiveMark: View {
@@ -797,61 +745,19 @@ private struct LiveMark: View {
         ZStack {
             Circle()
                 .trim(from: 0.05, to: 0.43)
-                .stroke(LivePalette.liveSignal, style: StrokeStyle(lineWidth: 3, lineCap: .round))
+                .stroke(LivePalette.violet, style: StrokeStyle(lineWidth: 3, lineCap: .round))
                 .rotationEffect(.degrees(-22))
             Circle()
                 .trim(from: 0.55, to: 0.92)
-                .stroke(LivePalette.handoff, style: StrokeStyle(lineWidth: 3, lineCap: .round))
+                .stroke(LivePalette.navy, style: StrokeStyle(lineWidth: 3, lineCap: .round))
                 .rotationEffect(.degrees(-22))
+            Circle()
+                .fill(LivePalette.orange)
+                .frame(width: 7, height: 7)
+                .offset(x: 10, y: 8)
         }
         .padding(4)
         .accessibilityLabel("Interview Arc Live")
-    }
-}
-
-private struct BoardNode: View {
-    let icon: String
-    let title: String
-
-    var body: some View {
-        VStack(spacing: 10) {
-            Image(systemName: icon)
-                .font(.title2)
-                .foregroundStyle(LivePalette.candidate)
-            Text(title)
-                .font(.system(.subheadline, design: .rounded, weight: .semibold))
-                .multilineTextAlignment(.center)
-        }
-        .frame(width: 120, height: 108)
-        .background(LivePalette.paper, in: RoundedRectangle(cornerRadius: 14))
-        .overlay {
-            RoundedRectangle(cornerRadius: 14)
-                .stroke(LivePalette.line, lineWidth: 1.5)
-        }
-    }
-}
-
-private struct BoardArrow: View {
-    var body: some View {
-        Image(systemName: "arrow.right")
-            .foregroundStyle(LivePalette.muted)
-            .accessibilityHidden(true)
-    }
-}
-
-private struct DotGrid: View {
-    var body: some View {
-        Canvas { context, size in
-            for x in stride(from: 10.0, through: size.width, by: 20) {
-                for y in stride(from: 10.0, through: size.height, by: 20) {
-                    context.fill(
-                        Path(ellipseIn: CGRect(x: x, y: y, width: 1.5, height: 1.5)),
-                        with: .color(LivePalette.line.opacity(0.6))
-                    )
-                }
-            }
-        }
-        .accessibilityHidden(true)
     }
 }
 

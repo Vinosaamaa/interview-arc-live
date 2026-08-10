@@ -285,10 +285,92 @@ public final class SegmentSpeechCoordinator {
     }
 
     @discardableResult
-    public func handOff(
+    public func updateBoardDraft(
+        _ document: BoardDocument,
         commandID: CommandID
     ) async throws -> InterviewRoomSnapshot {
-        try await applyAndPublish(.handOffSegments(commandID: commandID)).snapshot
+        try await applyAndPublish(
+            .updateBoardDraft(commandID: commandID, document: document)
+        ).snapshot
+    }
+
+    @discardableResult
+    public func saveBoardRevision(
+        commandID: CommandID
+    ) async throws -> InterviewRoomSnapshot {
+        try await applyAndPublish(
+            .saveBoardRevision(commandID: commandID)
+        ).snapshot
+    }
+
+    @discardableResult
+    public func selectBoardRevision(
+        _ revisionID: BoardRevisionID?,
+        commandID: CommandID
+    ) async throws -> InterviewRoomSnapshot {
+        try await applyAndPublish(
+            .selectBoardRevision(commandID: commandID, revisionID: revisionID)
+        ).snapshot
+    }
+
+    @discardableResult
+    public func attachBoardRevision(
+        _ revisionID: BoardRevisionID,
+        to turnID: TurnID,
+        commandID: CommandID
+    ) async throws -> InterviewRoomSnapshot {
+        try await applyAndPublish(
+            .attachBoardRevision(
+                commandID: commandID,
+                turnID: turnID,
+                revisionID: revisionID
+            )
+        ).snapshot
+    }
+
+    /// Returns the durable authorization disposition so an export Adapter is
+    /// invoked only for a newly accepted operation.
+    @discardableResult
+    public func authorizeBoardExport(
+        revisionID: BoardRevisionID,
+        settings: BoardExportSettings,
+        commandID: CommandID
+    ) async throws -> InterviewRoomCommandApplication {
+        try await applyAndPublish(
+            .authorizeBoardExport(
+                commandID: commandID,
+                revisionID: revisionID,
+                settings: settings
+            )
+        )
+    }
+
+    @discardableResult
+    public func recordBoardExportOutcome(
+        exportID: BoardExportID,
+        outcome: BoardExportOutcome,
+        commandID: CommandID
+    ) async throws -> InterviewRoomSnapshot {
+        try await applyAndPublish(
+            .recordBoardExportOutcome(
+                commandID: commandID,
+                exportID: exportID,
+                outcome: outcome
+            )
+        ).snapshot
+    }
+
+    @discardableResult
+    public func handOff(
+        commandID: CommandID,
+        boardAttachment: CandidateTurnBoardAttachment = .noBoard
+    ) async throws -> InterviewRoomSnapshot {
+        try await applyAndPublish(
+            .handOffSegmentsWithBoard(
+                commandID: commandID,
+                boardAttachment: boardAttachment
+            )
+        ).snapshot
     }
 
     @discardableResult
