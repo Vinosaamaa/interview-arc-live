@@ -59,13 +59,15 @@ final class DeterministicBoardRendererTests: XCTestCase {
         XCTAssertTrue(svg.contains("viewBox=\"0 0 640 400\""))
         XCTAssertTrue(svg.contains("Gateway &lt;script&gt;alert(1)&lt;/script&gt;"))
         XCTAssertTrue(svg.contains("data-node-kind=\"service\""))
-        XCTAssertTrue(svg.contains(">SVC</text>"))
+        XCTAssertTrue(svg.contains("data-node-visual=\"hexagon.fanout\""))
+        XCTAssertTrue(svg.contains("<path d=\"M 99 91 L 241 91 L 259 135"))
+        XCTAssertFalse(svg.contains(">SVC</text>"))
         XCTAssertFalse(svg.localizedCaseInsensitiveContains("<script"))
         XCTAssertFalse(svg.localizedCaseInsensitiveContains("href="))
         XCTAssertFalse(svg.contains("/Users/"))
     }
 
-    func testNodeKindChangesTheRasterizedCanonicalGlyph() throws {
+    func testNodeKindChangesTheRasterizedCanonicalVectorVisual() throws {
         func document(kind: BoardNodeKind) throws -> BoardDocument {
             try BoardDocument(
                 canvas: BoardCanvas(size: BoardSize(width: 320, height: 200)),
@@ -97,8 +99,45 @@ final class DeterministicBoardRendererTests: XCTestCase {
         XCTAssertNotEqual(service.png, database.png)
         XCTAssertTrue(
             try XCTUnwrap(String(data: database.svg, encoding: .utf8))
-                .contains(">DB</text>")
+                .contains("data-node-visual=\"cylinder.records\"")
         )
+    }
+
+    func testConnectorUsesTheSameOrthogonalRouteInSVGAndPNG() throws {
+        let start = BoardPoint(x: 200, y: 100)
+        let end = BoardPoint(x: 460, y: 240)
+        let document = try BoardDocument(
+            canvas: BoardCanvas(size: BoardSize(width: 640, height: 400)),
+            elements: [
+                .connector(
+                    BoardConnector(
+                        id: BoardElementID("route"),
+                        start: BoardConnectorEndpoint(point: start),
+                        end: BoardConnectorEndpoint(point: end),
+                        label: "events"
+                    )
+                ),
+            ]
+        )
+        let settings = try BoardExportSettings(
+            viewport: BoardSize(width: 640, height: 400),
+            scale: 1,
+            background: BoardColor(hexRGB: "fbfcfa")
+        )
+
+        let first = try DeterministicBoardRenderer().render(
+            document,
+            settings: settings
+        )
+        let second = try DeterministicBoardRenderer().render(
+            document,
+            settings: settings
+        )
+        let svg = try XCTUnwrap(String(data: first.svg, encoding: .utf8))
+
+        XCTAssertTrue(svg.contains("M 200 100 L 330 100 L 330 240 L 460 240"))
+        XCTAssertEqual(first.png, second.png)
+        XCTAssertNotEqual(first.png, Data())
     }
 
     func testRendererRejectsAViewportThatWouldExceedPixelBudget() throws {

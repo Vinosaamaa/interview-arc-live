@@ -48,8 +48,29 @@ struct DrawIOBoardCodec: Sendable {
             "        <mxCell id=\"1\" parent=\"0\"/>",
         ])
 
-        for element in document.elements {
-            try append(encode(element))
+        let elementCellIDs = makeElementCellIDs(document.elements)
+        var reservedCellIDs = Set(elementCellIDs.values)
+        reservedCellIDs.formUnion(["0", "1"])
+        for (index, element) in document.elements.enumerated() {
+            let visualCellID: String?
+            if case .box = element {
+                var candidate = "__ia_node_visual_\(index)"
+                while reservedCellIDs.contains(candidate) {
+                    candidate.append("_")
+                }
+                reservedCellIDs.insert(candidate)
+                visualCellID = candidate
+            } else {
+                visualCellID = nil
+            }
+            try append(
+                encode(
+                    element,
+                    cellID: elementCellIDs[element.id] ?? element.id.rawValue,
+                    visualCellID: visualCellID,
+                    elementCellIDs: elementCellIDs
+                )
+            )
         }
 
         try append([
@@ -105,47 +126,78 @@ struct DrawIOBoardCodec: Sendable {
         }
     }
 
-    private func encode(_ element: BoardElement) throws -> [String] {
+    private func encode(
+        _ element: BoardElement,
+        cellID: String,
+        visualCellID: String?,
+        elementCellIDs: [BoardElementID: String]
+    ) throws -> [String] {
         switch element {
         case .box(let box):
             try validateXMLText(box.label)
-            let visibleValue = attribute(box.kind.glyphToken)
-                + "&#10;"
-                + attribute(box.label)
+            let visual = box.kind.visual
+            let visualCellID = visualCellID ?? "__ia_node_visual"
+            let visualURI = visual.drawIOPictogramDataURI(
+                canvasSize: CGSize(
+                    width: box.frame.size.width,
+                    height: box.frame.size.height
+                ),
+                strokeHex: box.stroke.hexRGB
+            )
             return [
-                "        <mxCell id=\"\(attribute(box.id.rawValue))\" value=\"\(visibleValue)\" style=\"shape=\(attribute(box.kind.drawIOShape));rounded=1;whiteSpace=wrap;html=0;fillColor=#\(attribute(box.fill.hexRGB));strokeColor=#\(attribute(box.stroke.hexRGB));\" vertex=\"1\" parent=\"1\" iaKind=\"box\" iaLabel=\"\(attribute(box.label))\" iaNodeKind=\"\(attribute(box.kind.rawValue))\" iaFill=\"\(attribute(box.fill.hexRGB))\" iaStroke=\"\(attribute(box.stroke.hexRGB))\">",
+                "        <mxCell id=\"\(attribute(cellID))\" value=\"\(attribute(box.label))\" style=\"\(attribute(visual.drawIOShapeStyle));whiteSpace=wrap;html=0;verticalAlign=bottom;spacingBottom=8;fillColor=#\(attribute(box.fill.hexRGB));strokeColor=#\(attribute(box.stroke.hexRGB));\" vertex=\"1\" parent=\"1\" iaKind=\"box\" iaElementID=\"\(attribute(box.id.rawValue))\" iaLabel=\"\(attribute(box.label))\" iaNodeKind=\"\(attribute(box.kind.rawValue))\" iaNodeVisual=\"\(attribute(visual.stableKey))\" iaPictogram=\"\(attribute(visual.pictogram.rawValue))\" iaFill=\"\(attribute(box.fill.hexRGB))\" iaStroke=\"\(attribute(box.stroke.hexRGB))\">",
                 "          <mxGeometry x=\"\(number(box.frame.origin.x))\" y=\"\(number(box.frame.origin.y))\" width=\"\(number(box.frame.size.width))\" height=\"\(number(box.frame.size.height))\" as=\"geometry\"/>",
+                "        </mxCell>",
+                "        <mxCell id=\"\(attribute(visualCellID))\" value=\"\" style=\"shape=image;imageAspect=0;aspect=fixed;pointerEvents=0;image=\(attribute(visualURI));\" vertex=\"1\" parent=\"\(attribute(cellID))\" connectable=\"0\" locked=\"1\" selectable=\"0\">",
+                "          <mxGeometry x=\"0\" y=\"0\" width=\"\(number(box.frame.size.width))\" height=\"\(number(box.frame.size.height))\" as=\"geometry\"/>",
                 "        </mxCell>",
             ]
 
         case .connector(let connector):
             try validateXMLText(connector.label)
+            let route = BoardOrthogonalConnectorRoute(
+                start: connector.start.point,
+                end: connector.end.point
+            )
             let source = connector.start.elementID.map {
-                " source=\"\(attribute($0.rawValue))\""
+                " source=\"\(attribute(elementCellIDs[$0] ?? $0.rawValue))\" iaSourceElementID=\"\(attribute($0.rawValue))\""
             } ?? ""
             let target = connector.end.elementID.map {
-                " target=\"\(attribute($0.rawValue))\""
+                " target=\"\(attribute(elementCellIDs[$0] ?? $0.rawValue))\" iaTargetElementID=\"\(attribute($0.rawValue))\""
             } ?? ""
-            return [
-                "        <mxCell id=\"\(attribute(connector.id.rawValue))\" value=\"\(attribute(connector.label))\" style=\"edgeStyle=orthogonalEdgeStyle;rounded=1;html=0;endArrow=block;strokeColor=#\(attribute(connector.stroke.hexRGB));\" edge=\"1\" parent=\"1\"\(source)\(target) iaKind=\"connector\" iaStroke=\"\(attribute(connector.stroke.hexRGB))\">",
+            var rows = [
+                "        <mxCell id=\"\(attribute(cellID))\" value=\"\(attribute(connector.label))\" style=\"edgeStyle=orthogonalEdgeStyle;rounded=1;html=0;endArrow=block;strokeColor=#\(attribute(connector.stroke.hexRGB));\" edge=\"1\" parent=\"1\"\(source)\(target) iaKind=\"connector\" iaElementID=\"\(attribute(connector.id.rawValue))\" iaStroke=\"\(attribute(connector.stroke.hexRGB))\">",
                 "          <mxGeometry relative=\"1\" as=\"geometry\">",
                 "            <mxPoint x=\"\(number(connector.start.point.x))\" y=\"\(number(connector.start.point.y))\" as=\"sourcePoint\"/>",
                 "            <mxPoint x=\"\(number(connector.end.point.x))\" y=\"\(number(connector.end.point.y))\" as=\"targetPoint\"/>",
+            ]
+            let waypoints = route.points.dropFirst().dropLast()
+            if !waypoints.isEmpty {
+                rows.append("            <Array as=\"points\">")
+                for point in waypoints {
+                    rows.append(
+                        "              <mxPoint x=\"\(number(point.x))\" y=\"\(number(point.y))\"/>"
+                    )
+                }
+                rows.append("            </Array>")
+            }
+            rows.append(contentsOf: [
                 "          </mxGeometry>",
                 "        </mxCell>",
-            ]
+            ])
+            return rows
 
         case .label(let label):
             try validateXMLText(label.text)
             return [
-                "        <mxCell id=\"\(attribute(label.id.rawValue))\" value=\"\(attribute(label.text))\" style=\"text;html=0;align=left;verticalAlign=middle;whiteSpace=wrap;fontColor=#\(attribute(label.color.hexRGB));\" vertex=\"1\" parent=\"1\" iaKind=\"label\" iaTextColor=\"\(attribute(label.color.hexRGB))\">",
+                "        <mxCell id=\"\(attribute(cellID))\" value=\"\(attribute(label.text))\" style=\"text;html=0;align=left;verticalAlign=middle;whiteSpace=wrap;fontColor=#\(attribute(label.color.hexRGB));\" vertex=\"1\" parent=\"1\" iaKind=\"label\" iaElementID=\"\(attribute(label.id.rawValue))\" iaTextColor=\"\(attribute(label.color.hexRGB))\">",
                 "          <mxGeometry x=\"\(number(label.origin.x))\" y=\"\(number(label.origin.y))\" width=\"240\" height=\"32\" as=\"geometry\"/>",
                 "        </mxCell>",
             ]
 
         case .stroke(let stroke):
             var rows = [
-                "        <mxCell id=\"\(attribute(stroke.id.rawValue))\" value=\"\" style=\"edgeStyle=none;rounded=1;html=0;endArrow=none;strokeColor=#\(attribute(stroke.color.hexRGB));strokeWidth=\(number(stroke.width));\" edge=\"1\" parent=\"1\" iaKind=\"stroke\" iaWidth=\"\(number(stroke.width))\" iaStroke=\"\(attribute(stroke.color.hexRGB))\">",
+                "        <mxCell id=\"\(attribute(cellID))\" value=\"\" style=\"edgeStyle=none;rounded=1;html=0;endArrow=none;strokeColor=#\(attribute(stroke.color.hexRGB));strokeWidth=\(number(stroke.width));\" edge=\"1\" parent=\"1\" iaKind=\"stroke\" iaElementID=\"\(attribute(stroke.id.rawValue))\" iaWidth=\"\(number(stroke.width))\" iaStroke=\"\(attribute(stroke.color.hexRGB))\">",
                 "          <mxGeometry relative=\"1\" as=\"geometry\">",
                 "            <mxPoint x=\"\(number(stroke.points[0].x))\" y=\"\(number(stroke.points[0].y))\" as=\"sourcePoint\"/>",
                 "            <mxPoint x=\"\(number(stroke.points[stroke.points.count - 1].x))\" y=\"\(number(stroke.points[stroke.points.count - 1].y))\" as=\"targetPoint\"/>",
@@ -166,7 +218,8 @@ struct DrawIOBoardCodec: Sendable {
     }
 
     private func makeElement(_ cell: ParsedCell) throws -> BoardElement {
-        guard let idValue = cell.attributes["id"] else {
+        guard let idValue = cell.attributes["iaElementID"]
+            ?? cell.attributes["id"] else {
             throw DrawIOBoardCodecError.invalidElement
         }
         let id = BoardElementID(idValue)
@@ -198,13 +251,19 @@ struct DrawIOBoardCodec: Sendable {
                     id: id,
                     start: BoardConnectorEndpoint(
                         point: start,
-                        elementID: cell.attributes["source"].map {
+                        elementID: (
+                            cell.attributes["iaSourceElementID"]
+                                ?? cell.attributes["source"]
+                        ).map {
                             BoardElementID($0)
                         }
                     ),
                     end: BoardConnectorEndpoint(
                         point: end,
-                        elementID: cell.attributes["target"].map {
+                        elementID: (
+                            cell.attributes["iaTargetElementID"]
+                                ?? cell.attributes["target"]
+                        ).map {
                             BoardElementID($0)
                         }
                     ),
@@ -254,6 +313,29 @@ struct DrawIOBoardCodec: Sendable {
             origin: BoardPoint(x: x, y: y),
             size: BoardSize(width: width, height: height)
         )
+    }
+
+    private func makeElementCellIDs(
+        _ elements: [BoardElement]
+    ) -> [BoardElementID: String] {
+        let canonicalIDs = Set(elements.map { $0.id.rawValue })
+        var result: [BoardElementID: String] = [:]
+        var reserved = canonicalIDs.union(["0", "1"])
+
+        for element in elements where element.id.rawValue != "0"
+            && element.id.rawValue != "1" {
+            result[element.id] = element.id.rawValue
+        }
+        for element in elements where element.id.rawValue == "0"
+            || element.id.rawValue == "1" {
+            var candidate = "__ia_element_\(element.id.rawValue)"
+            while reserved.contains(candidate) {
+                candidate.append("_")
+            }
+            reserved.insert(candidate)
+            result[element.id] = candidate
+        }
+        return result
     }
 
     private func color(_ cell: ParsedCell, key: String) throws -> BoardColor {

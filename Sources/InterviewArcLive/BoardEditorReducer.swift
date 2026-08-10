@@ -16,6 +16,13 @@ enum BoardEditorError: Error, Equatable, Sendable {
     case invalidGesture
 }
 
+enum BoardResizeHandle: String, CaseIterable, Sendable {
+    case topLeading
+    case topTrailing
+    case bottomLeading
+    case bottomTrailing
+}
+
 enum BoardEditorAction: Sendable {
     case createBox(frame: BoardRect, label: String, kind: BoardNodeKind)
     case connect(
@@ -28,7 +35,10 @@ enum BoardEditorAction: Sendable {
     case addStroke(points: [BoardPoint])
     case eraseStroke(at: BoardPoint, radius: Double)
     case select(BoardElementID?)
+    case selectNext
+    case selectPrevious
     case moveSelected(by: BoardPoint)
+    case resizeSelected(handle: BoardResizeHandle, by: BoardPoint)
     case deleteSelection
     case setTool(BoardEditorTool)
     case setZoom(Double)
@@ -41,6 +51,8 @@ struct BoardEditorState: Equatable, Sendable {
     static let minimumZoom = 0.25
     static let maximumZoom = 4.0
     static let maximumHistoryCount = 100
+    static let minimumBoxWidth = 96.0
+    static let minimumBoxHeight = 64.0
 
     private(set) var document: BoardDocument
     private(set) var selectedElementID: BoardElementID?
@@ -158,7 +170,16 @@ struct BoardEditorState: Equatable, Sendable {
             }
             selectedElementID = id
 
+        case .selectNext:
+            selectRelativeElement(step: 1)
+
+        case .selectPrevious:
+            selectRelativeElement(step: -1)
+
         case .moveSelected(let delta):
+            guard delta.x.isFinite, delta.y.isFinite else {
+                throw BoardEditorError.invalidGesture
+            }
             guard let selectedElementID else { return }
             let moved = document.elements.map { element in
                 move(
@@ -168,6 +189,35 @@ struct BoardEditorState: Equatable, Sendable {
                 )
             }
             try commit(elements: moved)
+
+        case .resizeSelected(let handle, let delta):
+            guard delta.x.isFinite, delta.y.isFinite else {
+                throw BoardEditorError.invalidGesture
+            }
+            guard let selectedElementID,
+                  let selectedBox = box(id: selectedElementID) else {
+                return
+            }
+            let resized = BoardBox(
+                id: selectedBox.id,
+                frame: resizedFrame(
+                    selectedBox.frame,
+                    handle: handle,
+                    delta: delta
+                ),
+                label: selectedBox.label,
+                kind: selectedBox.kind,
+                fill: selectedBox.fill,
+                stroke: selectedBox.stroke
+            )
+            let resizedElements = document.elements.map { element in
+                resize(
+                    element,
+                    selectedBoxID: selectedElementID,
+                    resizedBox: resized
+                )
+            }
+            try commit(elements: resizedElements)
 
         case .deleteSelection:
             guard let selectedElementID else { return }
@@ -227,6 +277,21 @@ struct BoardEditorState: Equatable, Sendable {
     private mutating func restore(_ entry: HistoryEntry) {
         document = entry.document
         selectedElementID = entry.selectedElementID
+    }
+
+    private mutating func selectRelativeElement(step: Int) {
+        let ids = document.elements.map(\.boardID)
+        guard !ids.isEmpty else {
+            selectedElementID = nil
+            return
+        }
+        guard let selectedElementID,
+              let index = ids.firstIndex(of: selectedElementID) else {
+            self.selectedElementID = step < 0 ? ids.last : ids.first
+            return
+        }
+        let next = (index + step + ids.count) % ids.count
+        self.selectedElementID = ids[next]
     }
 
     private func move(
@@ -348,6 +413,106 @@ struct BoardEditorState: Equatable, Sendable {
         default:
             return element
         }
+    }
+
+    private func resize(
+        _ element: BoardElement,
+        selectedBoxID: BoardElementID,
+        resizedBox: BoardBox
+    ) -> BoardElement {
+        switch element {
+        case .box(let box) where box.id == selectedBoxID:
+            return .box(resizedBox)
+        case .connector(let connector):
+            let start = connector.start.elementID == selectedBoxID
+                ? BoardConnectorEndpoint(
+                    point: sourceAnchor(for: resizedBox),
+                    elementID: selectedBoxID
+                )
+                : connector.start
+            let end = connector.end.elementID == selectedBoxID
+                ? BoardConnectorEndpoint(
+                    point: targetAnchor(for: resizedBox),
+                    elementID: selectedBoxID
+                )
+                : connector.end
+            guard start != connector.start || end != connector.end else {
+                return element
+            }
+            return .connector(
+                BoardConnector(
+                    id: connector.id,
+                    start: start,
+                    end: end,
+                    label: connector.label,
+                    stroke: connector.stroke
+                )
+            )
+        default:
+            return element
+        }
+    }
+
+    private func resizedFrame(
+        _ frame: BoardRect,
+        handle: BoardResizeHandle,
+        delta: BoardPoint
+    ) -> BoardRect {
+        let canvas = document.canvas.size
+        let minimumWidth = min(Self.minimumBoxWidth, canvas.width)
+        let minimumHeight = min(Self.minimumBoxHeight, canvas.height)
+        let normalizedWidth = min(
+            canvas.width,
+            max(minimumWidth, frame.size.width)
+        )
+        let normalizedHeight = min(
+            canvas.height,
+            max(minimumHeight, frame.size.height)
+        )
+        var minX = min(
+            max(0, frame.origin.x),
+            canvas.width - normalizedWidth
+        )
+        var minY = min(
+            max(0, frame.origin.y),
+            canvas.height - normalizedHeight
+        )
+        var maxX = minX + normalizedWidth
+        var maxY = minY + normalizedHeight
+
+        switch handle {
+        case .topLeading:
+            minX = min(max(0, minX + delta.x), maxX - minimumWidth)
+            minY = min(max(0, minY + delta.y), maxY - minimumHeight)
+        case .topTrailing:
+            maxX = min(canvas.width, max(minX + minimumWidth, maxX + delta.x))
+            minY = min(max(0, minY + delta.y), maxY - minimumHeight)
+        case .bottomLeading:
+            minX = min(max(0, minX + delta.x), maxX - minimumWidth)
+            maxY = min(canvas.height, max(minY + minimumHeight, maxY + delta.y))
+        case .bottomTrailing:
+            maxX = min(canvas.width, max(minX + minimumWidth, maxX + delta.x))
+            maxY = min(canvas.height, max(minY + minimumHeight, maxY + delta.y))
+        }
+
+        return BoardRect(
+            origin: BoardPoint(x: minX, y: minY),
+            size: BoardSize(width: maxX - minX, height: maxY - minY)
+        )
+    }
+
+    private func sourceAnchor(for box: BoardBox) -> BoardPoint {
+        BoardPoint(
+            x: box.frame.origin.x + box.frame.size.width,
+            y: box.frame.origin.y + box.frame.size.height / 2
+        )
+    }
+
+    private func targetAnchor(for box: BoardBox) -> BoardPoint {
+        BoardPoint(
+            x: box.frame.origin.x,
+            y: box.frame.origin.y + box.frame.size.height / 2
+        )
     }
 
     private func box(id: BoardElementID) -> BoardBox? {

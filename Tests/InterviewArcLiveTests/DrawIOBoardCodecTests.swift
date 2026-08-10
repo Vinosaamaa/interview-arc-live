@@ -17,7 +17,7 @@ final class DrawIOBoardCodecTests: XCTestCase {
         let queue = BoardBox(
             id: BoardElementID("queue"),
             frame: BoardRect(
-                origin: BoardPoint(x: 420, y: 100),
+                origin: BoardPoint(x: 420, y: 220),
                 size: BoardSize(width: 180, height: 90)
             ),
             label: "Durable queue",
@@ -36,7 +36,7 @@ final class DrawIOBoardCodecTests: XCTestCase {
                             elementID: api.id
                         ),
                         end: BoardConnectorEndpoint(
-                            point: BoardPoint(x: 420, y: 145),
+                            point: BoardPoint(x: 420, y: 265),
                             elementID: queue.id
                         ),
                         label: "events"
@@ -71,16 +71,90 @@ final class DrawIOBoardCodecTests: XCTestCase {
         XCTAssertTrue(first.contains("<mxfile"))
         XCTAssertTrue(first.contains("<mxGraphModel"))
         XCTAssertTrue(first.contains("API &lt;gateway&gt; &amp; cache"))
-        XCTAssertTrue(
-            first.contains(
-                "value=\"SVC&#10;API &lt;gateway&gt; &amp; cache\""
-            )
-        )
+        XCTAssertTrue(first.contains("value=\"API &lt;gateway&gt; &amp; cache\""))
         XCTAssertTrue(first.contains("iaNodeKind=\"service\""))
         XCTAssertTrue(first.contains("iaNodeKind=\"queue\""))
+        XCTAssertTrue(first.contains("iaNodeVisual=\"hexagon.fanout\""))
+        XCTAssertTrue(first.contains("iaPictogram=\"fanout\""))
+        XCTAssertTrue(first.contains("shape=hexagon;perimeter=hexagonPerimeter2"))
+        XCTAssertTrue(first.contains("id=\"__ia_node_visual_0\""))
+        XCTAssertTrue(first.contains("shape=image;imageAspect=0;aspect=fixed;pointerEvents=0"))
+        XCTAssertTrue(first.contains("image=data:image/svg+xml,%3Csvg"))
+        XCTAssertTrue(first.contains("selectable=\"0\""))
+        XCTAssertTrue(first.contains("<Array as=\"points\">"))
+        XCTAssertTrue(first.contains("<mxPoint x=\"340\" y=\"145\"/>"))
+        XCTAssertTrue(first.contains("<mxPoint x=\"340\" y=\"265\"/>"))
         XCTAssertFalse(first.localizedCaseInsensitiveContains("<script"))
         XCTAssertFalse(first.localizedCaseInsensitiveContains("href="))
         XCTAssertEqual(try codec.decode(first), document)
+    }
+
+    func testNodeVisualCellIDsAvoidCanonicalElementIDCollisions() throws {
+        let box = BoardBox(
+            id: BoardElementID("__ia_node_visual_0"),
+            frame: BoardRect(
+                origin: BoardPoint(x: 40, y: 40),
+                size: BoardSize(width: 180, height: 90)
+            ),
+            label: "Collision-safe node",
+            kind: .storage
+        )
+        let document = try BoardDocument(
+            canvas: BoardCanvas(size: BoardSize(width: 640, height: 400)),
+            elements: [.box(box)]
+        )
+
+        let source = try DrawIOBoardCodec().encode(document)
+
+        XCTAssertTrue(source.contains("id=\"__ia_node_visual_0_\""))
+        XCTAssertEqual(try DrawIOBoardCodec().decode(source), document)
+    }
+
+    func testCanonicalElementIDsZeroAndOneDoNotCollideWithDrawIORootCells() throws {
+        let sourceBox = BoardBox(
+            id: BoardElementID("0"),
+            frame: BoardRect(
+                origin: BoardPoint(x: 40, y: 40),
+                size: BoardSize(width: 160, height: 90)
+            ),
+            label: "Source"
+        )
+        let targetBox = BoardBox(
+            id: BoardElementID("1"),
+            frame: BoardRect(
+                origin: BoardPoint(x: 360, y: 160),
+                size: BoardSize(width: 160, height: 90)
+            ),
+            label: "Target"
+        )
+        let document = try BoardDocument(
+            canvas: BoardCanvas(size: BoardSize(width: 640, height: 400)),
+            elements: [
+                .box(sourceBox),
+                .box(targetBox),
+                .connector(
+                    BoardConnector(
+                        id: BoardElementID("route"),
+                        start: BoardConnectorEndpoint(
+                            point: BoardPoint(x: 200, y: 85),
+                            elementID: sourceBox.id
+                        ),
+                        end: BoardConnectorEndpoint(
+                            point: BoardPoint(x: 360, y: 205),
+                            elementID: targetBox.id
+                        )
+                    )
+                ),
+            ]
+        )
+
+        let source = try DrawIOBoardCodec().encode(document)
+
+        XCTAssertTrue(source.contains("id=\"__ia_element_0\""))
+        XCTAssertTrue(source.contains("id=\"__ia_element_1\""))
+        XCTAssertTrue(source.contains("source=\"__ia_element_0\" iaSourceElementID=\"0\""))
+        XCTAssertTrue(source.contains("target=\"__ia_element_1\" iaTargetElementID=\"1\""))
+        XCTAssertEqual(try DrawIOBoardCodec().decode(source), document)
     }
 
     func testDecodeRejectsOversizedOrActiveXMLWithoutPartialDocument() throws {

@@ -168,6 +168,187 @@ final class BoardEditorTests: XCTestCase {
         XCTAssertTrue(editor.document.elements.contains { $0.boardID == connectorID })
     }
 
+    func testSelectedBoxResizePersistsGeometryAndReanchorsConnector() throws {
+        var editor = BoardEditorState(document: .empty)
+        try editor.apply(
+            .createBox(
+                frame: BoardRect(
+                    origin: BoardPoint(x: 80, y: 100),
+                    size: BoardSize(width: 180, height: 90)
+                ),
+                label: "API",
+                kind: .service
+            )
+        )
+        let apiID = try XCTUnwrap(editor.selectedElementID)
+        try editor.apply(
+            .createBox(
+                frame: BoardRect(
+                    origin: BoardPoint(x: 520, y: 220),
+                    size: BoardSize(width: 180, height: 90)
+                ),
+                label: "Queue",
+                kind: .queue
+            )
+        )
+        let queueID = try XCTUnwrap(editor.selectedElementID)
+        try editor.apply(
+            .connect(sourceBoxID: apiID, targetBoxID: queueID, label: "events")
+        )
+
+        try editor.apply(.select(apiID))
+        try editor.apply(
+            .resizeSelected(
+                handle: .bottomTrailing,
+                by: BoardPoint(x: 40, y: 20)
+            )
+        )
+
+        guard case .box(let resized) = editor.document.elements[0],
+              case .connector(let connector) = editor.document.elements[2] else {
+            return XCTFail("Expected resized box and connector")
+        }
+        XCTAssertEqual(resized.frame.origin, BoardPoint(x: 80, y: 100))
+        XCTAssertEqual(resized.frame.size, BoardSize(width: 220, height: 110))
+        XCTAssertEqual(connector.start.point, BoardPoint(x: 300, y: 155))
+        XCTAssertEqual(connector.end.point, BoardPoint(x: 520, y: 265))
+
+        try editor.apply(.undo)
+        guard case .box(let restored) = editor.document.elements[0],
+              case .connector(let restoredConnector) = editor.document.elements[2] else {
+            return XCTFail("Expected restored box and connector")
+        }
+        XCTAssertEqual(restored.frame.size, BoardSize(width: 180, height: 90))
+        XCTAssertEqual(restoredConnector.start.point, BoardPoint(x: 260, y: 145))
+    }
+
+    func testResizeClampsToMinimumSizeAndCanvasBounds() throws {
+        let box = BoardBox(
+            id: BoardElementID("bounded"),
+            frame: BoardRect(
+                origin: BoardPoint(x: 40, y: 50),
+                size: BoardSize(width: 120, height: 80)
+            ),
+            label: "Bounded"
+        )
+        var editor = BoardEditorState(
+            document: try BoardDocument(
+                canvas: BoardCanvas(size: BoardSize(width: 300, height: 220)),
+                elements: [.box(box)]
+            )
+        )
+        try editor.apply(.select(box.id))
+        try editor.apply(
+            .resizeSelected(
+                handle: .topLeading,
+                by: BoardPoint(x: 500, y: 500)
+            )
+        )
+        guard case .box(let minimum) = editor.document.elements[0] else {
+            return XCTFail("Expected box")
+        }
+        XCTAssertEqual(
+            minimum.frame,
+            BoardRect(
+                origin: BoardPoint(x: 64, y: 66),
+                size: BoardSize(width: 96, height: 64)
+            )
+        )
+
+        try editor.apply(
+            .resizeSelected(
+                handle: .bottomTrailing,
+                by: BoardPoint(x: 500, y: 500)
+            )
+        )
+        guard case .box(let maximum) = editor.document.elements[0] else {
+            return XCTFail("Expected box")
+        }
+        XCTAssertEqual(maximum.frame.size, BoardSize(width: 236, height: 154))
+    }
+
+    func testResizeNormalizesAnExistingOutOfBoundsBoxBeforeApplyingDelta() throws {
+        let box = BoardBox(
+            id: BoardElementID("outside"),
+            frame: BoardRect(
+                origin: BoardPoint(x: 280, y: 210),
+                size: BoardSize(width: 120, height: 80)
+            ),
+            label: "Outside"
+        )
+        var editor = BoardEditorState(
+            document: try BoardDocument(
+                canvas: BoardCanvas(size: BoardSize(width: 300, height: 220)),
+                elements: [.box(box)]
+            )
+        )
+        try editor.apply(.select(box.id))
+
+        try editor.apply(
+            .resizeSelected(
+                handle: .bottomTrailing,
+                by: BoardPoint(x: 40, y: 40)
+            )
+        )
+
+        guard case .box(let normalized) = editor.document.elements[0] else {
+            return XCTFail("Expected box")
+        }
+        XCTAssertEqual(
+            normalized.frame,
+            BoardRect(
+                origin: BoardPoint(x: 180, y: 140),
+                size: BoardSize(width: 120, height: 80)
+            )
+        )
+    }
+
+    func testKeyboardTraversalWrapsInCanonicalDocumentOrder() throws {
+        var editor = BoardEditorState(document: .empty)
+        try editor.apply(
+            .createLabel(origin: BoardPoint(x: 20, y: 20), text: "First")
+        )
+        try editor.apply(
+            .createLabel(origin: BoardPoint(x: 40, y: 40), text: "Second")
+        )
+        try editor.apply(.select(nil))
+
+        try editor.apply(.selectNext)
+        XCTAssertEqual(editor.selectedElementID, BoardElementID("label-1"))
+        try editor.apply(.selectNext)
+        XCTAssertEqual(editor.selectedElementID, BoardElementID("label-2"))
+        try editor.apply(.selectNext)
+        XCTAssertEqual(editor.selectedElementID, BoardElementID("label-1"))
+        try editor.apply(.selectPrevious)
+        XCTAssertEqual(editor.selectedElementID, BoardElementID("label-2"))
+    }
+
+    func testKeyboardPlacementIsDeterministicAndInsideCanvas() throws {
+        var document = BoardDocument.empty
+        let first = BoardKeyboardPlacement.nextBoxFrame(in: document)
+        XCTAssertEqual(first.origin, BoardPoint(x: 40, y: 40))
+        XCTAssertEqual(first.size, BoardSize(width: 160, height: 90))
+
+        document = try BoardDocument(
+            canvas: document.canvas,
+            elements: [
+                .box(
+                    BoardBox(
+                        id: BoardElementID("first"),
+                        frame: first,
+                        label: "First"
+                    )
+                ),
+            ]
+        )
+        let second = BoardKeyboardPlacement.nextBoxFrame(in: document)
+        XCTAssertEqual(second.origin, BoardPoint(x: 224, y: 40))
+        XCTAssertLessThanOrEqual(
+            second.origin.x + second.size.width,
+            document.canvas.size.width
+        )
+    }
+
     func testLabelsPenEraserAndZoomRemainUndoableAndBounded() throws {
         var editor = BoardEditorState(document: .empty)
         try editor.apply(
