@@ -4,7 +4,16 @@ import SwiftUI
 
 struct SystemDesignRoomView: View {
     @ObservedObject var model: SystemDesignRoomModel
+    let onCollapse: () -> Void
     @State private var isModelRemovalConfirmationPresented = false
+
+    init(
+        model: SystemDesignRoomModel,
+        onCollapse: @escaping () -> Void = {}
+    ) {
+        self.model = model
+        self.onCollapse = onCollapse
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -30,7 +39,6 @@ struct SystemDesignRoomView: View {
         }
         .background(LivePalette.room)
         .foregroundStyle(LivePalette.ink)
-        .task { await model.open() }
         .sheet(isPresented: $model.isCredentialSetupPresented) {
             GroqCredentialSetupView(
                 isSaving: model.isSavingCredential,
@@ -674,6 +682,17 @@ struct SystemDesignRoomView: View {
             .tint(LivePalette.handoff)
             .disabled(!model.canAct)
             .keyboardShortcut(.return, modifiers: [.command])
+
+            Button(action: onCollapse) {
+                Label("Collapse", systemImage: "rectangle.compress.vertical")
+                    .font(.system(.body, design: .rounded, weight: .semibold))
+            }
+            .buttonStyle(.bordered)
+            .tint(LivePalette.paper)
+            .accessibilityIdentifier("full-room-collapse")
+            .accessibilityHint(
+                "Keeps this interview running in the compact controls without recreating the room"
+            )
         }
         .foregroundStyle(LivePalette.paper)
         .padding(.horizontal, 24)

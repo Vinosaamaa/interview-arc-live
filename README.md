@@ -6,11 +6,12 @@ Current product design: [specialty room concepts](docs/design/specialty-rooms.md
 ## Current implementation
 
 Interview Arc Live is a standalone Swift package with a locally durable
-system-design room. It records and recovers candidate segments, transcribes
-through Groq, keeps semantic endpointing advisory, obtains canonical written
-interviewer turns through the locally authenticated Codex App Server, and can
-explicitly generate or replay a private local interviewer voice. Product
-decisions live in
+system-design room. One process-owned room model is retained across its full
+window and nonactivating compact controls. It records and recovers candidate
+segments, transcribes through Groq, keeps semantic endpointing advisory,
+obtains canonical written interviewer turns through the locally authenticated
+Codex App Server, and can explicitly generate or replay a private local
+interviewer voice. Product decisions live in
 [issue #1](https://github.com/Vinosaamaa/interview-arc-live/issues/1); the
 foundation is tracked by
 [issue #3](https://github.com/Vinosaamaa/interview-arc-live/issues/3), and the

@@ -97,16 +97,21 @@ final class SystemDesignRoomModel: ObservableObject {
         codexRuntime: (any LiveCodexInterviewerRuntime)? = nil,
         activityPrompt: ActivityPrompt? = nil,
         speechDependencies: LiveInterviewerSpeechDependencies? = nil,
-        preferences: UserDefaults = .standard
+        preferences: UserDefaults = .standard,
+        initialCoordinator: SegmentSpeechCoordinator? = nil
     ) {
         self.credentialStore = credentialStore
         self.codexRuntime = codexRuntime ?? Self.makeDefaultCodexRuntime()
         self.activityPrompt = activityPrompt ?? Self.tracerActivityPrompt
         self.speechDependencies = speechDependencies
         self.preferences = preferences
+        coordinator = initialCoordinator
         isSpeechMuted = preferences.bool(
             forKey: Self.speechMutedPreferenceKey
         )
+        if let initialCoordinator {
+            publish(initialCoordinator.snapshot)
+        }
     }
 
     var question: String {
@@ -644,6 +649,39 @@ final class SystemDesignRoomModel: ObservableObject {
             publish(coordinator.snapshot)
             errorWasCodexFailure = applyCodexFailure(error)
             errorMessage = safeMessage(for: error)
+        }
+    }
+
+    /// Uses the existing durable finish command without broadening the phases
+    /// Core accepts. Presentation close remains fail-closed when the current
+    /// phase cannot finish safely. An operation already awaiting its Adapter
+    /// keeps sole ownership of the model's visible and durable state.
+    @discardableResult
+    func finishInterview() async -> Bool {
+        guard !isWorking else { return false }
+        guard let coordinator, let snapshot else { return false }
+        if snapshot.phase == .completed {
+            return true
+        }
+
+        isWorking = true
+        errorMessage = nil
+        statusMessage = "Ending interview…"
+        defer {
+            isWorking = false
+            statusMessage = status(for: self.snapshot)
+        }
+
+        do {
+            let updated = try await coordinator.finishSession(
+                commandID: commandID("finish-interview")
+            )
+            publish(updated)
+            return true
+        } catch {
+            publish(coordinator.snapshot)
+            errorMessage = safeMessage(for: error)
+            return false
         }
     }
 
