@@ -74,29 +74,44 @@ struct SystemDesignBoardView: View {
     }
 
     private func revisionRailContent(compact: Bool) -> some View {
-        HStack(spacing: compact
-            ? BoardRailWidthBudget.compactRevisionSpacing
-            : 18
-        ) {
+        let sizing = BoardRailWidthBudget.revisionSizing(
+            compact: compact,
+            actionCount: compactRevisionActionCount
+        )
+
+        return HStack(spacing: compact ? BoardRailWidthBudget.compactRevisionSpacing : 0) {
             if compact {
                 tab("Board", isSelected: true)
                     .frame(width: BoardRailWidthBudget.compactTabWidth)
                     .accessibilityHint("Brief and Notes are not available in this version")
+                revisionStatus(compact: true)
+                Spacer(minLength: BoardRailWidthBudget.compactRevisionSpacerWidth)
+                revisionPrimaryAction(compact: true)
+                revisionMenu(compact: true)
+                attachRevisionButton(compact: true)
+                exportRevisionButton(compact: true)
             } else {
                 HStack(spacing: 30) {
                     tab("Board", isSelected: true)
                     tab("Brief", isSelected: false)
                     tab("Notes", isSelected: false)
                 }
-            }
+                .fixedSize()
 
-            revisionStatus(compact: compact)
-            Spacer(minLength: compact ? 4 : 12)
-            revisionPrimaryAction(compact: compact)
-            revisionMenu(compact: compact)
-            if !compact { railDivider }
-            attachRevisionButton(compact: compact)
-            exportRevisionButton(compact: compact)
+                Spacer(
+                    minLength: BoardRailWidthBudget.wideRevisionGroupGapMinimum
+                )
+
+                HStack(spacing: 18) {
+                    revisionStatus(compact: false)
+                    revisionPrimaryAction(compact: false)
+                    revisionMenu(compact: false)
+                    railDivider
+                    attachRevisionButton(compact: false)
+                    exportRevisionButton(compact: false)
+                }
+                .fixedSize()
+            }
         }
         .font(.system(.callout, design: .rounded))
         .padding(.horizontal, compact
@@ -104,14 +119,11 @@ struct SystemDesignBoardView: View {
             : 20
         )
         .frame(
-            minWidth: compact
-                ? BoardRailWidthBudget.compactRevisionRequiredWidth(
-                    actionCount: compactRevisionActionCount
-                )
-                : BoardRailWidthBudget.wideRevisionRequiredWidth,
+            minWidth: sizing.requiredWidth,
+            maxWidth: sizing.maximumWidth,
             minHeight: BoardLayoutMetrics.revisionRailHeight
         )
-        .fixedSize(horizontal: true, vertical: false)
+        .fixedSize(horizontal: sizing.fixesHorizontalSize, vertical: false)
     }
 
     private var compactRevisionActionCount: Int {
@@ -374,7 +386,9 @@ struct SystemDesignBoardView: View {
     }
 
     private func toolRailContent(compact: Bool) -> some View {
-        HStack(spacing: compact
+        let sizing = BoardRailWidthBudget.toolbarSizing(compact: compact)
+
+        return HStack(spacing: compact
             ? BoardRailWidthBudget.compactToolbarSpacing
             : 8
         ) {
@@ -397,7 +411,7 @@ struct SystemDesignBoardView: View {
                 icon: "textformat",
                 compact: compact
             )
-            railDivider
+            toolRailSeparator(compact: compact)
             toolButton(
                 .pen,
                 title: "Pen",
@@ -410,10 +424,10 @@ struct SystemDesignBoardView: View {
                 icon: "eraser",
                 compact: compact
             )
-            railDivider
+            toolRailSeparator(compact: compact)
             historyButton(isUndo: true, compact: compact)
             historyButton(isUndo: false, compact: compact)
-            railDivider
+            toolRailSeparator(compact: compact)
             zoomMenu(compact: compact)
         }
         .buttonStyle(.plain)
@@ -423,12 +437,22 @@ struct SystemDesignBoardView: View {
             : 20
         )
         .frame(
-            minWidth: compact
-                ? BoardRailWidthBudget.compactToolbarRequiredWidth
-                : BoardRailWidthBudget.wideToolbarRequiredWidth,
+            minWidth: sizing.requiredWidth,
+            maxWidth: sizing.maximumWidth,
             minHeight: BoardLayoutMetrics.toolRailHeight
         )
-        .fixedSize(horizontal: true, vertical: false)
+        .fixedSize(horizontal: sizing.fixesHorizontalSize, vertical: false)
+    }
+
+    @ViewBuilder
+    private func toolRailSeparator(compact: Bool) -> some View {
+        if compact {
+            railDivider
+        } else {
+            Spacer(minLength: BoardRailWidthBudget.wideToolbarGroupGapMinimum)
+            railDivider
+            Spacer(minLength: BoardRailWidthBudget.wideToolbarGroupGapMinimum)
+        }
     }
 
     private func boxToolMenu(compact: Bool) -> some View {
@@ -719,6 +743,7 @@ struct SystemDesignBoardView: View {
             }
             .overlay(alignment: .bottomLeading) {
                 boardFooter
+                    .padding(12)
             }
         }
     }
@@ -745,39 +770,31 @@ struct SystemDesignBoardView: View {
     }
 
     private var boardFooter: some View {
-        HStack(spacing: 7) {
-            Image(
-                systemName: model.boardErrorMessage == nil
-                    ? "checkmark.circle"
-                    : "exclamationmark.triangle"
-            )
-            Text(boardStatusText)
+        let presentation = BoardFooterPresentation.make(
+            errorMessage: model.boardErrorMessage,
+            exportMessage: model.boardExportMessage,
+            interactionFeedback: interactionFeedback
+        )
+
+        return HStack(spacing: 7) {
+            Image(systemName: presentation.systemImage)
+            Text(presentation.text)
                 .lineLimit(2)
-            Spacer()
         }
         .font(.system(.caption, design: .rounded))
         .foregroundStyle(
-            model.boardErrorMessage == nil ? BoardPalette.muted : BoardPalette.errorText
+            presentation.tone == .error
+                ? BoardPalette.errorText
+                : BoardPalette.muted
         )
-        .padding(.horizontal, 16)
-        .padding(.vertical, 9)
-        .background(BoardPalette.paper.opacity(0.94))
+        .frame(
+            maxWidth: BoardCanvasVisualMetrics.footerMaximumWidth,
+            alignment: .leading
+        )
+        .fixedSize(horizontal: false, vertical: true)
         .accessibilityElement(children: .combine)
         .accessibilityLabel("Board status")
-        .accessibilityValue(boardStatusText)
-    }
-
-    private var boardStatusText: String {
-        if let boardErrorMessage = model.boardErrorMessage {
-            return boardErrorMessage
-        }
-        if let boardExportMessage = model.boardExportMessage {
-            return boardExportMessage
-        }
-        if let interactionFeedback {
-            return "\(interactionFeedback) · \(model.boardRevisionStatus)"
-        }
-        return model.boardRevisionStatus
+        .accessibilityValue(presentation.text)
     }
 
     private func boxLayer(_ document: BoardDocument) -> some View {
@@ -1220,16 +1237,13 @@ struct SystemDesignBoardView: View {
                     select(nil)
                     interactionFeedback = "Selection cleared"
                 case .box:
-                    let origin = BoardPoint(
-                        x: max(0, min(point.x - 80, model.boardEditor.document.canvas.size.width - 160)),
-                        y: max(0, min(point.y - 45, model.boardEditor.document.canvas.size.height - 90))
+                    let frame = BoardNodeCreationDefaults.frame(
+                        centeredAt: point,
+                        in: model.boardEditor.document.canvas.size
                     )
                     model.applyBoardAction(
                         .createBox(
-                            frame: BoardRect(
-                                origin: origin,
-                                size: BoardSize(width: 160, height: 90)
-                            ),
+                            frame: frame,
                             label: newBoxKind.displayName,
                             kind: newBoxKind
                         )
@@ -1875,6 +1889,88 @@ enum BoardLayoutMetrics {
     static let emptyStateMaximumWidth: CGFloat = 360
 }
 
+enum BoardCanvasVisualMetrics {
+    static let gridSpacing: CGFloat = 20
+    static let gridDotDiameter: CGFloat = 1.6
+    static let gridDotOpacity = 0.22
+    static let footerMaximumWidth: CGFloat = 420
+}
+
+struct BoardFooterPresentation: Equatable {
+    enum Tone: Equatable {
+        case neutral
+        case confirmation
+        case feedback
+        case error
+    }
+
+    let text: String
+    let systemImage: String
+    let tone: Tone
+
+    static func make(
+        errorMessage: String?,
+        exportMessage: String?,
+        interactionFeedback: String?
+    ) -> Self {
+        if let errorMessage {
+            return Self(
+                text: errorMessage,
+                systemImage: "exclamationmark.triangle",
+                tone: .error
+            )
+        }
+        if let exportMessage {
+            return Self(
+                text: exportMessage,
+                systemImage: "checkmark.circle",
+                tone: .confirmation
+            )
+        }
+        if let interactionFeedback {
+            return Self(
+                text: interactionFeedback,
+                systemImage: "info.circle",
+                tone: .feedback
+            )
+        }
+        return Self(
+            text: "Editable source autosaves locally",
+            systemImage: "internaldrive",
+            tone: .neutral
+        )
+    }
+}
+
+enum BoardRailVariant: Equatable {
+    case wide
+    case compact
+}
+
+struct BoardRailWidthResolution: Equatable {
+    let variant: BoardRailVariant
+    let renderedWidth: CGFloat
+}
+
+struct BoardRailSizing: Equatable {
+    let requiredWidth: CGFloat
+    let expandsToAvailableWidth: Bool
+
+    var maximumWidth: CGFloat? {
+        expandsToAvailableWidth ? .infinity : nil
+    }
+
+    var fixesHorizontalSize: Bool {
+        !expandsToAvailableWidth
+    }
+
+    func renderedWidth(in availableWidth: CGFloat) -> CGFloat {
+        expandsToAvailableWidth
+            ? max(requiredWidth, availableWidth)
+            : requiredWidth
+    }
+}
+
 enum BoardRailWidthBudget {
     static let supportedBoardWidth: CGFloat = 680
     static let compactHorizontalPadding: CGFloat = 8
@@ -1887,6 +1983,8 @@ enum BoardRailWidthBudget {
     static let dividerWidth: CGFloat = 1
     static let wideRevisionRequiredWidth: CGFloat = 820
     static let wideToolbarRequiredWidth: CGFloat = 780
+    static let wideRevisionGroupGapMinimum: CGFloat = 32
+    static let wideToolbarGroupGapMinimum: CGFloat = 12
 
     static func compactRevisionRequiredWidth(actionCount: Int) -> CGFloat {
         let actions = max(0, actionCount)
@@ -1908,6 +2006,65 @@ enum BoardRailWidthBudget {
             + CGFloat(dividerCount) * dividerWidth
             + compactZoomWidth
             + CGFloat(itemCount - 1) * compactToolbarSpacing
+    }
+
+    static func revisionSizing(
+        compact: Bool,
+        actionCount: Int
+    ) -> BoardRailSizing {
+        BoardRailSizing(
+            requiredWidth: compact
+                ? compactRevisionRequiredWidth(actionCount: actionCount)
+                : wideRevisionRequiredWidth,
+            expandsToAvailableWidth: !compact
+        )
+    }
+
+    static func toolbarSizing(compact: Bool) -> BoardRailSizing {
+        BoardRailSizing(
+            requiredWidth: compact
+                ? compactToolbarRequiredWidth
+                : wideToolbarRequiredWidth,
+            expandsToAvailableWidth: !compact
+        )
+    }
+
+    static func revisionResolution(
+        availableWidth: CGFloat,
+        actionCount: Int
+    ) -> BoardRailWidthResolution {
+        resolution(
+            availableWidth: availableWidth,
+            wide: revisionSizing(compact: false, actionCount: actionCount),
+            compact: revisionSizing(compact: true, actionCount: actionCount)
+        )
+    }
+
+    static func toolbarResolution(
+        availableWidth: CGFloat
+    ) -> BoardRailWidthResolution {
+        resolution(
+            availableWidth: availableWidth,
+            wide: toolbarSizing(compact: false),
+            compact: toolbarSizing(compact: true)
+        )
+    }
+
+    private static func resolution(
+        availableWidth: CGFloat,
+        wide: BoardRailSizing,
+        compact: BoardRailSizing
+    ) -> BoardRailWidthResolution {
+        if availableWidth >= wide.requiredWidth {
+            return BoardRailWidthResolution(
+                variant: .wide,
+                renderedWidth: wide.renderedWidth(in: availableWidth)
+            )
+        }
+        return BoardRailWidthResolution(
+            variant: .compact,
+            renderedWidth: compact.renderedWidth(in: availableWidth)
+        )
     }
 }
 
@@ -1989,11 +2146,32 @@ private struct BoardNodeVisualLayer: View {
 private struct BoardDotGrid: View {
     var body: some View {
         Canvas { context, size in
-            for x in stride(from: 10.0, through: size.width, by: 20) {
-                for y in stride(from: 10.0, through: size.height, by: 20) {
+            let diameter = BoardCanvasVisualMetrics.gridDotDiameter
+            let offset = diameter / 2
+            for x in stride(
+                from: BoardCanvasVisualMetrics.gridSpacing / 2,
+                through: size.width,
+                by: BoardCanvasVisualMetrics.gridSpacing
+            ) {
+                for y in stride(
+                    from: BoardCanvasVisualMetrics.gridSpacing / 2,
+                    through: size.height,
+                    by: BoardCanvasVisualMetrics.gridSpacing
+                ) {
                     context.fill(
-                        Path(ellipseIn: CGRect(x: x, y: y, width: 1.5, height: 1.5)),
-                        with: .color(BoardPalette.line.opacity(0.9))
+                        Path(
+                            ellipseIn: CGRect(
+                                x: x - offset,
+                                y: y - offset,
+                                width: diameter,
+                                height: diameter
+                            )
+                        ),
+                        with: .color(
+                            BoardPalette.violet.opacity(
+                                BoardCanvasVisualMetrics.gridDotOpacity
+                            )
+                        )
                     )
                 }
             }
@@ -2196,11 +2374,43 @@ enum BoardKeyboardCreationOutcome {
     }
 }
 
+enum BoardNodeCreationDefaults {
+    static let defaultSize = BoardSize(width: 120, height: 112)
+
+    static func fittedSize(in canvas: BoardSize) -> BoardSize {
+        BoardSize(
+            width: min(defaultSize.width, canvas.width),
+            height: min(defaultSize.height, canvas.height)
+        )
+    }
+
+    static func frame(
+        centeredAt point: BoardPoint,
+        in canvas: BoardSize
+    ) -> BoardRect {
+        let size = fittedSize(in: canvas)
+        return BoardRect(
+            origin: BoardPoint(
+                x: max(
+                    0,
+                    min(point.x - size.width / 2, canvas.width - size.width)
+                ),
+                y: max(
+                    0,
+                    min(point.y - size.height / 2, canvas.height - size.height)
+                )
+            ),
+            size: size
+        )
+    }
+}
+
 enum BoardKeyboardPlacement {
     static func nextBoxFrame(in document: BoardDocument) -> BoardRect {
         let canvas = document.canvas.size
-        let width = min(160, canvas.width)
-        let height = min(90, canvas.height)
+        let size = BoardNodeCreationDefaults.fittedSize(in: canvas)
+        let width = size.width
+        let height = size.height
         let horizontalMargin = min(40, max(0, (canvas.width - width) / 2))
         let verticalMargin = min(40, max(0, (canvas.height - height) / 2))
         let horizontalStep = width + 24

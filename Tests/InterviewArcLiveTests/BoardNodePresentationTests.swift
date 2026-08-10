@@ -12,6 +12,10 @@ final class BoardNodePresentationTests: XCTestCase {
         XCTAssertEqual(BoardLayoutMetrics.minimumHitTarget, 44)
         XCTAssertEqual(BoardLayoutMetrics.toolControlHeight, 44)
         XCTAssertEqual(BoardLayoutMetrics.emptyStateMaximumWidth, 360)
+        XCTAssertEqual(BoardCanvasVisualMetrics.gridSpacing, 20)
+        XCTAssertEqual(BoardCanvasVisualMetrics.gridDotDiameter, 1.6)
+        XCTAssertEqual(BoardCanvasVisualMetrics.gridDotOpacity, 0.22)
+        XCTAssertEqual(BoardCanvasVisualMetrics.footerMaximumWidth, 420)
     }
 
     func testCompactBoardRailsFitTheSupported680PointBoardWidth() {
@@ -43,6 +47,130 @@ final class BoardNodePresentationTests: XCTestCase {
             BoardRailWidthBudget.compactZoomWidth,
             BoardLayoutMetrics.minimumHitTarget
         )
+    }
+
+    func testWideRailsConsumeTheRenderedWidthAndCompactRailsStayBounded() {
+        let wideWidth: CGFloat = 960
+        let wideRevision = BoardRailWidthBudget.revisionResolution(
+            availableWidth: wideWidth,
+            actionCount: 4
+        )
+        let wideToolbar = BoardRailWidthBudget.toolbarResolution(
+            availableWidth: wideWidth
+        )
+
+        XCTAssertEqual(wideRevision.variant, .wide)
+        XCTAssertEqual(wideRevision.renderedWidth, wideWidth)
+        XCTAssertEqual(wideToolbar.variant, .wide)
+        XCTAssertEqual(wideToolbar.renderedWidth, wideWidth)
+        XCTAssertGreaterThanOrEqual(
+            BoardRailWidthBudget.wideRevisionGroupGapMinimum,
+            24
+        )
+        XCTAssertGreaterThanOrEqual(
+            BoardRailWidthBudget.wideToolbarGroupGapMinimum,
+            12
+        )
+
+        let compactRevision = BoardRailWidthBudget.revisionResolution(
+            availableWidth: BoardRailWidthBudget.supportedBoardWidth,
+            actionCount: 4
+        )
+        let compactToolbar = BoardRailWidthBudget.toolbarResolution(
+            availableWidth: BoardRailWidthBudget.supportedBoardWidth
+        )
+
+        XCTAssertEqual(compactRevision.variant, .compact)
+        XCTAssertEqual(compactRevision.renderedWidth, 428)
+        XCTAssertLessThanOrEqual(
+            compactRevision.renderedWidth,
+            BoardRailWidthBudget.supportedBoardWidth
+        )
+        XCTAssertEqual(compactToolbar.variant, .compact)
+        XCTAssertEqual(compactToolbar.renderedWidth, 483)
+        XCTAssertLessThanOrEqual(
+            compactToolbar.renderedWidth,
+            BoardRailWidthBudget.supportedBoardWidth
+        )
+    }
+
+    func testDefaultNodeStyleUsesNearSquareBrandGeometryWithoutOverridingAuthoredStyle() throws {
+        XCTAssertEqual(
+            BoardNodeCreationDefaults.defaultSize,
+            BoardSize(width: 120, height: 112)
+        )
+        XCTAssertLessThanOrEqual(
+            BoardNodeCreationDefaults.defaultSize.width
+                / BoardNodeCreationDefaults.defaultSize.height,
+            1.1
+        )
+
+        let created = BoardBox(
+            id: BoardElementID("created"),
+            frame: BoardRect(
+                origin: BoardPoint(x: 40, y: 40),
+                size: BoardNodeCreationDefaults.defaultSize
+            ),
+            label: "Fanout workers",
+            kind: .service
+        )
+        XCTAssertEqual(created.fill, .white)
+        XCTAssertEqual(created.stroke, .nodeOutline)
+        XCTAssertEqual(created.stroke.hexRGB, "4b3abf")
+
+        let authored = BoardBox(
+            id: BoardElementID("authored"),
+            frame: created.frame,
+            label: "Imported service",
+            kind: .service,
+            fill: BoardColor(hexRGB: "f8fafc"),
+            stroke: BoardColor(hexRGB: "1f2937")
+        )
+        let decoded = try JSONDecoder().decode(
+            BoardBox.self,
+            from: JSONEncoder().encode(authored)
+        )
+        XCTAssertEqual(decoded.fill.hexRGB, "f8fafc")
+        XCTAssertEqual(decoded.stroke.hexRGB, "1f2937")
+    }
+
+    func testFooterKeepsCanvasFeedbackDistinctFromRevisionStatus() {
+        XCTAssertEqual(
+            BoardFooterPresentation.make(
+                errorMessage: nil,
+                exportMessage: nil,
+                interactionFeedback: nil
+            ),
+            BoardFooterPresentation(
+                text: "Editable source autosaves locally",
+                systemImage: "internaldrive",
+                tone: .neutral
+            )
+        )
+
+        let feedback = BoardFooterPresentation.make(
+            errorMessage: nil,
+            exportMessage: nil,
+            interactionFeedback: "Service node added and selected"
+        )
+        XCTAssertEqual(feedback.text, "Service node added and selected")
+        XCTAssertFalse(feedback.text.localizedCaseInsensitiveContains("unsaved"))
+
+        let exported = BoardFooterPresentation.make(
+            errorMessage: nil,
+            exportMessage: "Editable source · SVG + PNG available",
+            interactionFeedback: "Selection cleared"
+        )
+        XCTAssertEqual(exported.tone, .confirmation)
+        XCTAssertEqual(exported.text, "Editable source · SVG + PNG available")
+
+        let error = BoardFooterPresentation.make(
+            errorMessage: "Return to the draft before editing.",
+            exportMessage: "Editable source · SVG + PNG available",
+            interactionFeedback: nil
+        )
+        XCTAssertEqual(error.tone, .error)
+        XCTAssertEqual(error.text, "Return to the draft before editing.")
     }
 
     func testCompactRevisionStatusPreservesEveryCanonicalLifecycleState() {
