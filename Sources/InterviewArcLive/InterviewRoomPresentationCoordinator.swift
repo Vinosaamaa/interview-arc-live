@@ -17,9 +17,9 @@ enum InterviewRoomCloseChoice: Equatable {
 }
 
 enum CompactPanelLayout {
-    static let contentWidth: CGFloat = 640
-    static let minimumContentHeight: CGFloat = 214
-    static let maximumContentHeight: CGFloat = 420
+    static let contentWidth: CGFloat = 580
+    static let minimumContentHeight: CGFloat = 82
+    static let maximumContentHeight: CGFloat = 180
 
     static func boundedContentHeight(_ measuredHeight: CGFloat) -> CGFloat {
         guard !measuredHeight.isNaN else { return minimumContentHeight }
