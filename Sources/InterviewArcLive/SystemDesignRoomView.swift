@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import InterviewArcLiveCore
 import SwiftUI
@@ -93,12 +94,21 @@ struct SystemDesignRoomView: View {
                 hasRoomAttention: model.errorMessage != nil
                     || model.codexAttentionMessage != nil
             )
+            let statusPresentation = FullRoomHeaderStatusLayout.presentation(
+                headerPresentation: state.presentation,
+                windowWidth: geometry.size.width,
+                statusMessage: model.statusMessage
+            )
 
             Group {
                 if state.presentation == .compact {
-                    compactHeaderContent
+                    compactHeaderContent(
+                        statusPresentation: statusPresentation
+                    )
                 } else {
-                    fullHeaderContent
+                    fullHeaderContent(
+                        statusPresentation: statusPresentation
+                    )
                 }
             }
             .font(.system(.body, design: .rounded))
@@ -118,11 +128,13 @@ struct SystemDesignRoomView: View {
         }
     }
 
-    private var fullHeaderContent: some View {
+    private func fullHeaderContent(
+        statusPresentation: FullRoomHeaderStatusPresentation
+    ) -> some View {
         HStack(spacing: 16) {
             headerBrand
             Spacer(minLength: 22)
-            roomStatusMenu(isCompact: false)
+            roomStatusMenu(presentation: statusPresentation)
             headerDivider
             personaMenu(isCompact: false)
             Spacer(minLength: 22)
@@ -132,11 +144,13 @@ struct SystemDesignRoomView: View {
         .frame(maxWidth: .infinity)
     }
 
-    private var compactHeaderContent: some View {
+    private func compactHeaderContent(
+        statusPresentation: FullRoomHeaderStatusPresentation
+    ) -> some View {
         HStack(spacing: 12) {
             headerBrand
             Spacer(minLength: 12)
-            roomStatusMenu(isCompact: true)
+            roomStatusMenu(presentation: statusPresentation)
             headerDivider
             personaMenu(isCompact: true)
             Spacer(minLength: 12)
@@ -157,7 +171,9 @@ struct SystemDesignRoomView: View {
         .accessibilityElement(children: .combine)
     }
 
-    private func roomStatusMenu(isCompact: Bool) -> some View {
+    private func roomStatusMenu(
+        presentation: FullRoomHeaderStatusPresentation
+    ) -> some View {
         Menu {
             Picker("Turn-taking", selection: turnModeRawSelection) {
                 ForEach(model.availableTurnModes, id: \.rawValue) { mode in
@@ -172,30 +188,39 @@ struct SystemDesignRoomView: View {
             }
             Button("Check Codex") { Task { await model.checkCodex() } }
         } label: {
-            if isCompact {
+            switch presentation.style {
+            case .compact:
                 HStack(spacing: 7) {
-                    Text(FullRoomHeaderLabels.compactRoom)
+                    Text(presentation.visibleText)
                         .fontWeight(.semibold)
                     Circle()
                         .fill(headerRoomStatusColor)
                         .frame(width: 8, height: 8)
                         .accessibilityHidden(true)
                 }
-                .help("System design · \(model.statusMessage)")
-            } else {
-                Text(
-                    FullRoomHeaderLabels.roomStatus(
-                        statusMessage: model.statusMessage
+            case .wideInline:
+                Text(presentation.visibleText)
+                    .fontWeight(.semibold)
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
+            case .wideWrapped:
+                Text(presentation.visibleText)
+                    .fontWeight(.semibold)
+                    .lineLimit(presentation.lineLimit)
+                    .multilineTextAlignment(.leading)
+                    .allowsTightening(true)
+                    .minimumScaleFactor(0.92)
+                    .frame(
+                        width: presentation.frameWidth,
+                        alignment: .leading
                     )
-                )
-                .fontWeight(.semibold)
-                .lineLimit(1)
-                .help(model.statusMessage)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
         .menuStyle(.borderlessButton)
+        .help(presentation.helpText)
         .accessibilityLabel(FullRoomHeaderAccessibility.roomStatusLabel)
-        .accessibilityValue(model.statusMessage)
+        .accessibilityValue(presentation.accessibilityValue)
     }
 
     private func personaMenu(isCompact: Bool) -> some View {
@@ -997,7 +1022,8 @@ enum FullRoomHeaderPresentation: Equatable {
 }
 
 enum FullRoomHeaderLayout {
-    static let attentionCompactMaximumWidth: CGFloat = 1_100
+    static let attentionCompactMaximumWidth =
+        FullRoomHeaderStatusLayout.minimumWideHeaderWidth
 
     static func state(
         windowWidth: CGFloat,
@@ -1023,6 +1049,109 @@ enum FullRoomHeaderAccessibility {
     static let personaLabel = "Interviewer: Mara, Staff Engineer"
     static let privacyLabel = "Private local session"
     static let collapseLabel = "Collapse interview room"
+}
+
+enum FullRoomHeaderStatusStyle: Equatable {
+    case compact
+    case wideInline
+    case wideWrapped
+}
+
+struct FullRoomHeaderStatusPresentation: Equatable {
+    let style: FullRoomHeaderStatusStyle
+    let visibleText: String
+    let accessibilityValue: String
+    let helpText: String
+    let frameWidth: CGFloat?
+    let lineLimit: Int
+}
+
+enum FullRoomHeaderStatusLayout {
+    /// Brand, the worst-case local-voice attention badge, persona, privacy,
+    /// collapse, padding, gaps, and both flexible spacers keep this much of a
+    /// wide header before status text is added.
+    static let wideReservedWidth: CGFloat = 940
+    static let minimumWrappedWidth: CGFloat = 220
+    static let minimumWideHeaderWidth = wideReservedWidth + minimumWrappedWidth
+    static let wrappedLineLimit = 2
+    static let maximumWrappedTextHeight: CGFloat = 40
+    static let inlineMeasurementSafetyMargin: CGFloat = 8
+
+    static func presentation(
+        headerPresentation: FullRoomHeaderPresentation,
+        windowWidth: CGFloat,
+        statusMessage: String
+    ) -> FullRoomHeaderStatusPresentation {
+        let fullText = FullRoomHeaderLabels.roomStatus(
+            statusMessage: statusMessage
+        )
+        if headerPresentation == .compact {
+            return FullRoomHeaderStatusPresentation(
+                style: .compact,
+                visibleText: FullRoomHeaderLabels.compactRoom,
+                accessibilityValue: statusMessage,
+                helpText: fullText,
+                frameWidth: nil,
+                lineLimit: 1
+            )
+        }
+
+        let availableWidth = wideStatusWidth(for: windowWidth)
+        if measuredWidth(of: fullText)
+            + inlineMeasurementSafetyMargin <= availableWidth {
+            return FullRoomHeaderStatusPresentation(
+                style: .wideInline,
+                visibleText: fullText,
+                accessibilityValue: statusMessage,
+                helpText: fullText,
+                frameWidth: nil,
+                lineLimit: 1
+            )
+        }
+        return FullRoomHeaderStatusPresentation(
+            style: .wideWrapped,
+            visibleText: statusMessage,
+            accessibilityValue: statusMessage,
+            helpText: fullText,
+            frameWidth: availableWidth,
+            lineLimit: wrappedLineLimit
+        )
+    }
+
+    static func wideStatusWidth(for windowWidth: CGFloat) -> CGFloat {
+        max(minimumWrappedWidth, windowWidth - wideReservedWidth)
+    }
+
+    static func measuredWidth(of text: String) -> CGFloat {
+        ceil(
+            (text as NSString).size(
+                withAttributes: [.font: statusFont]
+            ).width
+        )
+    }
+
+    static func wrappedTextHeight(
+        of text: String,
+        width: CGFloat
+    ) -> CGFloat {
+        ceil(
+            (text as NSString).boundingRect(
+                with: NSSize(
+                    width: width,
+                    height: CGFloat.greatestFiniteMagnitude
+                ),
+                options: [.usesLineFragmentOrigin, .usesFontLeading],
+                attributes: [.font: statusFont]
+            ).height
+        )
+    }
+
+    private static var statusFont: NSFont {
+        NSFont.systemFont(
+            ofSize: NSFont.systemFontSize,
+            weight: .semibold
+        )
+    }
 }
 
 enum FullRoomHeaderLabels {
