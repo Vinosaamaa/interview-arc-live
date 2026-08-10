@@ -84,12 +84,88 @@ final class DrawIOBoardCodecTests: XCTestCase {
         XCTAssertTrue(first.contains("image=data:image/svg+xml,%3Csvg"))
         XCTAssertTrue(first.contains("data-role%3D%27fill%27"))
         XCTAssertTrue(first.contains("selectable=\"0\""))
+        XCTAssertTrue(first.contains("id=\"api\" value=\"\""))
+        XCTAssertTrue(first.contains("iaBoxLabelOwner=\"api\""))
         XCTAssertTrue(first.contains("<Array as=\"points\">"))
         XCTAssertTrue(first.contains("<mxPoint x=\"340\" y=\"145\"/>"))
         XCTAssertTrue(first.contains("<mxPoint x=\"340\" y=\"265\"/>"))
         XCTAssertFalse(first.localizedCaseInsensitiveContains("<script"))
         XCTAssertFalse(first.localizedCaseInsensitiveContains("href="))
         XCTAssertEqual(try codec.decode(first), document)
+
+        let visualOffset = try XCTUnwrap(first.range(of: "shape=image"))
+        let labelOffset = try XCTUnwrap(
+            first.range(of: "iaBoxLabelOwner=\"api\"")
+        )
+        XCTAssertLessThan(visualOffset.lowerBound, labelOffset.lowerBound)
+
+        let editedSource = first.replacingOccurrences(
+            of: "value=\"API &lt;gateway&gt; &amp; cache\" style=\"text;",
+            with: "value=\"Edited gateway\" style=\"text;"
+        )
+        let edited = try codec.decode(editedSource)
+        guard case .box(let editedAPI) = edited.elements.first else {
+            return XCTFail("Expected edited API box")
+        }
+        XCTAssertEqual(editedAPI.label, "Edited gateway")
+    }
+
+    func testConnectorAnchorPoliciesRoundTripAndLegacyDrawIODefaultsPreserved() throws {
+        let sourceBox = BoardBox(
+            id: BoardElementID("source"),
+            frame: BoardRect(
+                origin: BoardPoint(x: 40, y: 40),
+                size: BoardSize(width: 160, height: 90)
+            ),
+            label: "Source"
+        )
+        let targetBox = BoardBox(
+            id: BoardElementID("target"),
+            frame: BoardRect(
+                origin: BoardPoint(x: 360, y: 40),
+                size: BoardSize(width: 160, height: 90)
+            ),
+            label: "Target"
+        )
+        let connector = BoardConnector(
+            id: BoardElementID("automatic-route"),
+            start: BoardConnectorEndpoint(
+                point: BoardPoint(x: 200, y: 85),
+                elementID: sourceBox.id,
+                anchorPolicy: .automatic
+            ),
+            end: BoardConnectorEndpoint(
+                point: BoardPoint(x: 360, y: 85),
+                elementID: targetBox.id,
+                anchorPolicy: .automatic
+            )
+        )
+        let document = try BoardDocument(
+            canvas: BoardCanvas(size: BoardSize(width: 640, height: 400)),
+            elements: [.box(sourceBox), .box(targetBox), .connector(connector)]
+        )
+        let codec = DrawIOBoardCodec()
+
+        let encoded = try codec.encode(document)
+        XCTAssertTrue(encoded.contains("iaSourceAnchorPolicy=\"automatic\""))
+        XCTAssertTrue(encoded.contains("iaTargetAnchorPolicy=\"automatic\""))
+        XCTAssertEqual(try codec.decode(encoded), document)
+
+        let legacy = encoded
+            .replacingOccurrences(
+                of: " iaSourceAnchorPolicy=\"automatic\"",
+                with: ""
+            )
+            .replacingOccurrences(
+                of: " iaTargetAnchorPolicy=\"automatic\"",
+                with: ""
+            )
+        let decodedLegacy = try codec.decode(legacy)
+        guard case .connector(let legacyConnector) = decodedLegacy.elements.last else {
+            return XCTFail("Expected legacy connector")
+        }
+        XCTAssertEqual(legacyConnector.start.anchorPolicy, .preserved)
+        XCTAssertEqual(legacyConnector.end.anchorPolicy, .preserved)
     }
 
     func testMixedCreationOrderUsesSharedLayersWithoutChangingRoundTripOrder() throws {

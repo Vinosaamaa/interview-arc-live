@@ -88,6 +88,7 @@ struct DrawIOBoardCodec: Sendable {
         reservedCellIDs.formUnion(["0", "1"])
         for (index, element) in renderElements.enumerated() {
             let visualCellID: String?
+            let labelCellID: String?
             if case .box = element {
                 var candidate = "__ia_node_visual_\(index)"
                 while reservedCellIDs.contains(candidate) {
@@ -95,14 +96,22 @@ struct DrawIOBoardCodec: Sendable {
                 }
                 reservedCellIDs.insert(candidate)
                 visualCellID = candidate
+                candidate = "__ia_node_label_\(index)"
+                while reservedCellIDs.contains(candidate) {
+                    candidate.append("_")
+                }
+                reservedCellIDs.insert(candidate)
+                labelCellID = candidate
             } else {
                 visualCellID = nil
+                labelCellID = nil
             }
             try append(
                 encode(
                     element,
                     cellID: elementCellIDs[element.id] ?? element.id.rawValue,
                     visualCellID: visualCellID,
+                    labelCellID: labelCellID,
                     elementCellIDs: elementCellIDs,
                     documentIndex: documentIndices[element.id] ?? index
                 )
@@ -175,7 +184,8 @@ struct DrawIOBoardCodec: Sendable {
         let elements = try orderedCells.map {
             try makeElement(
                 $0,
-                elementIDsByCellID: elementIDsByCellID
+                elementIDsByCellID: elementIDsByCellID,
+                boxLabelsByElementID: delegate.boxLabelsByElementID
             )
         }
         do {
@@ -193,6 +203,7 @@ struct DrawIOBoardCodec: Sendable {
         _ element: BoardElement,
         cellID: String,
         visualCellID: String?,
+        labelCellID: String?,
         elementCellIDs: [BoardElementID: String],
         documentIndex: Int
     ) throws -> [String] {
@@ -201,6 +212,7 @@ struct DrawIOBoardCodec: Sendable {
             try validateXMLText(box.label)
             let visual = box.kind.visual
             let visualCellID = visualCellID ?? "__ia_node_visual"
+            let labelCellID = labelCellID ?? "__ia_node_label"
             let localRect = CGRect(
                 origin: .zero,
                 size: CGSize(
@@ -222,11 +234,14 @@ struct DrawIOBoardCodec: Sendable {
                 strokeHex: box.stroke.hexRGB
             )
             return [
-                "        <mxCell id=\"\(attribute(cellID))\" value=\"\(attribute(labelLayout.drawIOValue))\" style=\"\(attribute(visual.drawIOShapeStyle));whiteSpace=wrap;overflow=hidden;html=0;verticalAlign=bottom;spacingBottom=8;fillColor=none;strokeColor=none;\" vertex=\"1\" parent=\"1\" iaKind=\"box\" iaElementID=\"\(attribute(box.id.rawValue))\" iaDocumentIndex=\"\(documentIndex)\" iaLabel=\"\(attribute(box.label))\" iaLabelLayout=\"wrapped-v1\" iaNodeKind=\"\(attribute(box.kind.rawValue))\" iaNodeVisual=\"\(attribute(visual.stableKey))\" iaPictogram=\"\(attribute(visual.pictogram.rawValue))\" iaDrawIOShapeStyle=\"\(attribute(visual.drawIOShapeStyle))\" iaFill=\"\(attribute(box.fill.hexRGB))\" iaStroke=\"\(attribute(box.stroke.hexRGB))\">",
+                "        <mxCell id=\"\(attribute(cellID))\" value=\"\" style=\"\(attribute(visual.drawIOShapeStyle));html=0;fillColor=none;strokeColor=none;container=1;\" vertex=\"1\" parent=\"1\" iaKind=\"box\" iaElementID=\"\(attribute(box.id.rawValue))\" iaDocumentIndex=\"\(documentIndex)\" iaLabel=\"\(attribute(box.label))\" iaLabelLayout=\"wrapped-v1\" iaNodeKind=\"\(attribute(box.kind.rawValue))\" iaNodeVisual=\"\(attribute(visual.stableKey))\" iaPictogram=\"\(attribute(visual.pictogram.rawValue))\" iaDrawIOShapeStyle=\"\(attribute(visual.drawIOShapeStyle))\" iaFill=\"\(attribute(box.fill.hexRGB))\" iaStroke=\"\(attribute(box.stroke.hexRGB))\">",
                 "          <mxGeometry x=\"\(number(box.frame.origin.x))\" y=\"\(number(box.frame.origin.y))\" width=\"\(number(box.frame.size.width))\" height=\"\(number(box.frame.size.height))\" as=\"geometry\"/>",
                 "        </mxCell>",
                 "        <mxCell id=\"\(attribute(visualCellID))\" value=\"\" style=\"shape=image;imageAspect=0;aspect=fixed;pointerEvents=0;image=\(attribute(visualURI));\" vertex=\"1\" parent=\"\(attribute(cellID))\" connectable=\"0\" locked=\"1\" selectable=\"0\">",
                 "          <mxGeometry x=\"0\" y=\"0\" width=\"\(number(box.frame.size.width))\" height=\"\(number(box.frame.size.height))\" as=\"geometry\"/>",
+                "        </mxCell>",
+                "        <mxCell id=\"\(attribute(labelCellID))\" value=\"\(attribute(labelLayout.drawIOValue))\" style=\"text;html=0;align=center;verticalAlign=middle;whiteSpace=wrap;overflow=hidden;fillColor=none;strokeColor=none;fontColor=#\(attribute(box.stroke.hexRGB));\" vertex=\"1\" parent=\"\(attribute(cellID))\" connectable=\"0\" iaBoxLabelOwner=\"\(attribute(box.id.rawValue))\" iaRenderedLabel=\"\(attribute(labelLayout.drawIOValue))\" iaOriginalLabel=\"\(attribute(box.label))\">",
+                "          <mxGeometry x=\"\(number(labelLayout.rect.minX))\" y=\"\(number(labelLayout.rect.minY))\" width=\"\(number(labelLayout.rect.width))\" height=\"\(number(labelLayout.rect.height))\" as=\"geometry\"/>",
                 "        </mxCell>",
             ]
 
@@ -243,7 +258,7 @@ struct DrawIOBoardCodec: Sendable {
                 " target=\"\(attribute(elementCellIDs[$0] ?? $0.rawValue))\" iaTargetElementID=\"\(attribute($0.rawValue))\""
             } ?? ""
             var rows = [
-                "        <mxCell id=\"\(attribute(cellID))\" value=\"\(attribute(connector.label))\" style=\"edgeStyle=orthogonalEdgeStyle;rounded=1;html=0;endArrow=block;strokeColor=#\(attribute(connector.stroke.hexRGB));\" edge=\"1\" parent=\"1\"\(source)\(target) iaKind=\"connector\" iaElementID=\"\(attribute(connector.id.rawValue))\" iaDocumentIndex=\"\(documentIndex)\" iaStroke=\"\(attribute(connector.stroke.hexRGB))\">",
+                "        <mxCell id=\"\(attribute(cellID))\" value=\"\(attribute(connector.label))\" style=\"edgeStyle=orthogonalEdgeStyle;rounded=1;html=0;endArrow=block;strokeColor=#\(attribute(connector.stroke.hexRGB));\" edge=\"1\" parent=\"1\"\(source)\(target) iaKind=\"connector\" iaElementID=\"\(attribute(connector.id.rawValue))\" iaDocumentIndex=\"\(documentIndex)\" iaSourceAnchorPolicy=\"\(connector.start.anchorPolicy.rawValue)\" iaTargetAnchorPolicy=\"\(connector.end.anchorPolicy.rawValue)\" iaStroke=\"\(attribute(connector.stroke.hexRGB))\">",
                 "          <mxGeometry relative=\"1\" as=\"geometry\">",
                 "            <mxPoint x=\"\(number(connector.start.point.x))\" y=\"\(number(connector.start.point.y))\" as=\"sourcePoint\"/>",
                 "            <mxPoint x=\"\(number(connector.end.point.x))\" y=\"\(number(connector.end.point.y))\" as=\"targetPoint\"/>",
@@ -296,7 +311,8 @@ struct DrawIOBoardCodec: Sendable {
 
     private func makeElement(
         _ cell: ParsedCell,
-        elementIDsByCellID: [String: BoardElementID]
+        elementIDsByCellID: [String: BoardElementID],
+        boxLabelsByElementID: [String: ParsedBoxLabel]
     ) throws -> BoardElement {
         guard let idValue = cell.attributes["iaElementID"]
             ?? cell.attributes["id"] else {
@@ -316,7 +332,10 @@ struct DrawIOBoardCodec: Sendable {
                 BoardBox(
                     id: id,
                     frame: frame,
-                    label: cell.attributes["iaLabel"] ?? value,
+                    label: boxLabel(
+                        boxLabelsByElementID[id.rawValue],
+                        fallback: cell.attributes["iaLabel"] ?? value
+                    ),
                     kind: kind,
                     fill: try color(cell, key: "iaFill"),
                     stroke: try color(cell, key: "iaStroke")
@@ -335,6 +354,10 @@ struct DrawIOBoardCodec: Sendable {
                             canonicalValue: cell.attributes["iaSourceElementID"],
                             cellValue: cell.attributes["source"],
                             elementIDsByCellID: elementIDsByCellID
+                        ),
+                        anchorPolicy: try anchorPolicy(
+                            cell,
+                            key: "iaSourceAnchorPolicy"
                         )
                     ),
                     end: BoardConnectorEndpoint(
@@ -343,6 +366,10 @@ struct DrawIOBoardCodec: Sendable {
                             canonicalValue: cell.attributes["iaTargetElementID"],
                             cellValue: cell.attributes["target"],
                             elementIDsByCellID: elementIDsByCellID
+                        ),
+                        anchorPolicy: try anchorPolicy(
+                            cell,
+                            key: "iaTargetAnchorPolicy"
                         )
                     ),
                     label: value,
@@ -388,6 +415,29 @@ struct DrawIOBoardCodec: Sendable {
         if let canonicalValue { return BoardElementID(canonicalValue) }
         guard let cellValue else { return nil }
         return elementIDsByCellID[cellValue] ?? BoardElementID(cellValue)
+    }
+
+    private func anchorPolicy(
+        _ cell: ParsedCell,
+        key: String
+    ) throws -> BoardConnectorAnchorPolicy {
+        guard let value = cell.attributes[key] else { return .preserved }
+        guard let policy = BoardConnectorAnchorPolicy(rawValue: value) else {
+            throw DrawIOBoardCodecError.invalidElement
+        }
+        return policy
+    }
+
+    private func boxLabel(
+        _ parsed: ParsedBoxLabel?,
+        fallback: String
+    ) -> String {
+        guard let parsed else { return fallback }
+        if parsed.value == parsed.renderedValue,
+           let originalValue = parsed.originalValue {
+            return originalValue
+        }
+        return parsed.value
     }
 
     private func geometryRect(_ cell: ParsedCell) throws -> BoardRect {
@@ -486,12 +536,19 @@ private struct ParsedCell {
     var waypoints: [BoardPoint] = []
 }
 
+private struct ParsedBoxLabel {
+    let value: String
+    let renderedValue: String?
+    let originalValue: String?
+}
+
 private final class ParserDelegate: NSObject, XMLParserDelegate {
     private(set) var sawMXFile = false
     private(set) var sawGraphModel = false
     private(set) var schemaVersion = 0
     private(set) var canvasSize: BoardSize?
     private(set) var cells: [ParsedCell] = []
+    private(set) var boxLabelsByElementID: [String: ParsedBoxLabel] = [:]
 
     private var currentCellIndex: Int?
     private var isInsideWaypointArray = false
@@ -515,6 +572,15 @@ private final class ParserDelegate: NSObject, XMLParserDelegate {
                 canvasSize = BoardSize(width: width, height: height)
             }
         case "mxCell":
+            if let owner = attributeDict["iaBoxLabelOwner"] {
+                boxLabelsByElementID[owner] = ParsedBoxLabel(
+                    value: attributeDict["value"] ?? "",
+                    renderedValue: attributeDict["iaRenderedLabel"],
+                    originalValue: attributeDict["iaOriginalLabel"]
+                )
+                currentCellIndex = nil
+                return
+            }
             guard let kind = attributeDict["iaKind"] else { return }
             cells.append(ParsedCell(kind: kind, attributes: attributeDict))
             currentCellIndex = cells.count - 1

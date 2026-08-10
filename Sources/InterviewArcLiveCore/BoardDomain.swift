@@ -145,13 +145,52 @@ public struct BoardBox: Codable, Sendable, Equatable {
     }
 }
 
+public enum BoardConnectorAnchorPolicy: String, Codable, Sendable, Equatable {
+    case automatic
+    case preserved
+}
+
 public struct BoardConnectorEndpoint: Codable, Sendable, Equatable {
     public let point: BoardPoint
     public let elementID: BoardElementID?
+    public let anchorPolicy: BoardConnectorAnchorPolicy
 
-    public init(point: BoardPoint, elementID: BoardElementID? = nil) {
+    public init(
+        point: BoardPoint,
+        elementID: BoardElementID? = nil,
+        anchorPolicy: BoardConnectorAnchorPolicy = .preserved
+    ) {
         self.point = point
         self.elementID = elementID
+        self.anchorPolicy = anchorPolicy
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case point
+        case elementID
+        case anchorPolicy
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            point: try container.decode(BoardPoint.self, forKey: .point),
+            elementID: try container.decodeIfPresent(
+                BoardElementID.self,
+                forKey: .elementID
+            ),
+            anchorPolicy: try container.decodeIfPresent(
+                BoardConnectorAnchorPolicy.self,
+                forKey: .anchorPolicy
+            ) ?? .preserved
+        )
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(point, forKey: .point)
+        try container.encodeIfPresent(elementID, forKey: .elementID)
+        try container.encode(anchorPolicy, forKey: .anchorPolicy)
     }
 }
 

@@ -124,16 +124,51 @@ final class BoardNodePresentationTests: XCTestCase {
         }
     }
 
-    func testPictogramsScaleInsideTinyValidNodeFrames() {
-        let tiny = CGRect(x: 7, y: 11, width: 20, height: 16)
-        let tolerance = tiny.insetBy(dx: -0.001, dy: -0.001)
+    func testEveryVisualPathStaysFiniteAndInsideEveryValidNodeFrame() {
+        let frames = [
+            CGRect(x: 0, y: 0, width: 0.1, height: 0.1),
+            CGRect(x: 0, y: 0, width: 1, height: 1),
+            CGRect(x: 3, y: 5, width: 10, height: 8),
+            CGRect(x: 7, y: 11, width: 20, height: 16),
+            CGRect(x: 20, y: 30, width: 160, height: 90),
+        ]
 
-        for visual in BoardNodeKind.selectableKinds.map(\.visual) {
-            for path in visual.pictogramPaths(in: tiny) {
+        for frame in frames {
+            let tolerance = frame.insetBy(dx: -0.000_001, dy: -0.000_001)
+            for visual in BoardNodeKind.selectableKinds.map(\.visual) {
+                let labelBounds = visual.labelRect(in: frame)
                 XCTAssertTrue(
-                    tolerance.contains(path.cgPath.boundingBoxOfPath),
-                    "\(visual.stableKey) exceeded the tiny node frame"
+                    [
+                        labelBounds.minX,
+                        labelBounds.minY,
+                        labelBounds.maxX,
+                        labelBounds.maxY,
+                    ].allSatisfy(\.isFinite),
+                    "\(visual.stableKey) produced a non-finite label rect"
                 )
+                XCTAssertTrue(
+                    tolerance.contains(labelBounds),
+                    "\(visual.stableKey) label exceeded \(frame): \(labelBounds)"
+                )
+                let paths = [visual.outlinePath(in: frame)]
+                    + visual.detailPaths(in: frame)
+                    + visual.pictogramPaths(in: frame)
+                for path in paths {
+                    let bounds = path.cgPath.boundingBoxOfPath
+                    XCTAssertTrue(
+                        [
+                            bounds.minX,
+                            bounds.minY,
+                            bounds.maxX,
+                            bounds.maxY,
+                        ].allSatisfy(\.isFinite),
+                        "\(visual.stableKey) produced non-finite bounds in \(frame)"
+                    )
+                    XCTAssertTrue(
+                        tolerance.contains(bounds),
+                        "\(visual.stableKey) exceeded \(frame): \(bounds)"
+                    )
+                }
             }
         }
     }

@@ -390,6 +390,8 @@ final class BoardEditorTests: XCTestCase {
         }
         XCTAssertEqual(reversed.start.point, BoardPoint(x: 400, y: 145))
         XCTAssertEqual(reversed.end.point, BoardPoint(x: 260, y: 145))
+        XCTAssertEqual(reversed.start.anchorPolicy, .automatic)
+        XCTAssertEqual(reversed.end.anchorPolicy, .automatic)
         XCTAssertEqual(
             BoardOrthogonalConnectorRoute(
                 start: reversed.start.point,
@@ -538,6 +540,53 @@ final class BoardEditorTests: XCTestCase {
         }
         XCTAssertEqual(resized.start.point, BoardPoint(x: 200, y: 100))
         XCTAssertEqual(resized.end.point, BoardPoint(x: 580, y: 200))
+    }
+
+    func testImportedDefaultLookingAnchorsRemainPreservedAcrossAxisReversal() throws {
+        let source = BoardBox(
+            id: BoardElementID("source"),
+            frame: BoardRect(
+                origin: BoardPoint(x: 100, y: 100),
+                size: BoardSize(width: 160, height: 100)
+            ),
+            label: "Source"
+        )
+        let target = BoardBox(
+            id: BoardElementID("target"),
+            frame: BoardRect(
+                origin: BoardPoint(x: 500, y: 100),
+                size: BoardSize(width: 160, height: 100)
+            ),
+            label: "Target"
+        )
+        let imported = BoardConnector(
+            id: BoardElementID("imported-default-looking"),
+            start: BoardConnectorEndpoint(
+                point: BoardPoint(x: 260, y: 150),
+                elementID: source.id
+            ),
+            end: BoardConnectorEndpoint(
+                point: BoardPoint(x: 500, y: 150),
+                elementID: target.id
+            )
+        )
+        var editor = BoardEditorState(
+            document: try BoardDocument(
+                canvas: BoardCanvas(size: BoardSize(width: 900, height: 600)),
+                elements: [.box(source), .box(target), .connector(imported)]
+            )
+        )
+
+        try editor.apply(.select(source.id))
+        try editor.apply(.moveSelected(by: BoardPoint(x: 400, y: 250)))
+
+        guard case .connector(let moved) = editor.document.elements.last else {
+            return XCTFail("Expected preserved imported connector")
+        }
+        XCTAssertEqual(moved.start.point, BoardPoint(x: 660, y: 400))
+        XCTAssertEqual(moved.end.point, BoardPoint(x: 500, y: 150))
+        XCTAssertEqual(moved.start.anchorPolicy, .preserved)
+        XCTAssertEqual(moved.end.anchorPolicy, .preserved)
     }
 
     func testMoveClampsBoxesLabelsAndStrokesAndKeepsAttachedConnectorAnchored() throws {

@@ -410,6 +410,30 @@ final class BoardSessionTests: XCTestCase {
         )
         let legacyBox = try JSONDecoder().decode(BoardBox.self, from: legacyBoxData)
         XCTAssertEqual(legacyBox.kind, .generic)
+
+        let automaticEndpoint = BoardConnectorEndpoint(
+            point: BoardPoint(x: 120, y: 80),
+            elementID: databaseBox.id,
+            anchorPolicy: .automatic
+        )
+        XCTAssertEqual(
+            try JSONDecoder().decode(
+                BoardConnectorEndpoint.self,
+                from: JSONEncoder().encode(automaticEndpoint)
+            ),
+            automaticEndpoint
+        )
+        let legacyEndpointData = try removingJSONKey(
+            "anchorPolicy",
+            from: JSONEncoder().encode(automaticEndpoint)
+        )
+        let legacyEndpoint = try JSONDecoder().decode(
+            BoardConnectorEndpoint.self,
+            from: legacyEndpointData
+        )
+        XCTAssertEqual(legacyEndpoint.point, automaticEndpoint.point)
+        XCTAssertEqual(legacyEndpoint.elementID, automaticEndpoint.elementID)
+        XCTAssertEqual(legacyEndpoint.anchorPolicy, .preserved)
     }
 
     func testBoardDocumentAndArtifactInputsRejectUnboundedOrUnsafeIdentities() throws {

@@ -97,7 +97,11 @@ struct BoardNodeVisual: Equatable {
     }
 
     func outlinePath(in rect: CGRect) -> BoardVectorPath {
-        let inset = rect.insetBy(dx: 1, dy: 1)
+        let insetAmount = min(
+            1,
+            min(rect.width, rect.height) * 0.08
+        )
+        let inset = rect.insetBy(dx: insetAmount, dy: insetAmount)
         switch outline {
         case .roundedRectangle:
             return .roundedRectangle(inset, radius: 11)
@@ -169,32 +173,73 @@ struct BoardNodeVisual: Equatable {
     }
 
     func detailPaths(in rect: CGRect) -> [BoardVectorPath] {
+        let unit = geometryUnit(in: rect)
         switch outline {
         case .browser:
-            let top = rect.minY + min(15, rect.height * 0.18)
+            let top = rect.minY + min(15 * unit, rect.height * 0.18)
             return [
                 .line(
-                    from: CGPoint(x: rect.minX + 1, y: top),
-                    to: CGPoint(x: rect.maxX - 1, y: top)
+                    from: CGPoint(x: rect.minX + unit, y: top),
+                    to: CGPoint(x: rect.maxX - unit, y: top)
                 ),
-                .ellipse(in: CGRect(x: rect.minX + 7, y: rect.minY + 5, width: 3, height: 3)),
-                .ellipse(in: CGRect(x: rect.minX + 13, y: rect.minY + 5, width: 3, height: 3)),
-                .ellipse(in: CGRect(x: rect.minX + 19, y: rect.minY + 5, width: 3, height: 3)),
+                .ellipse(
+                    in: CGRect(
+                        x: rect.minX + 7 * unit,
+                        y: rect.minY + 5 * unit,
+                        width: 3 * unit,
+                        height: 3 * unit
+                    )
+                ),
+                .ellipse(
+                    in: CGRect(
+                        x: rect.minX + 13 * unit,
+                        y: rect.minY + 5 * unit,
+                        width: 3 * unit,
+                        height: 3 * unit
+                    )
+                ),
+                .ellipse(
+                    in: CGRect(
+                        x: rect.minX + 19 * unit,
+                        y: rect.minY + 5 * unit,
+                        width: 3 * unit,
+                        height: 3 * unit
+                    )
+                ),
             ]
         case .cylinder:
-            let cap = min(12, rect.height * 0.16)
+            let cap = min(12 * unit, rect.height * 0.16)
             return [
-                .ellipse(in: CGRect(x: rect.minX + 1, y: rect.minY + 1, width: rect.width - 2, height: cap * 2)),
+                .ellipse(
+                    in: CGRect(
+                        x: rect.minX + unit,
+                        y: rect.minY + unit,
+                        width: rect.width - 2 * unit,
+                        height: cap * 2
+                    )
+                ),
             ]
         case .queue:
             return [
                 .line(
-                    from: CGPoint(x: rect.minX + 9, y: rect.minY + 8),
-                    to: CGPoint(x: rect.maxX - 3, y: rect.minY + 8)
+                    from: CGPoint(
+                        x: rect.minX + 9 * unit,
+                        y: rect.minY + 8 * unit
+                    ),
+                    to: CGPoint(
+                        x: rect.maxX - 3 * unit,
+                        y: rect.minY + 8 * unit
+                    )
                 ),
                 .line(
-                    from: CGPoint(x: rect.minX + 5, y: rect.maxY - 8),
-                    to: CGPoint(x: rect.maxX - 9, y: rect.maxY - 8)
+                    from: CGPoint(
+                        x: rect.minX + 5 * unit,
+                        y: rect.maxY - 8 * unit
+                    ),
+                    to: CGPoint(
+                        x: rect.maxX - 9 * unit,
+                        y: rect.maxY - 8 * unit
+                    )
                 ),
             ]
         default:
@@ -208,7 +253,7 @@ struct BoardNodeVisual: Equatable {
         let y = icon.minY
         let w = icon.width
         let h = icon.height
-        let unit = min(1, w / 28, h / 22)
+        let unit = geometryUnit(in: icon)
         switch pictogram {
         case .componentGrid:
             let side = min(8 * unit, h * 0.32)
@@ -306,19 +351,20 @@ struct BoardNodeVisual: Equatable {
     }
 
     func labelRect(in rect: CGRect) -> CGRect {
-        CGRect(
-            x: rect.minX + 10,
+        let horizontalInset = min(10, rect.width * 0.08)
+        return CGRect(
+            x: rect.minX + horizontalInset,
             y: rect.minY + rect.height * 0.54,
-            width: max(1, rect.width - 20),
-            height: max(1, rect.height * 0.38)
+            width: max(0, rect.width - horizontalInset * 2),
+            height: max(0, rect.height * 0.38)
         )
     }
 
     private func pictogramRect(in rect: CGRect) -> CGRect {
-        let horizontalInset = min(8, max(1, rect.width * 0.08))
-        let verticalInset = min(8, max(1, rect.height * 0.08))
-        let availableWidth = max(1, rect.width - horizontalInset * 2)
-        let availableHeight = max(1, rect.height - verticalInset * 2)
+        let horizontalInset = min(8, rect.width * 0.08)
+        let verticalInset = min(8, rect.height * 0.08)
+        let availableWidth = max(0, rect.width - horizontalInset * 2)
+        let availableHeight = max(0, rect.height - verticalInset * 2)
         let width = min(availableWidth, min(40, max(28, rect.width * 0.25)))
         let height = min(availableHeight, min(28, max(22, rect.height * 0.30)))
         let preferredTop = rect.minY + max(14, rect.height * 0.16)
@@ -331,6 +377,10 @@ struct BoardNodeVisual: Equatable {
             width: width,
             height: height
         )
+    }
+
+    private func geometryUnit(in rect: CGRect) -> CGFloat {
+        min(1, rect.width / 28, rect.height / 22)
     }
 }
 
@@ -378,17 +428,6 @@ struct BoardConnectorNormalizedAnchor: Equatable {
 }
 
 enum BoardConnectorAnchorLayout {
-    static func usesAutomaticPair(
-        start: BoardPoint,
-        end: BoardPoint,
-        source: BoardBox,
-        target: BoardBox
-    ) -> Bool {
-        let automatic = between(source: source, target: target)
-        return pointsMatch(start, automatic.start)
-            && pointsMatch(end, automatic.end)
-    }
-
     static func between(
         source: BoardBox,
         target: BoardBox
@@ -505,13 +544,6 @@ enum BoardConnectorAnchorLayout {
         )
     }
 
-    private static func pointsMatch(
-        _ lhs: BoardPoint,
-        _ rhs: BoardPoint
-    ) -> Bool {
-        abs(lhs.x - rhs.x) < 0.000_001
-            && abs(lhs.y - rhs.y) < 0.000_001
-    }
 }
 
 struct BoardNodeLabelLayout: Equatable {
