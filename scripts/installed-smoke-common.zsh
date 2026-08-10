@@ -12,7 +12,8 @@ interview_arc_live_run_installed_smoke() {
 
   case "$helper_name:$smoke_directory_prefix" in
     InterviewArcLiveCodexSmoke:interview-arc-live-codex-smoke|\
-    InterviewArcLiveEndpointSmoke:interview-arc-live-endpoint-smoke)
+    InterviewArcLiveEndpointSmoke:interview-arc-live-endpoint-smoke|\
+    InterviewArcLiveSpeechSmoke:interview-arc-live-speech-smoke)
       ;;
     *)
       echo "Refusing an unsupported installed smoke helper." >&2
@@ -59,7 +60,7 @@ interview_arc_live_run_installed_smoke() {
   fi
   "$_interview_arc_live_smoke_scripts_dir/verify-package-manifest.sh" \
     "$installed_app" \
-    "$package_manifest"
+    "$package_manifest" >/dev/null
 
   local smoke_root
   smoke_root="$(/usr/bin/mktemp -d \
@@ -84,7 +85,40 @@ interview_arc_live_run_installed_smoke() {
 
   cd "$smoke_root"
   local helper_status=0
-  "$helper" || helper_status=$?
+  if [[ "$helper_name" == "InterviewArcLiveSpeechSmoke" ]]; then
+    local helper_stdout="$smoke_root/helper.stdout"
+    "$helper" > "$helper_stdout" || helper_status=$?
+    if (( helper_status == 0 )); then
+      local -a report_keys=(
+        model_revision
+        chunk_count
+        time_to_first_audio_ms
+        generation_total_ms
+        audio_duration_ms
+        audio_bytes
+      )
+      local report_key report_value
+      for report_key in "${report_keys[@]}"; do
+        if ! report_value="$(/usr/bin/awk -F= -v requested="$report_key" '
+          $1 == requested {
+            count += 1
+            value = substr($0, length($1) + 2)
+          }
+          END {
+            if (count != 1 || value == "") exit 65
+            print value
+          }
+        ' "$helper_stdout")"; then
+          echo "Installed local-speech smoke returned an invalid report." >&2
+          helper_status=65
+          break
+        fi
+        print -r -- "$report_key=$report_value"
+      done
+    fi
+  else
+    "$helper" || helper_status=$?
+  fi
   cleanup_installed_smoke
   trap - EXIT HUP INT TERM
   return "$helper_status"

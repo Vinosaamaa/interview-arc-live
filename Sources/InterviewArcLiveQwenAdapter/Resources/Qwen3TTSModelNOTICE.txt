@@ -1,0 +1,14 @@
+Interview Arc Live local interviewer speech model
+
+Model:
+mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-8bit
+
+Immutable revision:
+049ef77fe8816b536193c0c25f9a214d17921282
+
+License: Apache License 2.0
+https://www.apache.org/licenses/LICENSE-2.0
+
+The model is not bundled with Interview Arc Live. It is downloaded only after
+an explicit user action, verified against the pinned public snapshot manifest,
+and stored in Live-specific Application Support storage.

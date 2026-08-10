@@ -1,8 +1,10 @@
 import InterviewArcLiveCore
+import InterviewArcLiveQwenAdapter
 import SwiftUI
 
 struct SystemDesignRoomView: View {
     @ObservedObject var model: SystemDesignRoomModel
+    @State private var isModelRemovalConfirmationPresented = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -15,6 +17,7 @@ struct SystemDesignRoomView: View {
                 codexReadinessBanner(codexMessage)
             }
             turnModeBar
+            speechModelBar
 
             HSplitView {
                 transcript
@@ -35,6 +38,18 @@ struct SystemDesignRoomView: View {
                 onSaveToKeychain: model.saveGroqCredential,
                 onUseUntilQuit: model.useGroqCredentialUntilQuit
             )
+        }
+        .confirmationDialog(
+            "Remove Mara’s local model?",
+            isPresented: $isModelRemovalConfirmationPresented,
+            titleVisibility: .visible
+        ) {
+            Button("Remove exact model revision", role: .destructive) {
+                Task { await model.removeSpeechModel() }
+            }
+            Button("Keep model", role: .cancel) {}
+        } message: {
+            Text("This removes only the pinned public model and its Live-owned cache. Sessions, transcripts, and private interviewer WAVs stay on this Mac.")
         }
     }
 
@@ -183,6 +198,127 @@ struct SystemDesignRoomView: View {
         )
     }
 
+    private var speechModelBar: some View {
+        let presentation = model.speechReadinessPresentation
+        let color = speechReadinessColor(for: presentation.tone)
+
+        return HStack(alignment: .top, spacing: 12) {
+            Image(systemName: presentation.systemImage)
+                .font(.system(.title3, weight: .semibold))
+                .foregroundStyle(color)
+                .frame(width: 24)
+                .accessibilityHidden(true)
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(presentation.title)
+                    .font(.system(.callout, design: .rounded, weight: .semibold))
+                    .foregroundStyle(color)
+                Text(presentation.detail)
+                    .font(.system(.caption, design: .rounded))
+                    .foregroundStyle(LivePalette.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                if presentation.showsInstallDisclosure {
+                    Text("Qwen3-TTS 0.6B · revision \(Qwen3TTSProvenance.modelRevision) · \(Qwen3TTSProvenance.snapshotSizeLabel) · \(Qwen3TTSProvenance.modelLicenseIdentifier)")
+                        .font(.system(.caption2, design: .monospaced))
+                        .foregroundStyle(LivePalette.ink)
+                        .textSelection(.enabled)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Text("Requires at least 4 GiB free. Stored in Live-specific Application Support. After verification, synthesis and audio stay local.")
+                        .font(.system(.caption2, design: .rounded))
+                        .foregroundStyle(LivePalette.muted)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                if let progress = presentation.progress {
+                    ProgressView(value: progress)
+                        .progressViewStyle(.linear)
+                        .tint(LivePalette.interviewer)
+                        .frame(maxWidth: 420)
+                        .accessibilityLabel(presentation.title)
+                        .accessibilityValue(
+                            "\(Int((progress * 100).rounded())) percent"
+                        )
+                }
+
+                if let speechErrorMessage = model.speechErrorMessage {
+                    Text(speechErrorMessage)
+                        .font(.system(.caption, design: .rounded, weight: .medium))
+                        .foregroundStyle(LivePalette.warning)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            HStack(spacing: 8) {
+                if presentation.canDownload {
+                    Button("Download 1.838 GiB model") {
+                        model.startSpeechModelDownload()
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(LivePalette.interviewer)
+                    .disabled(!model.canStartSpeechModelDownload)
+                    .accessibilityHint(
+                        "Downloads and verifies the exact public model revision shown"
+                    )
+                }
+                if presentation.canCancel {
+                    Button("Cancel download") {
+                        model.cancelSpeechModelDownload()
+                    }
+                    .buttonStyle(.bordered)
+                }
+                if presentation.canRemove {
+                    Button {
+                        isModelRemovalConfirmationPresented = true
+                    } label: {
+                        Label("Remove model", systemImage: "trash")
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(model.isSpeechModelActionInFlight)
+                }
+                if model.showsSpeechMuteControl {
+                    Button {
+                        Task { await model.toggleSpeechMute() }
+                    } label: {
+                        Label(
+                            model.isSpeechMuted ? "Unmute Mara" : "Mute Mara",
+                            systemImage: model.isSpeechMuted
+                                ? "speaker.wave.2.fill"
+                                : "speaker.slash.fill"
+                        )
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(!model.canToggleSpeechMute)
+                    .accessibilityHint(
+                        model.isSpeechMuted
+                            ? "Does not replay prior interviewer turns"
+                            : "Immediately stops current speech and suppresses automatic speech"
+                    )
+                }
+            }
+            .controlSize(.small)
+        }
+        .padding(.horizontal, 24)
+        .padding(.vertical, presentation.showsInstallDisclosure ? 10 : 8)
+        .background(LivePalette.paper)
+        .overlay(alignment: .bottom) {
+            Rectangle().fill(LivePalette.line).frame(height: 1)
+        }
+        .accessibilityElement(children: .contain)
+    }
+
+    private func speechReadinessColor(
+        for tone: InterviewerSpeechReadinessPresentation.Tone
+    ) -> Color {
+        switch tone {
+        case .quiet: return LivePalette.muted
+        case .working: return LivePalette.interviewer
+        case .ready: return LivePalette.candidate
+        case .warning: return LivePalette.warning
+        }
+    }
+
     private func endpointShadowStatusColor(
         for tone: EndpointShadowPresentation.Tone
     ) -> Color {
@@ -307,6 +443,7 @@ struct SystemDesignRoomView: View {
         let body: String
         let color: Color
         let rendersMarkdown: Bool
+        let interviewerTurnID: TurnID?
 
         switch turn {
         case .candidate(let candidate):
@@ -314,11 +451,13 @@ struct SystemDesignRoomView: View {
             body = candidate.transcript.body
             color = LivePalette.candidate
             rendersMarkdown = false
+            interviewerTurnID = nil
         case .interviewer(let interviewer):
             role = "MARA"
             body = interviewer.displayMarkdown
             color = LivePalette.interviewer
             rendersMarkdown = true
+            interviewerTurnID = interviewer.id
         }
 
         return HStack(alignment: .top, spacing: 18) {
@@ -348,13 +487,111 @@ struct SystemDesignRoomView: View {
                     .font(.system(.title3, design: .rounded))
                     .textSelection(.enabled)
                     .fixedSize(horizontal: false, vertical: true)
+
+                if let interviewerTurnID,
+                   let utterance = model.utterance(for: interviewerTurnID) {
+                    interviewerSpeechRow(utterance)
+                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.bottom, 24)
         }
         .padding(.horizontal, 28)
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(role): \(body)")
+        .accessibilityElement(children: .contain)
+    }
+
+    private func interviewerSpeechRow(
+        _ utterance: InterviewerUtterance
+    ) -> some View {
+        let presentation = model.speechPresentation(for: utterance)
+        let isPlaying = model.isPlayingSpeech(for: utterance.id)
+        let color = utteranceStatusColor(for: presentation.tone)
+
+        return HStack(alignment: .center, spacing: 9) {
+            Image(systemName: isPlaying ? "speaker.wave.2.fill" : presentation.systemImage)
+                .foregroundStyle(color)
+                .frame(width: 18)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(isPlaying ? "Playing saved voice" : presentation.title)
+                    .font(.system(.caption, design: .rounded, weight: .semibold))
+                    .foregroundStyle(color)
+                Text(
+                    isPlaying
+                        ? "Playback uses the exact validated local WAV."
+                        : presentation.detail
+                )
+                    .font(.system(.caption2, design: .rounded))
+                    .foregroundStyle(LivePalette.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            if isPlaying || presentation.canStop {
+                Button {
+                    Task { await model.stopSpeech() }
+                } label: {
+                    Label("Stop", systemImage: "stop.fill")
+                }
+                .buttonStyle(.bordered)
+                .tint(LivePalette.handoff)
+            } else {
+                if presentation.canPlay {
+                    Button {
+                        Task {
+                            await model.playSpeech(utteranceID: utterance.id)
+                        }
+                    } label: {
+                        Label("Play", systemImage: "play.fill")
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(model.isSpeechControlActionInFlight)
+                    .accessibilityHint("Plays the exact validated saved WAV without invoking the model")
+                }
+                if presentation.canRetry {
+                    Button {
+                        Task {
+                            await model.retrySpeech(utteranceID: utterance.id)
+                        }
+                    } label: {
+                        Label(
+                            utterance.synthesisAttempts.isEmpty ? "Generate" : "Retry",
+                            systemImage: utterance.synthesisAttempts.isEmpty
+                                ? "waveform"
+                                : "arrow.clockwise"
+                        )
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(
+                        !model.isSpeechReady
+                            || model.isSpeechControlActionInFlight
+                    )
+                    .accessibilityHint(
+                        model.isSpeechReady
+                            ? "Creates a fresh synthesis attempt while preserving prior saved audio"
+                            : "Install and verify Mara’s local model first"
+                    )
+                }
+            }
+        }
+        .controlSize(.small)
+        .padding(.vertical, 7)
+        .overlay(alignment: .top) {
+            Rectangle().fill(LivePalette.line.opacity(0.8)).frame(height: 1)
+        }
+        .accessibilityElement(children: .contain)
+    }
+
+    private func utteranceStatusColor(
+        for tone: InterviewerUtterancePresentation.Tone
+    ) -> Color {
+        switch tone {
+        case .quiet: return LivePalette.muted
+        case .working: return LivePalette.interviewer
+        case .speaking: return LivePalette.interviewer
+        case .ready: return LivePalette.candidate
+        case .warning: return LivePalette.warning
+        }
     }
 
     private var board: some View {

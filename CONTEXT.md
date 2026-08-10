@@ -45,6 +45,26 @@ thinking or work. Segments are never sent to the interviewer independently.
 One canonical response containing rich `displayMarkdown` and concise
 `spokenText` under one stable identity.
 
+### Interviewer Utterance
+
+The durable local-speech identity owned by one Interviewer Turn. It references
+that Turn plus a fingerprint of its exact `spokenText`; it never duplicates or
+rewrites the canonical text. Speech lifecycle cannot block interview progress.
+
+### Synthesis Attempt
+
+One durably authorized local generation operation for an Interviewer
+Utterance. Retry creates a new Attempt while retaining the Utterance identity
+and any previously selected valid audio. Provider/model/profile provenance and
+privacy-safe WAV integrity metadata remain attached to the Attempt.
+
+### Selected Interviewer Audio
+
+The most recent fully validated 24-kHz mono WAV chosen for an Interviewer
+Utterance. It is private derived media identified by a validated filename and
+expected size, duration, format, and SHA-256—not a path or source of truth for
+the Interviewer Turn.
+
 ### Segment
 
 One finalized candidate audio interval with stable identity, timing,
@@ -113,6 +133,12 @@ separate recording, model, transcript, or persistence state.
   explicit quality state.
 - A provider side effect occurs only after its exact Segment or Transcription
   Attempt authorization is durable.
+- Every newly persisted Interviewer Turn atomically owns one pending
+  Interviewer Utterance.
+- A speech provider runs only after its exact Synthesis Attempt authorization
+  is durable; replaying a command never repeats generation or playback.
+- Speech failure, Stop, Mute, or model absence never changes canonical Turn
+  content or blocks Candidate Floor, Hand off, Finish, or recovery.
 - A failed transcription never deletes the Source Recording.
 - No client invents speech, hidden model memory, an Accepted verdict, or a
   durable write receipt.

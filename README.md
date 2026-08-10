@@ -5,24 +5,58 @@ Current product design: [specialty room concepts](docs/design/specialty-rooms.md
 
 ## Current implementation
 
-The first vertical slice establishes a standalone Swift package and a locally
-durable system-design session tracer bullet. Product decisions live in
+Interview Arc Live is a standalone Swift package with a locally durable
+system-design room. It records and recovers candidate segments, transcribes
+through Groq, keeps semantic endpointing advisory, obtains canonical written
+interviewer turns through the locally authenticated Codex App Server, and can
+explicitly generate or replay a private local interviewer voice. Product
+decisions live in
 [issue #1](https://github.com/Vinosaamaa/interview-arc-live/issues/1); the
 foundation is tracked by
-[issue #3](https://github.com/Vinosaamaa/interview-arc-live/issues/3).
+[issue #3](https://github.com/Vinosaamaa/interview-arc-live/issues/3), and the
+local speech slice by
+[issue #13](https://github.com/Vinosaamaa/interview-arc-live/issues/13).
 
-Requirements: macOS 14 or newer and Swift 6.1 or newer.
+Requirements: macOS 14 or newer, Swift 6.2, full Xcode with its Metal
+toolchain, and the committed `Package.resolved` dependency graph. The verified
+lane currently selects Xcode 26.3. MLX compiles and loads a bundled Metal
+library, so plain `swift test` is not release evidence for this package.
 
 ```bash
-swift test
-swift run InterviewArcLive
+xcodebuild -downloadComponent MetalToolchain
+swift package resolve
+
+export INTERVIEW_ARC_LIVE_DERIVED_DATA_PATH="$PWD/.build/xcode-derived-data"
+xcodebuild build-for-testing \
+  -scheme InterviewArcLive-Package \
+  -configuration Debug \
+  -destination 'platform=macOS' \
+  -derivedDataPath "$INTERVIEW_ARC_LIVE_DERIVED_DATA_PATH" \
+  MACOSX_DEPLOYMENT_TARGET=14.0 \
+  CODE_SIGNING_ALLOWED=NO
+xcodebuild test-without-building \
+  -scheme InterviewArcLive-Package \
+  -configuration Debug \
+  -destination 'platform=macOS' \
+  -derivedDataPath "$INTERVIEW_ARC_LIVE_DERIVED_DATA_PATH" \
+  -parallel-testing-enabled NO \
+  MACOSX_DEPLOYMENT_TARGET=14.0 \
+  CODE_SIGNING_ALLOWED=NO
 ```
 
 The preview keeps its Session Manifest and source recordings under Live's local
 Application Support root. Manual Hand off joins selected Groq transcripts and
 uses the exactly preflighted, locally authenticated Codex App Server for one
-canonical interviewer response. TTS, automatic endpointing, the functional
+canonical interviewer response. Automatic endpoint handoff, the functional
 system-design board, and hosted Interview Arc state remain later slices.
+
+Interviewer speech is optional and never runs for historical turns
+automatically. The app discloses and downloads only the pinned
+`mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-8bit` revision shown in the UI
+(1.838 GiB, Apache-2.0) after explicit authorization and a 4 GiB free-space
+check. The model lives under Live's Application Support model directory; after
+installation, synthesis and WAV playback stay on the Mac. Written transcript
+use does not depend on speech availability.
 
 ## Opt-in installed Codex smoke
 
@@ -41,3 +75,23 @@ details, and is never part of the default test or application startup path. It
 requires the retained manifest from the exact installed package and verifies
 the outer code-directory hash plus application, helper, and metadata hashes
 before using local Codex authentication.
+
+## Opt-in installed local-speech smoke
+
+After packaging and installing the exact build, a separate explicit smoke can
+verify model readiness, synthesize one fixed public test phrase, stream and
+play its private temporary WAV, exercise Stop, and remove only its isolated
+temporary audio:
+
+```bash
+INTERVIEW_ARC_LIVE_RUN_SPEECH_SMOKE=1 \
+  scripts/smoke-installed-speech.sh \
+  dist/InterviewArcLive.package-manifest.txt
+```
+
+If the pinned model is not already installed, the smoke still will not
+download it unless the same invocation also sets
+`INTERVIEW_ARC_LIVE_ALLOW_MODEL_DOWNLOAD=1`. This smoke is excluded from the
+default tests and app startup. It requires the retained manifest from the
+exact installed package and verifies the installed signature plus application,
+helper, metadata, and MLX Metal-resource hashes before execution.

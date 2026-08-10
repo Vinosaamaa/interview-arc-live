@@ -11,28 +11,68 @@ permissions:
 jobs:
   test:
     runs-on: macos-15
-    timeout-minutes: 45
+    timeout-minutes: 90
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
     steps:
       - name: Check out source
         uses: actions/checkout@v4
       - name: Report Swift toolchain
-        run: swift --version
+        run: |
+          test -d "$DEVELOPER_DIR"
+          xcodebuild -version
+          swift --version
+      - name: Install Metal toolchain
+        run: xcodebuild -downloadComponent MetalToolchain
       - name: Resolve dependency graph
         run: swift package resolve
+      - name: Report package schemes
+        run: xcodebuild -list
+      - name: Retain resolved dependency graph
+        if: github.event_name == 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: InterviewArcLive-Package.resolved-${{ github.sha }}
+          path: Package.resolved
+          if-no-files-found: error
+          retention-days: 2
+      - name: Build package and tests with Metal
+        env:
+          INTERVIEW_ARC_LIVE_DERIVED_DATA_PATH: ${{ runner.temp }}/InterviewArcLiveDerivedData
+        run: |
+          xcodebuild build-for-testing \
+            -scheme InterviewArcLive-Package \
+            -configuration Release \
+            -destination 'platform=macOS' \
+            -derivedDataPath "$INTERVIEW_ARC_LIVE_DERIVED_DATA_PATH" \
+            MACOSX_DEPLOYMENT_TARGET=14.0 \
+            ENABLE_TESTABILITY=YES \
+            CODE_SIGNING_ALLOWED=NO
       - name: Test package
-        run: swift test
-      - name: Build opt-in Codex smoke helper
-        run: swift build --product InterviewArcLiveCodexSmoke
-      - name: Build opt-in endpoint smoke helper
-        run: swift build --product InterviewArcLiveEndpointSmoke
+        env:
+          INTERVIEW_ARC_LIVE_DERIVED_DATA_PATH: ${{ runner.temp }}/InterviewArcLiveDerivedData
+        run: |
+          xcodebuild test-without-building \
+            -scheme InterviewArcLive-Package \
+            -configuration Release \
+            -destination 'platform=macOS' \
+            -derivedDataPath "$INTERVIEW_ARC_LIVE_DERIVED_DATA_PATH" \
+            -parallel-testing-enabled NO \
+            MACOSX_DEPLOYMENT_TARGET=14.0 \
+            ENABLE_TESTABILITY=YES \
+            CODE_SIGNING_ALLOWED=NO
       - name: Test installer safety
         run: Tests/ScriptTests/install-app-tests.zsh
       - name: Test installed Codex smoke safety
         run: Tests/ScriptTests/codex-smoke-tests.zsh
       - name: Test installed endpoint smoke safety
         run: Tests/ScriptTests/endpoint-smoke-tests.zsh
+      - name: Test installed local-speech smoke safety
+        run: Tests/ScriptTests/speech-smoke-tests.zsh
       - name: Package merged application
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          INTERVIEW_ARC_LIVE_DERIVED_DATA_PATH: ${{ runner.temp }}/InterviewArcLiveDerivedData
         run: scripts/package-app.sh release
       - name: Upload merged application
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'

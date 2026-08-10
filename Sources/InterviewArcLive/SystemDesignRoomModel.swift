@@ -2,6 +2,8 @@ import AVFoundation
 import Foundation
 import InterviewArcLiveCore
 import InterviewArcLiveCodexAdapter
+import InterviewArcLiveQwenAdapter
+import InterviewArcLiveSpeechOutputAdapter
 import InterviewArcLiveVoiceAdapter
 
 protocol LiveCodexInterviewerRuntime: InterviewerRuntime {
@@ -9,6 +11,22 @@ protocol LiveCodexInterviewerRuntime: InterviewerRuntime {
 }
 
 extension CodexAppServerInterviewerRuntime: LiveCodexInterviewerRuntime {}
+
+@MainActor
+protocol LiveInterviewerSpeechMuteControlling: AnyObject {
+    var isMuted: Bool { get }
+
+    func setMuted(_ muted: Bool, commandID: CommandID) async throws
+}
+
+extension InterviewerSpeechCoordinator: LiveInterviewerSpeechMuteControlling {}
+
+@MainActor
+struct LiveInterviewerSpeechDependencies {
+    let provider: any InterviewerSpeechProvider
+    let player: any InterviewerSpeechPlaying
+    let audioStore: any InterviewerSpeechAudioStoring
+}
 
 @MainActor
 final class SystemDesignRoomModel: ObservableObject {
@@ -20,6 +38,12 @@ final class SystemDesignRoomModel: ObservableObject {
     @Published private(set) var codexReadiness: CodexAppServerReadiness?
     @Published private(set) var isCheckingCodex = false
     @Published private(set) var isInterviewerRequestInFlight = false
+    @Published private(set) var speechReadiness: InterviewerSpeechReadiness = .notInstalled
+    @Published private(set) var isSpeechMuted: Bool
+    @Published private(set) var isSpeechModelActionInFlight = false
+    @Published private(set) var isSpeechControlActionInFlight = false
+    @Published private(set) var playingUtteranceID: InterviewerUtteranceID?
+    @Published private(set) var speechErrorMessage: String?
 
     @Published var isCredentialSetupPresented = false
     @Published private(set) var isSavingCredential = false
@@ -56,19 +80,33 @@ final class SystemDesignRoomModel: ObservableObject {
     private let activityPrompt: ActivityPrompt
     private let credentialStore: LiveGroqCredentialStore
     private let codexRuntime: any LiveCodexInterviewerRuntime
+    private let speechDependencies: LiveInterviewerSpeechDependencies?
+    private let preferences: UserDefaults
     private var credentialState: CredentialState = .checking
     private var errorWasCodexFailure = false
     private var coordinator: SegmentSpeechCoordinator?
+    private var interviewerSpeechCoordinator: InterviewerSpeechCoordinator?
+    private var speechPreparationTask: Task<Void, Never>?
     private var audioPlayer: AVAudioPlayer?
+
+    private static let speechMutedPreferenceKey =
+        "interviewArcLive.interviewerSpeechMuted"
 
     init(
         credentialStore: LiveGroqCredentialStore = LiveGroqCredentialStore(),
         codexRuntime: (any LiveCodexInterviewerRuntime)? = nil,
-        activityPrompt: ActivityPrompt? = nil
+        activityPrompt: ActivityPrompt? = nil,
+        speechDependencies: LiveInterviewerSpeechDependencies? = nil,
+        preferences: UserDefaults = .standard
     ) {
         self.credentialStore = credentialStore
         self.codexRuntime = codexRuntime ?? Self.makeDefaultCodexRuntime()
         self.activityPrompt = activityPrompt ?? Self.tracerActivityPrompt
+        self.speechDependencies = speechDependencies
+        self.preferences = preferences
+        isSpeechMuted = preferences.bool(
+            forKey: Self.speechMutedPreferenceKey
+        )
     }
 
     var question: String {
@@ -126,6 +164,51 @@ final class SystemDesignRoomModel: ObservableObject {
 
     var needsGroqCredential: Bool {
         credentialState == .missing || credentialState == .unusable
+    }
+
+    var speechReadinessPresentation: InterviewerSpeechReadinessPresentation {
+        InterviewerSpeechReadinessPresentation.make(
+            readiness: speechReadiness
+        )
+    }
+
+    var isSpeechReady: Bool {
+        speechReadiness == .ready
+    }
+
+    var canToggleSpeechMute: Bool {
+        interviewerSpeechCoordinator != nil
+    }
+
+    var canStartSpeechModelDownload: Bool {
+        interviewerSpeechCoordinator != nil
+            && speechPreparationTask == nil
+            && !isSpeechModelActionInFlight
+    }
+
+    var showsSpeechMuteControl: Bool {
+        interviewerSpeechCoordinator != nil
+    }
+
+    func utterance(
+        for turnID: TurnID
+    ) -> InterviewerUtterance? {
+        snapshot?.interviewerUtterances.first { $0.turnID == turnID }
+    }
+
+    func speechPresentation(
+        for utterance: InterviewerUtterance
+    ) -> InterviewerUtterancePresentation {
+        InterviewerUtterancePresentation.make(
+            utterance: utterance,
+            isMuted: isSpeechMuted
+        )
+    }
+
+    func isPlayingSpeech(
+        for utteranceID: InterviewerUtteranceID
+    ) -> Bool {
+        playingUtteranceID == utteranceID
     }
 
     var availableTurnModes: [TurnMode] {
@@ -327,6 +410,7 @@ final class SystemDesignRoomModel: ObservableObject {
                 )
             }
             publish(restored)
+            await attachInterviewerSpeech(to: opened)
         } catch {
             statusMessage = "Local session unavailable"
             errorMessage = safeMessage(for: error)
@@ -554,10 +638,145 @@ final class SystemDesignRoomModel: ObservableObject {
                 return
             }
             publish(updated)
+            await interviewerSpeechCoordinator?
+                .observeNewlyPersistedSnapshot(updated)
         } catch {
             publish(coordinator.snapshot)
             errorWasCodexFailure = applyCodexFailure(error)
             errorMessage = safeMessage(for: error)
+        }
+    }
+
+    func startSpeechModelDownload() {
+        guard speechPreparationTask == nil,
+              let interviewerSpeechCoordinator else {
+            return
+        }
+        speechErrorMessage = nil
+        isSpeechModelActionInFlight = true
+        speechPreparationTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer {
+                speechPreparationTask = nil
+                isSpeechModelActionInFlight = false
+            }
+            do {
+                _ = try await interviewerSpeechCoordinator.prepareModel(
+                    policy: .userAuthorizedDownload
+                )
+            } catch is CancellationError {
+                _ = await interviewerSpeechCoordinator.refreshReadiness()
+            } catch {
+                speechErrorMessage = safeSpeechMessage(for: error)
+                _ = await interviewerSpeechCoordinator.refreshReadiness()
+            }
+        }
+    }
+
+    func cancelSpeechModelDownload() {
+        speechPreparationTask?.cancel()
+    }
+
+    func removeSpeechModel() async {
+        guard speechPreparationTask == nil,
+              !isSpeechModelActionInFlight,
+              let interviewerSpeechCoordinator else {
+            return
+        }
+        isSpeechModelActionInFlight = true
+        speechErrorMessage = nil
+        defer { isSpeechModelActionInFlight = false }
+        do {
+            _ = try await interviewerSpeechCoordinator.removeModel()
+        } catch {
+            speechErrorMessage = safeSpeechMessage(for: error)
+            _ = await interviewerSpeechCoordinator.refreshReadiness()
+        }
+    }
+
+    func toggleSpeechMute() async {
+        guard let interviewerSpeechCoordinator else { return }
+        await toggleSpeechMute(using: interviewerSpeechCoordinator)
+    }
+
+    func toggleSpeechMute(
+        using speechMuteController: any LiveInterviewerSpeechMuteControlling
+    ) async {
+        let next = !isSpeechMuted
+        do {
+            try await speechMuteController.setMuted(
+                next,
+                commandID: commandID(next ? "mute-speech" : "unmute-speech")
+            )
+        } catch {
+            speechErrorMessage = safeSpeechMessage(for: error)
+        }
+        // Core applies the local mute state before it persists a stopped
+        // active Attempt. Reconcile even when that durable write reports an
+        // error so the toggle and preference never contradict audio output.
+        isSpeechMuted = speechMuteController.isMuted
+        preferences.set(
+            isSpeechMuted,
+            forKey: Self.speechMutedPreferenceKey
+        )
+        if isSpeechMuted {
+            playingUtteranceID = nil
+        }
+    }
+
+    func stopSpeech() async {
+        guard let interviewerSpeechCoordinator else { return }
+        do {
+            try await interviewerSpeechCoordinator.stop(
+                commandID: commandID("stop-speech")
+            )
+            playingUtteranceID = nil
+        } catch {
+            speechErrorMessage = safeSpeechMessage(for: error)
+        }
+    }
+
+    func playSpeech(utteranceID: InterviewerUtteranceID) async {
+        guard let interviewerSpeechCoordinator,
+              !isSpeechMuted,
+              !isSpeechControlActionInFlight else {
+            return
+        }
+        isSpeechControlActionInFlight = true
+        playingUtteranceID = utteranceID
+        speechErrorMessage = nil
+        defer {
+            playingUtteranceID = nil
+            isSpeechControlActionInFlight = false
+        }
+        do {
+            try await interviewerSpeechCoordinator.play(
+                utteranceID: utteranceID
+            )
+        } catch is CancellationError {
+            // Stop or Mute intentionally releases playback immediately.
+        } catch {
+            speechErrorMessage = safeSpeechMessage(for: error)
+        }
+    }
+
+    func retrySpeech(utteranceID: InterviewerUtteranceID) async {
+        guard let interviewerSpeechCoordinator,
+              isSpeechReady,
+              !isSpeechMuted,
+              !isSpeechControlActionInFlight else {
+            return
+        }
+        isSpeechControlActionInFlight = true
+        speechErrorMessage = nil
+        defer { isSpeechControlActionInFlight = false }
+        do {
+            try await interviewerSpeechCoordinator.retry(
+                utteranceID: utteranceID,
+                commandID: commandID("retry-speech")
+            )
+        } catch {
+            speechErrorMessage = safeSpeechMessage(for: error)
         }
     }
 
@@ -612,6 +831,66 @@ final class SystemDesignRoomModel: ObservableObject {
         }
     }
 
+    private func attachInterviewerSpeech(
+        to conversation: SegmentSpeechCoordinator
+    ) async {
+        do {
+            let dependencies: LiveInterviewerSpeechDependencies
+            if let speechDependencies {
+                dependencies = speechDependencies
+            } else {
+                dependencies = try Self.makeLiveSpeechDependencies()
+            }
+
+            let speech = try await InterviewerSpeechCoordinator.attach(
+                to: conversation,
+                provider: dependencies.provider,
+                player: dependencies.player,
+                audioStore: dependencies.audioStore,
+                initiallyMuted: isSpeechMuted
+            )
+            interviewerSpeechCoordinator = speech
+            speech.setSnapshotHandler { [weak self, weak speech] next in
+                guard let self,
+                      let speech,
+                      self.interviewerSpeechCoordinator === speech else {
+                    return
+                }
+                self.publish(next)
+            }
+            speech.setReadinessHandler { [weak self, weak speech] next in
+                guard let self,
+                      let speech,
+                      self.interviewerSpeechCoordinator === speech else {
+                    return
+                }
+                self.speechReadiness = next
+            }
+            do {
+                publish(try await speech.resumePendingWork())
+            } catch {
+                publish(speech.snapshot)
+                speechErrorMessage = safeSpeechMessage(for: error)
+            }
+        } catch {
+            speechReadiness = .unavailable(.storageFailure)
+            speechErrorMessage = "Local interviewer voice could not start. The written interview remains fully usable."
+        }
+    }
+
+    private static func makeLiveSpeechDependencies() throws
+        -> LiveInterviewerSpeechDependencies
+    {
+        let audioStore = LiveInterviewerSpeechAudioStore()
+        return LiveInterviewerSpeechDependencies(
+            provider: try QwenInterviewerSpeechProvider(),
+            player: AVAudioEngineInterviewerSpeechPlayer(
+                audioStore: audioStore
+            ),
+            audioStore: audioStore
+        )
+    }
+
     private static func makeDefaultCodexRuntime(
         fileManager: FileManager = .default
     ) -> any LiveCodexInterviewerRuntime {
@@ -639,6 +918,37 @@ final class SystemDesignRoomModel: ObservableObject {
         } catch {
             return UnavailableLiveCodexRuntime()
         }
+    }
+
+    private func safeSpeechMessage(for error: Error) -> String {
+        if let coordinatorError = error as? InterviewerSpeechCoordinatorError {
+            switch coordinatorError {
+            case .modelNotReady:
+                return "Install and verify Mara’s local model before generating speech. The written turn is ready."
+            case .muted:
+                return "Mara is muted. Unmute before playing or generating speech."
+            case .operationInProgress,
+                 .playbackInProgress,
+                 .modelPreparationInProgress:
+                return "Another local speech operation is already running. Stop it before starting a new one."
+            case .utteranceNotFound, .canonicalTurnNotFound:
+                return "That written interviewer turn is safe, but its local speech record is unavailable."
+            case .noSelectedAudio:
+                return "No saved voice exists for this turn. Generate it explicitly when the model is ready."
+            case .selectedAudioInvalid:
+                return "The saved WAV no longer matches its durable receipt, so it was not played. Retry to create a new one."
+            case .invalidProviderAudio, .providerFailed:
+                return "Local speech generation failed. The written interviewer turn is unchanged."
+            case .storageFailed:
+                return "The private WAV could not be finalized. The written interviewer turn is unchanged."
+            case .playbackFailed:
+                return "Local audio output could not start. The written interviewer turn remains available."
+            }
+        }
+        if error is CancellationError {
+            return "The local speech operation was cancelled. No historical turn will play automatically."
+        }
+        return "Local interviewer speech did not complete. The written interview remains fully usable."
     }
 
     private func applyCodexReadiness(_ readiness: CodexAppServerReadiness) {
