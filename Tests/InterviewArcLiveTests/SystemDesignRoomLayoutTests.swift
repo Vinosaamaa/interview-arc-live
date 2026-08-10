@@ -3,20 +3,58 @@ import XCTest
 @testable import InterviewArcLive
 
 final class SystemDesignRoomLayoutTests: XCTestCase {
-    func testSupportedWidthsKeepTheApprovedTurnlineBoardBalance() {
-        for width: CGFloat in [1_080, 1_197, 1_600] {
-            let turnline = FullRoomLayout.turnlineIdealWidth(for: width)
-            let board = FullRoomLayout.boardIdealWidth(for: width)
+    func testSupportedWidthsUseTheDeterministicTurnlineBoardComposition() {
+        let contracts: [(
+            total: CGFloat,
+            turnline: CGFloat,
+            board: CGFloat
+        )] = [
+            (1_080, 399.6, 680.4),
+            (1_180, 436.6, 743.4),
+            (1_600, 592, 1_008),
+        ]
+
+        for contract in contracts {
+            let width = contract.total
+            let widths = FullRoomLayout.workspaceWidths(for: width)
 
             XCTAssertEqual(
-                turnline / width,
+                widths.turnlineWidth,
+                contract.turnline,
+                accuracy: 0.001
+            )
+            XCTAssertEqual(
+                widths.boardWidth,
+                contract.board,
+                accuracy: 0.001
+            )
+            XCTAssertEqual(
+                widths.turnlineWidth / width,
                 FullRoomLayout.turnlineWidthFraction,
                 accuracy: 0.001
             )
-            XCTAssertGreaterThanOrEqual(turnline, FullRoomLayout.turnlineMinimumWidth)
-            XCTAssertGreaterThanOrEqual(board, FullRoomLayout.boardMinimumWidth)
-            XCTAssertEqual(turnline + board, width, accuracy: 0.001)
+            XCTAssertEqual(
+                widths.boardWidth / width,
+                FullRoomLayout.boardWidthFraction,
+                accuracy: 0.001
+            )
+            XCTAssertGreaterThanOrEqual(
+                widths.turnlineWidth,
+                FullRoomLayout.turnlineMinimumWidth
+            )
+            XCTAssertGreaterThanOrEqual(
+                widths.boardWidth,
+                FullRoomLayout.boardMinimumWidth
+            )
+            XCTAssertEqual(widths.composedWidth, width, accuracy: 0.001)
+            XCTAssertEqual(widths.totalWidth, width)
+            XCTAssertEqual(widths.visualDividerWidth, 1)
         }
+        XCTAssertEqual(
+            FullRoomLayout.boardWidthFraction,
+            0.63,
+            accuracy: 0.001
+        )
     }
 
     func testWideWindowDoesNotCapTheTurnlineBelowTheApprovedFraction() {
@@ -177,6 +215,18 @@ final class SystemDesignRoomLayoutTests: XCTestCase {
             FullRoomHeaderAccessibility.privacyLabel,
             "Private local session"
         )
+    }
+
+    func testHeaderVisualLabelsAreAtomicAndTruthful() {
+        XCTAssertEqual(
+            FullRoomHeaderLabels.roomStatus(
+                statusMessage: "Restoring local session…"
+            ),
+            "System design · Restoring local session…"
+        )
+        XCTAssertEqual(FullRoomHeaderLabels.compactRoom, "System design")
+        XCTAssertEqual(FullRoomHeaderLabels.widePersona, "Mara · Staff Engineer")
+        XCTAssertEqual(FullRoomHeaderLabels.compactPersona, "Mara")
     }
 
     func testWaveformUsesTheRailWithoutPretendingToBeRecordedAudio() {

@@ -27,18 +27,35 @@ struct SystemDesignRoomView: View {
             }
 
             GeometryReader { workspace in
-                HSplitView {
+                let widths = FullRoomLayout.workspaceWidths(
+                    for: workspace.size.width
+                )
+
+                HStack(spacing: 0) {
                     transcript
                         .frame(
-                            minWidth: FullRoomLayout.turnlineMinimumWidth,
-                            idealWidth: FullRoomLayout.turnlineIdealWidth(
-                                for: workspace.size.width
-                            )
+                            width: widths.turnlineWidth,
+                            height: workspace.size.height
                         )
+                        .overlay(alignment: .trailing) {
+                            Rectangle()
+                                .fill(LivePalette.line)
+                                .frame(width: widths.visualDividerWidth)
+                                .allowsHitTesting(false)
+                                .accessibilityHidden(true)
+                        }
                     board
-                        .frame(minWidth: FullRoomLayout.boardMinimumWidth)
+                        .frame(
+                            width: widths.boardWidth,
+                            height: workspace.size.height
+                        )
                         .accessibilityIdentifier(FullRoomAccessibility.board)
                 }
+                .frame(
+                    width: widths.totalWidth,
+                    height: workspace.size.height,
+                    alignment: .leading
+                )
             }
 
             floorRail
@@ -157,7 +174,7 @@ struct SystemDesignRoomView: View {
         } label: {
             if isCompact {
                 HStack(spacing: 7) {
-                    Text("System design")
+                    Text(FullRoomHeaderLabels.compactRoom)
                         .fontWeight(.semibold)
                     Circle()
                         .fill(headerRoomStatusColor)
@@ -166,17 +183,14 @@ struct SystemDesignRoomView: View {
                 }
                 .help("System design · \(model.statusMessage)")
             } else {
-                HStack(spacing: 7) {
-                    Text("System design")
-                        .fontWeight(.semibold)
-                    Text("·")
-                        .foregroundStyle(LivePalette.muted)
-                    Text(model.statusMessage)
-                        .foregroundStyle(LivePalette.ink)
-                        .lineLimit(1)
-                        .frame(width: 86, alignment: .leading)
-                        .help(model.statusMessage)
-                }
+                Text(
+                    FullRoomHeaderLabels.roomStatus(
+                        statusMessage: model.statusMessage
+                    )
+                )
+                .fontWeight(.semibold)
+                .lineLimit(1)
+                .help(model.statusMessage)
             }
         }
         .menuStyle(.borderlessButton)
@@ -212,12 +226,12 @@ struct SystemDesignRoomView: View {
             }
         } label: {
             HStack(spacing: 7) {
-                Text("Mara")
+                Text(
+                    isCompact
+                        ? FullRoomHeaderLabels.compactPersona
+                        : FullRoomHeaderLabels.widePersona
+                )
                     .fontWeight(.semibold)
-                if !isCompact {
-                    Text("·")
-                    Text("Staff Engineer")
-                }
                 if !model.isSpeechReady {
                     speechAttentionBadge
                 }
@@ -856,6 +870,17 @@ struct SystemDesignRoomView: View {
     }
 }
 
+struct FullRoomWorkspaceWidths: Equatable {
+    let totalWidth: CGFloat
+    let turnlineWidth: CGFloat
+    let boardWidth: CGFloat
+    let visualDividerWidth: CGFloat
+
+    var composedWidth: CGFloat {
+        turnlineWidth + boardWidth
+    }
+}
+
 enum FullRoomLayout {
     static let minimumWindowWidth: CGFloat = 1_080
     static let defaultWindowWidth: CGFloat = 1_180
@@ -874,6 +899,8 @@ enum FullRoomLayout {
     static let questionBandMinimumHeight = questionBandOneLineHeight
     static let turnlineHeaderHeight: CGFloat = 58
     static let turnlineWidthFraction: CGFloat = 0.37
+    static let boardWidthFraction: CGFloat = 1 - turnlineWidthFraction
+    static let workspaceVisualDividerWidth: CGFloat = 1
     static let turnlineMinimumWidth: CGFloat = 380
     static let turnlineHorizontalPadding: CGFloat = 64
     static let turnlineEntryGap: CGFloat = 42
@@ -899,19 +926,25 @@ enum FullRoomLayout {
     /// header occupies that same row instead of leaving a blank strip.
     static let trafficLightClearance: CGFloat = 84
 
-    static func turnlineIdealWidth(for workspaceWidth: CGFloat) -> CGFloat {
-        let availableTurnlineWidth = max(
-            turnlineMinimumWidth,
-            workspaceWidth - boardMinimumWidth
-        )
-        return min(
-            max(workspaceWidth * turnlineWidthFraction, turnlineMinimumWidth),
-            availableTurnlineWidth
+    static func workspaceWidths(
+        for workspaceWidth: CGFloat
+    ) -> FullRoomWorkspaceWidths {
+        let totalWidth = max(0, workspaceWidth)
+        let turnlineWidth = totalWidth * turnlineWidthFraction
+        return FullRoomWorkspaceWidths(
+            totalWidth: totalWidth,
+            turnlineWidth: turnlineWidth,
+            boardWidth: totalWidth - turnlineWidth,
+            visualDividerWidth: workspaceVisualDividerWidth
         )
     }
 
+    static func turnlineIdealWidth(for workspaceWidth: CGFloat) -> CGFloat {
+        workspaceWidths(for: workspaceWidth).turnlineWidth
+    }
+
     static func boardIdealWidth(for workspaceWidth: CGFloat) -> CGFloat {
-        max(boardMinimumWidth, workspaceWidth - turnlineIdealWidth(for: workspaceWidth))
+        workspaceWidths(for: workspaceWidth).boardWidth
     }
 
     static func questionBandHeight(forLineCount lineCount: Int) -> CGFloat {
@@ -990,6 +1023,16 @@ enum FullRoomHeaderAccessibility {
     static let personaLabel = "Interviewer: Mara, Staff Engineer"
     static let privacyLabel = "Private local session"
     static let collapseLabel = "Collapse interview room"
+}
+
+enum FullRoomHeaderLabels {
+    static let compactRoom = "System design"
+    static let compactPersona = "Mara"
+    static let widePersona = "Mara · Staff Engineer"
+
+    static func roomStatus(statusMessage: String) -> String {
+        "\(compactRoom) · \(statusMessage)"
+    }
 }
 
 enum FullRoomAccessibility {
