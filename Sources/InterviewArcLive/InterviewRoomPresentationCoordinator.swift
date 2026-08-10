@@ -75,6 +75,7 @@ final class InterviewRoomPresentationCoordinator: NSObject, NSWindowDelegate {
     private var compactHostingController: CompactRoomHostingController!
     private var fullContainerController: FullRoomContainerController!
     private let frameAutosaveName: String
+    private let compactDynamicTypeSizeOverride: DynamicTypeSize?
 
     private var didStart = false
     private var didRegisterObservers = false
@@ -91,10 +92,12 @@ final class InterviewRoomPresentationCoordinator: NSObject, NSWindowDelegate {
 
     init(
         model: SystemDesignRoomModel,
-        frameAutosaveName: String = "InterviewArcLive.SystemDesignRoom"
+        frameAutosaveName: String = "InterviewArcLive.SystemDesignRoom",
+        compactDynamicTypeSizeOverride: DynamicTypeSize? = nil
     ) {
         self.model = model
         self.frameAutosaveName = frameAutosaveName
+        self.compactDynamicTypeSizeOverride = compactDynamicTypeSizeOverride
         super.init()
         installPresentations()
         registerLifecycleObservers()
@@ -376,7 +379,8 @@ final class InterviewRoomPresentationCoordinator: NSObject, NSWindowDelegate {
 
         let compactRoot = CompactSystemDesignRoomView(
             model: model,
-            onExpand: { [weak self] in self?.expand() }
+            onExpand: { [weak self] in self?.expand() },
+            dynamicTypeSizeOverride: compactDynamicTypeSizeOverride
         )
         compactHostingController = CompactRoomHostingController(
             rootView: compactRoot
@@ -590,15 +594,11 @@ final class InterviewRoomPresentationCoordinator: NSObject, NSWindowDelegate {
               presentationState != .terminated else {
             return
         }
-        let measuredSize = compactHostingController.sizeThatFits(
-            in: NSSize(
-                width: CompactPanelLayout.contentWidth,
-                height: CompactPanelLayout.maximumContentHeight
-            )
-        )
+        let hostedView = compactHostingController.view
+        hostedView.layoutSubtreeIfNeeded()
         let resized = CompactPanelLayout.framePreservingTopEdge(
             compactPanel.frame,
-            measuredContentHeight: measuredSize.height
+            measuredContentHeight: hostedView.fittingSize.height
         )
         let clamped = Self.clampedFrame(
             resized,
