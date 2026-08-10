@@ -121,6 +121,11 @@ final class BoardNodePresentationTests: XCTestCase {
                 visual.outlinePath(in: rect).svgPathData,
                 visual.outlinePath(in: rect).svgPathData
             )
+            XCTAssertEqual(visual.strokeWidth(in: rect), 1.5)
+            XCTAssertEqual(
+                visual.strokeWidth(in: rect, isSelected: true),
+                2
+            )
         }
     }
 
@@ -150,11 +155,47 @@ final class BoardNodePresentationTests: XCTestCase {
                     tolerance.contains(labelBounds),
                     "\(visual.stableKey) label exceeded \(frame): \(labelBounds)"
                 )
+                let labelLayout = BoardNodeLabelLayout(
+                    text: "Delivery status store",
+                    in: labelBounds
+                )
+                for index in labelLayout.lines.indices {
+                    let lineBounds = labelLayout.lineRect(at: index)
+                    XCTAssertTrue(
+                        [
+                            lineBounds.minX,
+                            lineBounds.minY,
+                            lineBounds.maxX,
+                            lineBounds.maxY,
+                        ].allSatisfy(\.isFinite),
+                        "\(visual.stableKey) produced a non-finite line rect"
+                    )
+                    XCTAssertTrue(
+                        tolerance.contains(lineBounds),
+                        "\(visual.stableKey) line exceeded \(frame): \(lineBounds)"
+                    )
+                    XCTAssertTrue(
+                        labelBounds.insetBy(
+                            dx: -0.000_001,
+                            dy: -0.000_001
+                        ).contains(lineBounds),
+                        "\(visual.stableKey) line exceeded its label rect"
+                    )
+                }
+                let strokeWidth = visual.strokeWidth(in: frame)
+                XCTAssertTrue(strokeWidth.isFinite)
+                XCTAssertGreaterThan(strokeWidth, 0)
                 let paths = [visual.outlinePath(in: frame)]
                     + visual.detailPaths(in: frame)
                     + visual.pictogramPaths(in: frame)
                 for path in paths {
                     let bounds = path.cgPath.boundingBoxOfPath
+                    let paintedBounds = path.cgPath.copy(
+                        strokingWithWidth: strokeWidth,
+                        lineCap: .round,
+                        lineJoin: .round,
+                        miterLimit: 10
+                    ).boundingBoxOfPath
                     XCTAssertTrue(
                         [
                             bounds.minX,
@@ -167,6 +208,10 @@ final class BoardNodePresentationTests: XCTestCase {
                     XCTAssertTrue(
                         tolerance.contains(bounds),
                         "\(visual.stableKey) exceeded \(frame): \(bounds)"
+                    )
+                    XCTAssertTrue(
+                        tolerance.contains(paintedBounds),
+                        "\(visual.stableKey) paint exceeded \(frame): \(paintedBounds)"
                     )
                 }
             }
@@ -237,6 +282,37 @@ final class BoardNodePresentationTests: XCTestCase {
         }
     }
 
+    func testDrawIOOverlayUsesTheSharedGeometryAwareStrokeWidth() throws {
+        let sizes = [
+            CGSize(width: 0.1, height: 0.1),
+            CGSize(width: 1, height: 1),
+            CGSize(width: 10, height: 8),
+            CGSize(width: 20, height: 16),
+            CGSize(width: 160, height: 90),
+        ]
+
+        for size in sizes {
+            let rect = CGRect(origin: .zero, size: size)
+            for visual in BoardNodeKind.selectableKinds.map(\.visual) {
+                let uri = DrawIONodeVisualOverlayEncoder.dataURI(
+                    visual: visual,
+                    canvasSize: size,
+                    fillHex: "f4f1ff",
+                    strokeHex: "1f2937"
+                )
+                let encoded = String(
+                    uri.dropFirst("data:image/svg+xml,".count)
+                )
+                let svg = try XCTUnwrap(encoded.removingPercentEncoding)
+                XCTAssertTrue(
+                    svg.contains(
+                        "stroke-width='\(BoardVectorPath.number(visual.strokeWidth(in: rect)))'"
+                    )
+                )
+            }
+        }
+    }
+
     func testConnectorAnchorsChooseNearestHorizontalAndVerticalSides() {
         let center = BoardBox(
             id: BoardElementID("center"),
@@ -289,6 +365,8 @@ final class BoardNodePresentationTests: XCTestCase {
         XCTAssertEqual(layout.lines, ["Delivery status", "store"])
         XCTAssertEqual(layout.drawIOValue, "Delivery status\nstore")
         XCTAssertEqual(layout.lineRect(at: 0).height, 15)
+        XCTAssertEqual(layout.resolvedLineHeight, 15)
+        XCTAssertEqual(layout.resolvedFontSize, 13)
         XCTAssertGreaterThanOrEqual(layout.lineRect(at: 0).minY, rect.minY)
         XCTAssertLessThanOrEqual(layout.lineRect(at: 1).maxY, rect.maxY)
 

@@ -817,6 +817,7 @@ struct SystemDesignBoardView: View {
                             width: labelLayout.rect.width,
                             height: labelLayout.rect.height
                         )
+                        .clipped()
                         .position(
                             x: labelLayout.rect.midX,
                             y: labelLayout.rect.midY
@@ -830,14 +831,14 @@ struct SystemDesignBoardView: View {
                             Text(line)
                                 .font(
                                     .system(
-                                        size: BoardNodeLabelLayout.fontSize,
+                                        size: labelLayout.resolvedFontSize,
                                         weight: .semibold,
                                         design: .rounded
                                     )
                                 )
                                 .lineLimit(1)
                                 .frame(
-                                    height: BoardNodeLabelLayout.lineHeight
+                                    height: labelLayout.resolvedLineHeight
                                 )
                         }
                     }
@@ -1957,12 +1958,16 @@ private struct BoardNodeVisualLayer: View {
         Canvas { context, size in
             let rect = CGRect(origin: .zero, size: size)
             let outline = Path(visual.outlinePath(in: rect).cgPath)
+            let strokeWidth = visual.strokeWidth(in: rect)
             context.fill(outline, with: .color(fill))
             context.stroke(
                 outline,
                 with: .color(stroke),
                 style: StrokeStyle(
-                    lineWidth: isSelected ? 2 : 1.5,
+                    lineWidth: visual.strokeWidth(
+                        in: rect,
+                        isSelected: isSelected
+                    ),
                     lineJoin: .round
                 )
             )
@@ -1971,7 +1976,7 @@ private struct BoardNodeVisualLayer: View {
                     Path(vector.cgPath),
                     with: .color(stroke),
                     style: StrokeStyle(
-                        lineWidth: 1.5,
+                        lineWidth: strokeWidth,
                         lineCap: .round,
                         lineJoin: .round
                     )

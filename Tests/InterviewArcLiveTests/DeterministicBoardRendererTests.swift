@@ -165,6 +165,68 @@ final class DeterministicBoardRendererTests: XCTestCase {
         )
     }
 
+    func testTinyNodeExportsUseBoundedSharedStrokeAndLabelMetrics() throws {
+        let frame = BoardRect(
+            origin: BoardPoint(x: 10, y: 10),
+            size: BoardSize(width: 0.1, height: 0.1)
+        )
+        let box = BoardBox(
+            id: BoardElementID("tiny-node"),
+            frame: frame,
+            label: "Delivery status store",
+            kind: .queue
+        )
+        let document = try BoardDocument(
+            canvas: BoardCanvas(size: BoardSize(width: 64, height: 64)),
+            elements: [.box(box)]
+        )
+        let settings = try BoardExportSettings(
+            viewport: document.canvas.size,
+            scale: 2,
+            background: BoardColor(hexRGB: "ffffff")
+        )
+        let visual = box.kind.visual
+        let rect = CGRect(
+            x: frame.origin.x,
+            y: frame.origin.y,
+            width: frame.size.width,
+            height: frame.size.height
+        )
+        let layout = BoardNodeLabelLayout(
+            text: box.label,
+            in: visual.labelRect(in: rect)
+        )
+
+        let artifacts = try DeterministicBoardRenderer().render(
+            document,
+            settings: settings
+        )
+        let svg = try XCTUnwrap(
+            String(data: artifacts.svg, encoding: .utf8)
+        )
+        let drawIO = String(decoding: artifacts.canonicalSource, as: UTF8.self)
+
+        XCTAssertTrue(
+            svg.contains(
+                "stroke-width=\"\(BoardVectorPath.number(visual.strokeWidth(in: rect)))\""
+            )
+        )
+        XCTAssertTrue(
+            svg.contains(
+                "font-size=\"\(BoardVectorPath.number(layout.resolvedFontSize))\""
+            )
+        )
+        XCTAssertTrue(svg.contains("clip-path=\"url(#ia-node-label-0)\""))
+        XCTAssertTrue(
+            drawIO.contains(
+                "fontSize=\(BoardVectorPath.number(layout.resolvedFontSize))"
+            )
+        )
+        XCTAssertEqual(artifacts.pngWidth, 128)
+        XCTAssertEqual(artifacts.pngHeight, 128)
+        XCTAssertFalse(artifacts.png.isEmpty)
+    }
+
     func testConnectorUsesTheSameOrthogonalRouteInSVGAndPNG() throws {
         let start = BoardPoint(x: 200, y: 100)
         let end = BoardPoint(x: 460, y: 240)

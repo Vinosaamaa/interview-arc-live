@@ -103,19 +103,20 @@ struct DeterministicBoardRenderer: Sendable {
                     text: box.label,
                     in: labelRect
                 )
+                let strokeWidth = number(visual.strokeWidth(in: rect))
                 let clipID = "ia-node-label-\(renderIndex)"
                 var nodeRows = [
                     "  <g data-id=\"\(attribute(box.id.rawValue))\" data-node-kind=\"\(attribute(box.kind.rawValue))\" data-node-visual=\"\(attribute(visual.stableKey))\">",
-                    "    <path d=\"\(attribute(visual.outlinePath(in: rect).svgPathData))\" fill=\"#\(attribute(box.fill.hexRGB))\" stroke=\"#\(attribute(box.stroke.hexRGB))\" stroke-width=\"1.5\" stroke-linejoin=\"round\"/>",
+                    "    <path d=\"\(attribute(visual.outlinePath(in: rect).svgPathData))\" fill=\"#\(attribute(box.fill.hexRGB))\" stroke=\"#\(attribute(box.stroke.hexRGB))\" stroke-width=\"\(strokeWidth)\" stroke-linejoin=\"round\"/>",
                     "    <clipPath id=\"\(clipID)\"><rect x=\"\(number(labelRect.minX))\" y=\"\(number(labelRect.minY))\" width=\"\(number(labelRect.width))\" height=\"\(number(labelRect.height))\"/></clipPath>",
                 ]
                 for path in visual.detailPaths(in: rect) + visual.pictogramPaths(in: rect) {
                     nodeRows.append(
-                        "    <path d=\"\(attribute(path.svgPathData))\" fill=\"none\" stroke=\"#\(attribute(box.stroke.hexRGB))\" stroke-width=\"1.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/>"
+                        "    <path d=\"\(attribute(path.svgPathData))\" fill=\"none\" stroke=\"#\(attribute(box.stroke.hexRGB))\" stroke-width=\"\(strokeWidth)\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/>"
                     )
                 }
                 nodeRows.append(
-                    "    <text data-label-layout=\"wrapped-v1\" clip-path=\"url(#\(clipID))\" text-anchor=\"middle\" font-family=\"-apple-system, BlinkMacSystemFont, sans-serif\" font-size=\"13\" font-weight=\"600\" fill=\"#\(attribute(box.stroke.hexRGB))\">"
+                    "    <text data-label-layout=\"wrapped-v1\" clip-path=\"url(#\(clipID))\" text-anchor=\"middle\" font-family=\"-apple-system, BlinkMacSystemFont, sans-serif\" font-size=\"\(number(labelLayout.resolvedFontSize))\" font-weight=\"600\" fill=\"#\(attribute(box.stroke.hexRGB))\">"
                 )
                 for (index, line) in labelLayout.lines.enumerated() {
                     nodeRows.append(
@@ -252,7 +253,7 @@ struct DeterministicBoardRenderer: Sendable {
             context.scaleBy(x: 1, y: -1)
             context.setFillColor((try? rgb(box.fill).cgColor) ?? NSColor.white.cgColor)
             context.setStrokeColor(stroke)
-            context.setLineWidth(1.5)
+            context.setLineWidth(visual.strokeWidth(in: boardRect))
             context.setLineCap(.round)
             context.setLineJoin(.round)
             context.addPath(visual.outlinePath(in: boardRect).cgPath)
@@ -268,6 +269,14 @@ struct DeterministicBoardRenderer: Sendable {
                 text: box.label,
                 in: visual.labelRect(in: boardRect)
             )
+            let labelClip = CGRect(
+                x: labelLayout.rect.minX,
+                y: viewportHeight - labelLayout.rect.maxY,
+                width: labelLayout.rect.width,
+                height: labelLayout.rect.height
+            )
+            context.saveGState()
+            context.clip(to: labelClip)
             for (index, line) in labelLayout.lines.enumerated() {
                 let lineRect = labelLayout.lineRect(at: index)
                 drawText(
@@ -278,13 +287,14 @@ struct DeterministicBoardRenderer: Sendable {
                         width: lineRect.width,
                         height: lineRect.height
                     ),
-                    size: BoardNodeLabelLayout.fontSize,
+                    size: labelLayout.resolvedFontSize,
                     weight: .semibold,
                     color: (try? rgb(box.stroke).nsColor) ?? NSColor.gray,
                     alignment: .center,
                     lineBreakMode: .byClipping
                 )
             }
+            context.restoreGState()
 
         case .connector(let connector):
             let route = BoardOrthogonalConnectorRoute(

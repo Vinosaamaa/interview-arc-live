@@ -360,6 +360,11 @@ struct BoardNodeVisual: Equatable {
         )
     }
 
+    func strokeWidth(in rect: CGRect, isSelected: Bool = false) -> CGFloat {
+        let normalWidth = isSelected ? 2.0 : 1.5
+        return min(normalWidth, geometryUnit(in: rect) * normalWidth)
+    }
+
     private func pictogramRect(in rect: CGRect) -> CGRect {
         let horizontalInset = min(8, rect.width * 0.08)
         let verticalInset = min(8, rect.height * 0.08)
@@ -554,6 +559,8 @@ struct BoardNodeLabelLayout: Equatable {
 
     let rect: CGRect
     let lines: [String]
+    let resolvedFontSize: Double
+    let resolvedLineHeight: Double
 
     init(text: String, in rect: CGRect) {
         self.rect = rect
@@ -579,21 +586,29 @@ struct BoardNodeLabelLayout: Equatable {
             )
             lines = visible
         }
+        resolvedLineHeight = min(
+            Self.lineHeight,
+            max(0, rect.height) / Double(max(1, lines.count))
+        )
+        resolvedFontSize = min(
+            Self.fontSize,
+            resolvedLineHeight * Self.fontSize / Self.lineHeight
+        )
     }
 
     func lineRect(at index: Int) -> CGRect {
-        let contentHeight = Double(lines.count) * Self.lineHeight
+        let contentHeight = Double(lines.count) * resolvedLineHeight
         return CGRect(
             x: rect.minX,
             y: rect.midY - contentHeight / 2
-                + Double(index) * Self.lineHeight,
+                + Double(index) * resolvedLineHeight,
             width: rect.width,
-            height: Self.lineHeight
+            height: resolvedLineHeight
         )
     }
 
     func baselineY(at index: Int) -> Double {
-        lineRect(at: index).minY + 12
+        lineRect(at: index).minY + min(12, resolvedLineHeight * 0.8)
     }
 
     var drawIOValue: String {

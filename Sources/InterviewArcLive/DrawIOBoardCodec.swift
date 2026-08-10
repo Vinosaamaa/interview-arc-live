@@ -19,7 +19,8 @@ struct DrawIONodeVisualOverlayEncoder {
         strokeHex: String
     ) -> String {
         let rect = CGRect(origin: .zero, size: canvasSize)
-        let strokeStyle = "fill='none' stroke='#\(strokeHex)' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'"
+        let strokeWidth = BoardVectorPath.number(visual.strokeWidth(in: rect))
+        let strokeStyle = "fill='none' stroke='#\(strokeHex)' stroke-width='\(strokeWidth)' stroke-linecap='round' stroke-linejoin='round'"
         var paths = [
             "<path data-role='fill' d='\(visual.outlinePath(in: rect).svgPathData)' fill='#\(fillHex)' stroke='none'/>",
             "<path data-role='outline' d='\(visual.outlinePath(in: rect).svgPathData)' \(strokeStyle)/>",
@@ -240,7 +241,7 @@ struct DrawIOBoardCodec: Sendable {
                 "        <mxCell id=\"\(attribute(visualCellID))\" value=\"\" style=\"shape=image;imageAspect=0;aspect=fixed;pointerEvents=0;image=\(attribute(visualURI));\" vertex=\"1\" parent=\"\(attribute(cellID))\" connectable=\"0\" locked=\"1\" selectable=\"0\">",
                 "          <mxGeometry x=\"0\" y=\"0\" width=\"\(number(box.frame.size.width))\" height=\"\(number(box.frame.size.height))\" as=\"geometry\"/>",
                 "        </mxCell>",
-                "        <mxCell id=\"\(attribute(labelCellID))\" value=\"\(attribute(labelLayout.drawIOValue))\" style=\"text;html=0;align=center;verticalAlign=middle;whiteSpace=wrap;overflow=hidden;fillColor=none;strokeColor=none;fontColor=#\(attribute(box.stroke.hexRGB));\" vertex=\"1\" parent=\"\(attribute(cellID))\" connectable=\"0\" iaBoxLabelOwner=\"\(attribute(box.id.rawValue))\" iaRenderedLabel=\"\(attribute(labelLayout.drawIOValue))\" iaOriginalLabel=\"\(attribute(box.label))\">",
+                "        <mxCell id=\"\(attribute(labelCellID))\" value=\"\(attribute(labelLayout.drawIOValue))\" style=\"text;html=0;align=center;verticalAlign=middle;whiteSpace=wrap;overflow=hidden;fillColor=none;strokeColor=none;fontColor=#\(attribute(box.stroke.hexRGB));fontSize=\(number(labelLayout.resolvedFontSize));\" vertex=\"1\" parent=\"\(attribute(cellID))\" connectable=\"0\" iaBoxLabelOwner=\"\(attribute(box.id.rawValue))\" iaRenderedLabel=\"\(attribute(labelLayout.drawIOValue))\" iaOriginalLabel=\"\(attribute(box.label))\">",
                 "          <mxGeometry x=\"\(number(labelLayout.rect.minX))\" y=\"\(number(labelLayout.rect.minY))\" width=\"\(number(labelLayout.rect.width))\" height=\"\(number(labelLayout.rect.height))\" as=\"geometry\"/>",
                 "        </mxCell>",
             ]
