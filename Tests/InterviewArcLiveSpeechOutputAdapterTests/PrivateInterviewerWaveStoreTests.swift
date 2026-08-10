@@ -701,6 +701,7 @@ private struct Fixture {
     }
 }
 
+@MainActor
 private func XCTAssertThrowsErrorAsync<T>(
     _ expression: () async throws -> T,
     file: StaticString = #filePath,
