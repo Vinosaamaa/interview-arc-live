@@ -5,7 +5,9 @@ import InterviewArcLiveCore
 @testable import InterviewArcLive
 
 @MainActor
-func makeCompletionBlockingRoomModel() async throws -> (
+func makeCompletionBlockingRoomModel(
+    boardArtifactStore: PrivateBoardArtifactStore? = nil
+) async throws -> (
     model: SystemDesignRoomModel,
     store: CompletionBlockingManifestStore
 ) {
@@ -31,7 +33,8 @@ func makeCompletionBlockingRoomModel() async throws -> (
         SystemDesignRoomModel(
             codexRuntime: runtime,
             activityPrompt: prompt,
-            initialCoordinator: coordinator
+            initialCoordinator: coordinator,
+            boardArtifactStore: boardArtifactStore
         ),
         store
     )
@@ -44,6 +47,11 @@ actor CompletionBlockingManifestStore: SessionManifestStore {
     private var holdsCompletionSave = true
     private var startedContinuation: CheckedContinuation<Void, Never>?
     private var releaseContinuation: CheckedContinuation<Void, Never>?
+    private var holdsNextBoardRevisionSave = false
+    private var boardRevisionSaveCountValue = 0
+    private var boardRevisionSaveStarted = false
+    private var boardStartedContinuation: CheckedContinuation<Void, Never>?
+    private var boardReleaseContinuation: CheckedContinuation<Void, Never>?
 
     func load(sessionID: SessionID) async throws -> SessionManifest? {
         await backing.load(sessionID: sessionID)
@@ -53,6 +61,16 @@ actor CompletionBlockingManifestStore: SessionManifestStore {
         _ manifest: SessionManifest,
         expectedRevision: Int?
     ) async throws {
+        if holdsNextBoardRevisionSave {
+            boardRevisionSaveCountValue += 1
+            boardRevisionSaveStarted = true
+            boardStartedContinuation?.resume()
+            boardStartedContinuation = nil
+            await withCheckedContinuation { continuation in
+                boardReleaseContinuation = continuation
+            }
+            holdsNextBoardRevisionSave = false
+        }
         if manifest.phase == .completed {
             completionSaveCountValue += 1
             completionSaveStarted = true
@@ -85,6 +103,27 @@ actor CompletionBlockingManifestStore: SessionManifestStore {
 
     func completionSaveCount() -> Int {
         completionSaveCountValue
+    }
+
+    func holdNextBoardRevisionSave() {
+        holdsNextBoardRevisionSave = true
+        boardRevisionSaveStarted = false
+    }
+
+    func waitUntilBoardRevisionSaveStarts() async {
+        if boardRevisionSaveStarted { return }
+        await withCheckedContinuation { continuation in
+            boardStartedContinuation = continuation
+        }
+    }
+
+    func releaseBoardRevisionSave() {
+        boardReleaseContinuation?.resume()
+        boardReleaseContinuation = nil
+    }
+
+    func boardRevisionSaveCount() -> Int {
+        boardRevisionSaveCountValue
     }
 }
 

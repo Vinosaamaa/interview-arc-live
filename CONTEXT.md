@@ -118,6 +118,36 @@ Session. Audio exports are derived from it and never replace it.
 The specialty-specific artifact area: system-design Board, coding workspace,
 or behavioral Story Kit.
 
+### Board Document
+
+The versioned, bounded canonical editable source for one system-design Board.
+Its boxes, connectors, labels, and strokes are data; opening or rendering the
+Document cannot execute markup, fetch an external resource, or interpret a
+filesystem path. Each box carries a bounded Node Kind so the live canvas and
+derived artifacts render the same semantic symbol without guessing from its
+label.
+
+### Board Revision
+
+An immutable, session-owned snapshot of one explicitly saved Board Document.
+It has a stable identity and ordinal; later edits affect only the current
+draft and never rewrite Revision history.
+
+### Turn Board Attachment
+
+The explicit `no board` or exact Board Revision evidence associated with one
+Candidate Turn. Hand off persists it atomically with the Turn. A later command
+may fill a `no board` association once but cannot substitute a different
+Revision afterward.
+
+### Board Export
+
+One durably authorized attempt to derive and retain a selected Board
+Revision's canonical source, deterministic SVG, and deterministic PNG as a
+validated bundle. Its operation identity, intended session-relative artifact
+identities, settings, and lifecycle survive interruption; no successful
+bundle is visible until all three artifacts pass integrity checks.
+
 ### Presentation
 
 A view of one Interview Room Session. Full and compact Presentations never own

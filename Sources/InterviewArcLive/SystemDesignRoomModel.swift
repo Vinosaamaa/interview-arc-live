@@ -1,4 +1,5 @@
 import AVFoundation
+import CryptoKit
 import Foundation
 import InterviewArcLiveCore
 import InterviewArcLiveCodexAdapter
@@ -44,6 +45,12 @@ final class SystemDesignRoomModel: ObservableObject {
     @Published private(set) var isSpeechControlActionInFlight = false
     @Published private(set) var playingUtteranceID: InterviewerUtteranceID?
     @Published private(set) var speechErrorMessage: String?
+    @Published private(set) var boardEditor = BoardEditorState(document: .empty)
+    @Published private(set) var isBoardSaving = false
+    @Published private(set) var isBoardExporting = false
+    @Published private(set) var boardErrorMessage: String?
+    @Published private(set) var boardExportMessage: String?
+    @Published private(set) var inspectedBoardRevisionID: BoardRevisionID?
 
     @Published var isCredentialSetupPresented = false
     @Published private(set) var isSavingCredential = false
@@ -82,12 +89,17 @@ final class SystemDesignRoomModel: ObservableObject {
     private let codexRuntime: any LiveCodexInterviewerRuntime
     private let speechDependencies: LiveInterviewerSpeechDependencies?
     private let preferences: UserDefaults
+    private let boardArtifactStore: PrivateBoardArtifactStore?
+    private let boardRenderer: DeterministicBoardRenderer
     private var credentialState: CredentialState = .checking
     private var errorWasCodexFailure = false
     private var coordinator: SegmentSpeechCoordinator?
     private var interviewerSpeechCoordinator: InterviewerSpeechCoordinator?
     private var speechPreparationTask: Task<Void, Never>?
     private var audioPlayer: AVAudioPlayer?
+    private var boardPersistenceTail: Task<Void, Never>?
+    private var pendingBoardWriteCount = 0
+    private var didLoadInitialBoard = false
 
     private static let speechMutedPreferenceKey =
         "interviewArcLive.interviewerSpeechMuted"
@@ -98,13 +110,20 @@ final class SystemDesignRoomModel: ObservableObject {
         activityPrompt: ActivityPrompt? = nil,
         speechDependencies: LiveInterviewerSpeechDependencies? = nil,
         preferences: UserDefaults = .standard,
-        initialCoordinator: SegmentSpeechCoordinator? = nil
+        initialCoordinator: SegmentSpeechCoordinator? = nil,
+        boardArtifactStore: PrivateBoardArtifactStore? = nil,
+        boardRenderer: DeterministicBoardRenderer = DeterministicBoardRenderer()
     ) {
         self.credentialStore = credentialStore
         self.codexRuntime = codexRuntime ?? Self.makeDefaultCodexRuntime()
         self.activityPrompt = activityPrompt ?? Self.tracerActivityPrompt
         self.speechDependencies = speechDependencies
         self.preferences = preferences
+        self.boardArtifactStore = boardArtifactStore
+            ?? Self.makeDefaultBoardArtifactStore(
+                sessionIdentity: "local-system-design-tracer-v2"
+            )
+        self.boardRenderer = boardRenderer
         coordinator = initialCoordinator
         isSpeechMuted = preferences.bool(
             forKey: Self.speechMutedPreferenceKey
@@ -287,6 +306,377 @@ final class SystemDesignRoomModel: ObservableObject {
         )
     }
 
+    var boardDocumentForPresentation: BoardDocument {
+        if let inspectedBoardRevisionID,
+           let revision = snapshot?.board.revisions.first(where: {
+               $0.id == inspectedBoardRevisionID
+           }) {
+            return revision.document
+        }
+        return boardEditor.document
+    }
+
+    var isInspectingBoardRevision: Bool {
+        inspectedBoardRevisionID != nil
+    }
+
+    var latestBoardRevision: BoardRevision? {
+        snapshot?.board.revisions.last
+    }
+
+    var selectedBoardRevision: BoardRevision? {
+        let selectedID = inspectedBoardRevisionID
+            ?? snapshot?.board.selectedRevisionID
+        return snapshot?.board.revisions.first { $0.id == selectedID }
+            ?? latestBoardRevision
+    }
+
+    var boardRevisionStatus: String {
+        if isBoardSaving { return "Saving board…" }
+        if let boardErrorMessage { return boardErrorMessage }
+        guard let latestBoardRevision else {
+            return boardEditor.document.elements.isEmpty
+                ? "Draft not saved"
+                : "Unsaved board"
+        }
+        let revision = latestBoardRevision.ordinal + 1
+        if boardEditor.document != latestBoardRevision.document {
+            return "Unsaved changes · revision \(revision)"
+        }
+        return "Board saved · revision \(revision)"
+    }
+
+    var isBoardDraftDirty: Bool {
+        guard let latestBoardRevision else { return true }
+        return boardEditor.document != latestBoardRevision.document
+    }
+
+    var boardAttachmentForHandOff: CandidateTurnBoardAttachment? {
+        if let inspectedBoardRevisionID {
+            guard snapshot?.board.revisions.contains(where: {
+                $0.id == inspectedBoardRevisionID
+            }) == true else {
+                return nil
+            }
+            return .revision(inspectedBoardRevisionID)
+        }
+        if boardEditor.document.elements.isEmpty {
+            return .noBoard
+        }
+        guard let latestBoardRevision,
+              latestBoardRevision.document == boardEditor.document else {
+            return nil
+        }
+        return .revision(latestBoardRevision.id)
+    }
+
+    var canSaveBoardRevision: Bool {
+        Self.boardRevisionSaveIsAvailable(
+            coordinatorIsAvailable: coordinator != nil,
+            phase: snapshot?.phase,
+            isWorking: isWorking,
+            isInspectingRevision: isInspectingBoardRevision,
+            isSaving: isBoardSaving,
+            isExporting: isBoardExporting
+        )
+    }
+
+    static func boardRevisionSaveIsAvailable(
+        coordinatorIsAvailable: Bool,
+        phase: InterviewRoomPhase?,
+        isWorking: Bool,
+        isInspectingRevision: Bool,
+        isSaving: Bool,
+        isExporting: Bool
+    ) -> Bool {
+        coordinatorIsAvailable
+            && phase != nil
+            && phase != .completed
+            && !isWorking
+            && !isInspectingRevision
+            && !isSaving
+            && !isExporting
+    }
+
+    var canAttachBoardRevision: Bool {
+        guard snapshot?.phase != .completed,
+              selectedBoardRevision != nil else { return false }
+        return snapshot?.turns.reversed().contains { turn in
+            guard case .candidate(let candidate) = turn else { return false }
+            return candidate.boardAttachment == .noBoard
+        } == true
+    }
+
+    var canExportBoardRevision: Bool {
+        guard selectedBoardRevision != nil else { return false }
+        if isInspectingBoardRevision { return true }
+        return selectedBoardRevision?.document == boardEditor.document
+    }
+
+    func applyBoardAction(_ action: BoardEditorAction) {
+        guard coordinator != nil, snapshot != nil else {
+            boardErrorMessage = "Wait for the local room to finish restoring before editing."
+            return
+        }
+        if isInspectingBoardRevision {
+            switch action {
+            case .setZoom(_), .resetZoom:
+                break
+            default:
+                boardErrorMessage = "Return to the draft before editing."
+                return
+            }
+        }
+
+        let original = boardEditor.document
+        do {
+            var updated = boardEditor
+            try updated.apply(action)
+            boardEditor = updated
+            boardErrorMessage = nil
+            if updated.document != original {
+                persistBoardDraft(updated.document)
+            }
+        } catch {
+            boardErrorMessage = "That board change is outside the supported canvas bounds."
+        }
+    }
+
+    func waitForBoardPersistence() async {
+        await boardPersistenceTail?.value
+    }
+
+    func saveBoardRevision() async {
+        guard !isBoardSaving,
+              canSaveBoardRevision,
+              let coordinator else { return }
+        beginBoardWork()
+        boardErrorMessage = nil
+        defer { endBoardWork() }
+
+        await waitForBoardPersistence()
+        guard coordinator.snapshot.board.draft == boardEditor.document else {
+            boardErrorMessage = "The latest board draft was not saved. Try Save revision again."
+            return
+        }
+        do {
+            let updated = try await coordinator.saveBoardRevision(
+                commandID: commandID("save-board-revision")
+            )
+            publish(updated)
+            inspectedBoardRevisionID = nil
+        } catch {
+            publish(coordinator.snapshot)
+            boardErrorMessage = "The board revision could not be saved. Your editable draft remains available."
+        }
+    }
+
+    func inspectBoardRevision(_ revisionID: BoardRevisionID) async {
+        guard let coordinator,
+              snapshot?.board.revisions.contains(where: { $0.id == revisionID }) == true else {
+            boardErrorMessage = "That saved board revision is unavailable."
+            return
+        }
+        do {
+            let updated = try await coordinator.selectBoardRevision(
+                revisionID,
+                commandID: commandID("select-board-revision")
+            )
+            publish(updated)
+            inspectedBoardRevisionID = revisionID
+            boardErrorMessage = nil
+        } catch {
+            publish(coordinator.snapshot)
+            boardErrorMessage = "That saved board revision could not be opened."
+        }
+    }
+
+    func returnToBoardDraft() async {
+        guard let coordinator else {
+            inspectedBoardRevisionID = nil
+            return
+        }
+        do {
+            let updated = try await coordinator.selectBoardRevision(
+                nil,
+                commandID: commandID("return-to-board-draft")
+            )
+            publish(updated)
+            inspectedBoardRevisionID = nil
+            boardErrorMessage = nil
+        } catch {
+            publish(coordinator.snapshot)
+            boardErrorMessage = "The editable board draft could not be reopened."
+        }
+    }
+
+    func attachSelectedBoardRevision() async {
+        guard let coordinator,
+              let revision = selectedBoardRevision,
+              let turn = snapshot?.turns.reversed().compactMap({ turn -> CandidateTurn? in
+                  guard case .candidate(let candidate) = turn,
+                        candidate.boardAttachment == .noBoard else {
+                      return nil
+                  }
+                  return candidate
+              }).first else {
+            boardErrorMessage = "Save a revision and choose an unattached answer first."
+            return
+        }
+        do {
+            let updated = try await coordinator.attachBoardRevision(
+                revision.id,
+                to: turn.id,
+                commandID: commandID("attach-board-revision")
+            )
+            publish(updated)
+            boardErrorMessage = nil
+        } catch {
+            publish(coordinator.snapshot)
+            boardErrorMessage = "The selected revision could not be attached to that answer."
+        }
+    }
+
+    func exportSelectedBoardRevision() async {
+        guard !isBoardExporting,
+              let coordinator,
+              canExportBoardRevision,
+              let revision = selectedBoardRevision else {
+            boardErrorMessage = "Save the displayed board revision before exporting."
+            return
+        }
+        guard let boardArtifactStore else {
+            boardErrorMessage = "Private board storage is unavailable on this Mac."
+            return
+        }
+
+        isBoardExporting = true
+        boardErrorMessage = nil
+        boardExportMessage = nil
+        defer { isBoardExporting = false }
+
+        // Terminal export operations are immutable. Retrying intentionally
+        // obtains a fresh authorization, export identity, and private subtree.
+        var operation = coordinator.snapshot.board.exports.last {
+            $0.revisionID == revision.id && $0.lifecycle == .authorized
+        }
+        do {
+            if operation == nil {
+                let settings = try BoardExportSettings(
+                    viewport: revision.document.canvas.size,
+                    scale: 1,
+                    background: BoardColor(hexRGB: "fbfcfa")
+                )
+                let application = try await coordinator.authorizeBoardExport(
+                    revisionID: revision.id,
+                    settings: settings,
+                    commandID: commandID("authorize-board-export")
+                )
+                publish(application.snapshot)
+                operation = application.snapshot.board.exports.last {
+                    $0.revisionID == revision.id && $0.lifecycle == .authorized
+                }
+            }
+            guard let operation else {
+                boardErrorMessage = "The board export authorization could not be recovered."
+                return
+            }
+
+            let rendered: RenderedBoardArtifacts
+            do {
+                rendered = try boardRenderer.render(
+                    revision.document,
+                    settings: operation.settings
+                )
+            } catch {
+                try await recordBoardExportFailure(
+                    operation,
+                    reason: .renderingFailed,
+                    coordinator: coordinator
+                )
+                boardErrorMessage = "The board could not be rendered. The saved revision is unchanged."
+                return
+            }
+
+            let bundle: BoardArtifactBundle
+            do {
+                bundle = try await boardArtifactStore.persist(
+                    exportID: operation.id,
+                    identities: operation.artifactIdentities,
+                    artifacts: rendered
+                )
+            } catch {
+                try await recordBoardExportFailure(
+                    operation,
+                    reason: .storageFailed,
+                    coordinator: coordinator
+                )
+                boardErrorMessage = "The export bundle was not completed. The saved revision remains retryable."
+                return
+            }
+
+            let updated = try await coordinator.recordBoardExportOutcome(
+                exportID: operation.id,
+                outcome: .ready(bundle),
+                commandID: commandID("complete-board-export")
+            )
+            publish(updated)
+            boardExportMessage = "Editable source · SVG + PNG available"
+        } catch {
+            publish(coordinator.snapshot)
+            boardErrorMessage = "The export did not complete. The saved revision remains available."
+        }
+    }
+
+    private func persistBoardDraft(_ document: BoardDocument) {
+        guard let coordinator else {
+            boardErrorMessage = "The room is still restoring. This board change is not durable yet."
+            return
+        }
+        let previous = boardPersistenceTail
+        beginBoardWork()
+        boardPersistenceTail = Task { @MainActor [weak self, weak coordinator] in
+            await previous?.value
+            guard let self, let coordinator else { return }
+            defer {
+                endBoardWork()
+            }
+            do {
+                let updated = try await coordinator.updateBoardDraft(
+                    document,
+                    commandID: commandID("update-board-draft")
+                )
+                publish(updated)
+            } catch {
+                publish(coordinator.snapshot)
+                boardErrorMessage = "The latest board change is visible but not saved. Try the action again."
+            }
+        }
+    }
+
+    private func beginBoardWork() {
+        pendingBoardWriteCount += 1
+        isBoardSaving = true
+    }
+
+    private func endBoardWork() {
+        pendingBoardWriteCount = max(0, pendingBoardWriteCount - 1)
+        isBoardSaving = pendingBoardWriteCount > 0
+    }
+
+    private func recordBoardExportFailure(
+        _ operation: BoardExportOperation,
+        reason: BoardExportFailureReason,
+        coordinator: SegmentSpeechCoordinator
+    ) async throws {
+        let updated = try await coordinator.recordBoardExportOutcome(
+            exportID: operation.id,
+            outcome: .failed(BoardExportFailure(reason: reason)),
+            commandID: commandID("fail-board-export")
+        )
+        publish(updated)
+    }
+
     private var hasUsableGroqCredential: Bool {
         credentialState == .readyFromKeychain
             || credentialState == .readyUntilQuit
@@ -331,9 +721,10 @@ final class SystemDesignRoomModel: ObservableObject {
     }
 
     var canAct: Bool {
-        guard !isWorking, let snapshot else { return false }
+        guard !isWorking, !isBoardSaving, let snapshot else { return false }
         switch snapshot.phase {
         case .candidateFloor:
+            guard boardAttachmentForHandOff != nil else { return false }
             let unresolved = draftSegments.contains {
                 $0.lifecycle != .excluded && $0.selectedCandidate == nil
             }
@@ -415,6 +806,7 @@ final class SystemDesignRoomModel: ObservableObject {
                 )
             }
             publish(restored)
+            await recoverBoardArtifacts(in: restored.board)
             await attachInterviewerSpeech(to: opened)
         } catch {
             statusMessage = "Local session unavailable"
@@ -423,6 +815,60 @@ final class SystemDesignRoomModel: ObservableObject {
 
         applyCodexReadiness(await codexCheck)
         isCheckingCodex = false
+    }
+
+    /// Audits persisted export bundles during app restore. Recovery is
+    /// intentionally read-only here: the candidate must explicitly choose
+    /// Export before any derivatives are regenerated or session state changes.
+    func recoverBoardArtifacts(in workspace: BoardWorkspace) async {
+        guard let boardArtifactStore else {
+            if !workspace.exports.isEmpty {
+                boardErrorMessage = "Private board storage is unavailable, so saved exports could not be verified. Saved revisions remain available."
+            }
+            return
+        }
+
+        var foundMissingReadyBundle = false
+        var foundRegenerationNeed = false
+        var foundInterruptedExport = false
+        var foundIntegrityFailure = false
+
+        for operation in workspace.exports where operation.lifecycle != .failed {
+            do {
+                switch try await boardArtifactStore.recover(
+                    identities: operation.artifactIdentities
+                ) {
+                case .missing:
+                    if operation.lifecycle == .ready {
+                        foundMissingReadyBundle = true
+                    } else {
+                        foundInterruptedExport = true
+                    }
+                case .needsRegeneration:
+                    foundRegenerationNeed = true
+                case .complete(let recovered):
+                    if operation.lifecycle == .ready {
+                        if operation.bundle != recovered {
+                            foundIntegrityFailure = true
+                        }
+                    } else {
+                        foundInterruptedExport = true
+                    }
+                }
+            } catch {
+                foundIntegrityFailure = true
+            }
+        }
+
+        if foundIntegrityFailure {
+            boardErrorMessage = "A saved board export could not be verified. Select its revision and choose Export to create a new private bundle."
+        } else if foundRegenerationNeed {
+            boardErrorMessage = "A board export kept its editable source, but its SVG or PNG needs regeneration. Select its revision and choose Export."
+        } else if foundMissingReadyBundle {
+            boardErrorMessage = "A saved board export bundle is missing. Select its revision and choose Export to create it again."
+        } else if foundInterruptedExport {
+            boardErrorMessage = "An interrupted board export is ready to retry. Select its revision and choose Export."
+        }
     }
 
     func checkCodex() async {
@@ -609,7 +1055,13 @@ final class SystemDesignRoomModel: ObservableObject {
     }
 
     func performPrimaryAction() async {
-        guard let coordinator, let snapshot, canAct else { return }
+        guard let coordinator, let snapshot else { return }
+        if snapshot.phase == .candidateFloor,
+           boardAttachmentForHandOff == nil {
+            boardErrorMessage = "Save the displayed board as a revision before Hand off."
+            return
+        }
+        guard canAct else { return }
 
         isWorking = true
         errorMessage = nil
@@ -626,8 +1078,13 @@ final class SystemDesignRoomModel: ObservableObject {
             case .candidateFloor:
                 isInterviewerRequestInFlight = true
                 statusMessage = "Saving one ordered answer…"
+                guard let boardAttachment = boardAttachmentForHandOff else {
+                    boardErrorMessage = "Save the displayed board as a revision before Hand off."
+                    return
+                }
                 updated = try await coordinator.handOff(
-                    commandID: commandID("hand-off")
+                    commandID: commandID("hand-off"),
+                    boardAttachment: boardAttachment
                 )
             case .interviewerProcessing:
                 isInterviewerRequestInFlight = true
@@ -958,6 +1415,30 @@ final class SystemDesignRoomModel: ObservableObject {
         }
     }
 
+    private static func makeDefaultBoardArtifactStore(
+        sessionIdentity: String
+    ) -> PrivateBoardArtifactStore? {
+        let pathFileManager = FileManager()
+        guard let applicationSupportRoot = try? LivePaths.applicationSupportRoot(
+            fileManager: pathFileManager
+        ) else {
+            return nil
+        }
+        let digest = SHA256.hash(data: Data(sessionIdentity.utf8))
+            .map { String(format: "%02x", $0) }
+            .joined()
+        let root = applicationSupportRoot
+            .appendingPathComponent("Sessions", isDirectory: true)
+            .appendingPathComponent(
+                "session-\(digest)",
+                isDirectory: true
+            )
+        // The store actor owns a distinct FileManager instance. Reusing the
+        // main-actor path helper here would send an already-isolated mutable
+        // reference across the actor boundary under Swift 6.
+        return PrivateBoardArtifactStore(root: root, fileManager: FileManager())
+    }
+
     private func safeSpeechMessage(for error: Error) -> String {
         if let coordinatorError = error as? InterviewerSpeechCoordinatorError {
             switch coordinatorError {
@@ -1062,6 +1543,11 @@ final class SystemDesignRoomModel: ObservableObject {
     }
 
     private func publish(_ snapshot: InterviewRoomSnapshot) {
+        if !didLoadInitialBoard {
+            boardEditor = BoardEditorState(document: snapshot.board.draft)
+            inspectedBoardRevisionID = snapshot.board.selectedRevisionID
+            didLoadInitialBoard = true
+        }
         if self.snapshot != snapshot {
             self.snapshot = snapshot
             segments = snapshot.segments
