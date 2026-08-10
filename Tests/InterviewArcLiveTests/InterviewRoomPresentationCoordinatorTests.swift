@@ -59,6 +59,27 @@ final class InterviewRoomPresentationCoordinatorTests: XCTestCase {
         )
     }
 
+    func testScreenChangeCallbackCannotReenterAnActiveFrameAdjustment() {
+        let frameAdjustmentGuard = PresentationFrameAdjustmentGuard()
+        var adjustmentCount = 0
+        var screenChangeCallback: (() -> Void)!
+
+        screenChangeCallback = {
+            guard !frameAdjustmentGuard.isActive else { return }
+            frameAdjustmentGuard.perform {
+                adjustmentCount += 1
+                // NSWindow frame restoration can synchronously send the same
+                // screen-change callback before setFrame returns.
+                screenChangeCallback()
+            }
+        }
+
+        screenChangeCallback()
+
+        XCTAssertEqual(adjustmentCount, 1)
+        XCTAssertFalse(frameAdjustmentGuard.isActive)
+    }
+
     func testCollapseAndExpandRetainWindowsHostingTreesFrameAndFocus() throws {
         let coordinator = makeCoordinator()
         defer { coordinator.prepareForTermination() }
