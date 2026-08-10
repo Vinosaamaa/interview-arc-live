@@ -1062,7 +1062,13 @@ struct SystemDesignBoardView: View {
                         beginEditing(id: id, text: newBoxKind.displayName)
                     }
                 case .label:
-                    model.applyBoardAction(.createLabel(origin: point, text: "Label"))
+                    let origin = BoardElementLayout.clampedLabelOrigin(
+                        point,
+                        in: model.boardEditor.document.canvas.size
+                    )
+                    model.applyBoardAction(
+                        .createLabel(origin: origin, text: "Label")
+                    )
                     model.applyBoardAction(.setTool(.select))
                     interactionFeedback = "Text label added and selected"
                     if let id = model.boardEditor.selectedElementID {

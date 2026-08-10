@@ -1,4 +1,5 @@
 import CoreGraphics
+import Foundation
 import XCTest
 import InterviewArcLiveCore
 @testable import InterviewArcLive
@@ -91,6 +92,59 @@ final class BoardNodePresentationTests: XCTestCase {
             XCTAssertEqual(
                 visual.outlinePath(in: rect).svgPathData,
                 visual.outlinePath(in: rect).svgPathData
+            )
+        }
+    }
+
+    func testDrawIOOverlayCarriesTheExactSharedOutlineDetailsAndPictogram() throws {
+        let size = CGSize(width: 180, height: 90)
+        let rect = CGRect(origin: .zero, size: size)
+
+        for visual in BoardNodeKind.selectableKinds.map(\.visual) {
+            let uri = visual.drawIOVisualOverlayDataURI(
+                canvasSize: size,
+                strokeHex: "1f2937"
+            )
+            let encoded = String(
+                uri.dropFirst("data:image/svg+xml,".count)
+            )
+            let svg = try XCTUnwrap(encoded.removingPercentEncoding)
+
+            XCTAssertTrue(
+                svg.contains(
+                    "data-board-node-visual='\(visual.stableKey)'"
+                )
+            )
+            XCTAssertTrue(
+                svg.contains(
+                    "data-role='outline' d='\(visual.outlinePath(in: rect).svgPathData)'"
+                )
+            )
+            for detail in visual.detailPaths(in: rect) {
+                XCTAssertTrue(
+                    svg.contains(
+                        "data-role='detail' d='\(detail.svgPathData)'"
+                    )
+                )
+            }
+            for pictogram in visual.pictogramPaths(in: rect) {
+                XCTAssertTrue(
+                    svg.contains(
+                        "data-role='pictogram' d='\(pictogram.svgPathData)'"
+                    )
+                )
+            }
+            XCTAssertEqual(
+                svg.components(separatedBy: "data-role='outline'").count - 1,
+                1
+            )
+            XCTAssertEqual(
+                svg.components(separatedBy: "data-role='detail'").count - 1,
+                visual.detailPaths(in: rect).count
+            )
+            XCTAssertEqual(
+                svg.components(separatedBy: "data-role='pictogram'").count - 1,
+                visual.pictogramPaths(in: rect).count
             )
         }
     }

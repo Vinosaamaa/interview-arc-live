@@ -292,15 +292,22 @@ struct BoardNodeVisual: Equatable {
         )
     }
 
-    func drawIOPictogramDataURI(
+    func drawIOVisualOverlayDataURI(
         canvasSize: CGSize,
         strokeHex: String
     ) -> String {
         let rect = CGRect(origin: .zero, size: canvasSize)
-        let paths = pictogramPaths(in: rect).map {
-            "<path d='\($0.svgPathData)' fill='none' stroke='#\(strokeHex)' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/>"
-        }.joined()
-        let svg = "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 \(BoardVectorPath.number(canvasSize.width)) \(BoardVectorPath.number(canvasSize.height))'>\(paths)</svg>"
+        let strokeStyle = "fill='none' stroke='#\(strokeHex)' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'"
+        var paths = [
+            "<path data-role='outline' d='\(outlinePath(in: rect).svgPathData)' \(strokeStyle)/>",
+        ]
+        paths.append(contentsOf: detailPaths(in: rect).map {
+            "<path data-role='detail' d='\($0.svgPathData)' \(strokeStyle)/>"
+        })
+        paths.append(contentsOf: pictogramPaths(in: rect).map {
+            "<path data-role='pictogram' d='\($0.svgPathData)' \(strokeStyle)/>"
+        })
+        let svg = "<svg xmlns='http://www.w3.org/2000/svg' data-board-node-visual='\(stableKey)' viewBox='0 0 \(BoardVectorPath.number(canvasSize.width)) \(BoardVectorPath.number(canvasSize.height))'>\(paths.joined())</svg>"
         let allowed = CharacterSet.alphanumerics.union(
             CharacterSet(charactersIn: "-._~")
         )

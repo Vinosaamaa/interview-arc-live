@@ -137,7 +137,7 @@ struct DrawIOBoardCodec: Sendable {
             try validateXMLText(box.label)
             let visual = box.kind.visual
             let visualCellID = visualCellID ?? "__ia_node_visual"
-            let visualURI = visual.drawIOPictogramDataURI(
+            let visualURI = visual.drawIOVisualOverlayDataURI(
                 canvasSize: CGSize(
                     width: box.frame.size.width,
                     height: box.frame.size.height
@@ -145,7 +145,7 @@ struct DrawIOBoardCodec: Sendable {
                 strokeHex: box.stroke.hexRGB
             )
             return [
-                "        <mxCell id=\"\(attribute(cellID))\" value=\"\(attribute(box.label))\" style=\"\(attribute(visual.drawIOShapeStyle));whiteSpace=wrap;html=0;verticalAlign=bottom;spacingBottom=8;fillColor=#\(attribute(box.fill.hexRGB));strokeColor=#\(attribute(box.stroke.hexRGB));\" vertex=\"1\" parent=\"1\" iaKind=\"box\" iaElementID=\"\(attribute(box.id.rawValue))\" iaLabel=\"\(attribute(box.label))\" iaNodeKind=\"\(attribute(box.kind.rawValue))\" iaNodeVisual=\"\(attribute(visual.stableKey))\" iaPictogram=\"\(attribute(visual.pictogram.rawValue))\" iaFill=\"\(attribute(box.fill.hexRGB))\" iaStroke=\"\(attribute(box.stroke.hexRGB))\">",
+                "        <mxCell id=\"\(attribute(cellID))\" value=\"\(attribute(box.label))\" style=\"\(attribute(visual.drawIOShapeStyle));whiteSpace=wrap;html=0;verticalAlign=bottom;spacingBottom=8;fillColor=#\(attribute(box.fill.hexRGB));strokeColor=none;\" vertex=\"1\" parent=\"1\" iaKind=\"box\" iaElementID=\"\(attribute(box.id.rawValue))\" iaLabel=\"\(attribute(box.label))\" iaNodeKind=\"\(attribute(box.kind.rawValue))\" iaNodeVisual=\"\(attribute(visual.stableKey))\" iaPictogram=\"\(attribute(visual.pictogram.rawValue))\" iaDrawIOShapeStyle=\"\(attribute(visual.drawIOShapeStyle))\" iaFill=\"\(attribute(box.fill.hexRGB))\" iaStroke=\"\(attribute(box.stroke.hexRGB))\">",
                 "          <mxGeometry x=\"\(number(box.frame.origin.x))\" y=\"\(number(box.frame.origin.y))\" width=\"\(number(box.frame.size.width))\" height=\"\(number(box.frame.size.height))\" as=\"geometry\"/>",
                 "        </mxCell>",
                 "        <mxCell id=\"\(attribute(visualCellID))\" value=\"\" style=\"shape=image;imageAspect=0;aspect=fixed;pointerEvents=0;image=\(attribute(visualURI));\" vertex=\"1\" parent=\"\(attribute(cellID))\" connectable=\"0\" locked=\"1\" selectable=\"0\">",

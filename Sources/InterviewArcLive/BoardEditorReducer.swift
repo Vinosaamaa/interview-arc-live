@@ -77,6 +77,22 @@ struct BoardSelectionCapabilities: Equatable, Sendable {
 
 enum BoardElementLayout {
     static let labelSize = BoardSize(width: 240, height: 32)
+
+    static func clampedLabelOrigin(
+        _ requested: BoardPoint,
+        in canvas: BoardSize
+    ) -> BoardPoint {
+        BoardPoint(
+            x: min(
+                max(0, requested.x),
+                max(0, canvas.width - min(labelSize.width, canvas.width))
+            ),
+            y: min(
+                max(0, requested.y),
+                max(0, canvas.height - min(labelSize.height, canvas.height))
+            )
+        )
+    }
 }
 
 struct BoardEditorState: Equatable, Sendable {
@@ -156,7 +172,14 @@ struct BoardEditorState: Equatable, Sendable {
 
         case .createLabel(let origin, let text):
             let id = nextElementID(prefix: "label")
-            let label = BoardLabel(id: id, origin: origin, text: text)
+            let label = BoardLabel(
+                id: id,
+                origin: BoardElementLayout.clampedLabelOrigin(
+                    origin,
+                    in: document.canvas.size
+                ),
+                text: text
+            )
             try commit(elements: document.elements + [.label(label)])
             selectedElementID = id
 

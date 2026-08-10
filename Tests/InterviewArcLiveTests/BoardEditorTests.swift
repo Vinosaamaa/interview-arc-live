@@ -500,6 +500,39 @@ final class BoardEditorTests: XCTestCase {
         )
     }
 
+    func testPointerLabelCreationClampsTheEntireCanonicalExtentToCanvas() throws {
+        let canvas = BoardSize(width: 300, height: 220)
+        let requested = BoardPoint(x: 295, y: 210)
+        let expected = BoardPoint(x: 60, y: 188)
+        XCTAssertEqual(
+            BoardElementLayout.clampedLabelOrigin(requested, in: canvas),
+            expected
+        )
+
+        var editor = BoardEditorState(
+            document: try BoardDocument(
+                canvas: BoardCanvas(size: canvas),
+                elements: []
+            )
+        )
+        try editor.apply(.createLabel(origin: requested, text: "Edge label"))
+
+        guard case .label(let label) = editor.document.elements.first else {
+            return XCTFail("Expected label")
+        }
+        XCTAssertEqual(label.origin, expected)
+        XCTAssertLessThanOrEqual(
+            label.origin.x + BoardElementLayout.labelSize.width,
+            canvas.width
+        )
+        XCTAssertLessThanOrEqual(
+            label.origin.y + BoardElementLayout.labelSize.height,
+            canvas.height
+        )
+        try editor.apply(.undo)
+        XCTAssertTrue(editor.document.elements.isEmpty)
+    }
+
     func testLabelsPenEraserAndZoomRemainUndoableAndBounded() throws {
         var editor = BoardEditorState(document: .empty)
         try editor.apply(
