@@ -47,34 +47,62 @@ final class BoardNodePresentationTests: XCTestCase {
 
     func testCompactRevisionStatusPreservesEveryCanonicalLifecycleState() {
         XCTAssertEqual(
-            BoardRailPresentation.compactRevisionStatus("Saving board…"),
+            BoardRailPresentation.compactRevisionStatus(.saving),
             "Saving…"
         )
         XCTAssertEqual(
-            BoardRailPresentation.compactRevisionStatus("Draft not saved"),
+            BoardRailPresentation.compactRevisionStatus(.draftNotSaved),
             "Draft unsaved"
         )
         XCTAssertEqual(
-            BoardRailPresentation.compactRevisionStatus("Unsaved board"),
+            BoardRailPresentation.compactRevisionStatus(.unsaved),
             "Unsaved"
         )
         XCTAssertEqual(
             BoardRailPresentation.compactRevisionStatus(
-                "Unsaved changes · revision 3"
+                .unsavedChanges(revision: 3)
             ),
             "Unsaved · r3"
         )
         XCTAssertEqual(
             BoardRailPresentation.compactRevisionStatus(
-                "Board saved · revision 4"
+                .saved(revision: 4)
             ),
             "Saved · r4"
         )
         XCTAssertEqual(
             BoardRailPresentation.compactRevisionStatus(
-                "Return to the draft before editing."
+                .viewing(revision: 2)
+            ),
+            "Viewing r2 · locked"
+        )
+        XCTAssertEqual(
+            BoardRailPresentation.compactRevisionStatus(
+                .error("Return to the draft before editing.")
             ),
             "Board issue"
+        )
+    }
+
+    func testRevisionMenuBoundsRecentItemsAndFullBrowserKeepsEveryRevision() {
+        let revisions = (0..<8).map { ordinal in
+            BoardRevision(
+                id: BoardRevisionID("revision-\(ordinal + 1)"),
+                ordinal: ordinal,
+                saveCommandID: CommandID("save-\(ordinal + 1)"),
+                document: .empty
+            )
+        }
+
+        XCTAssertEqual(BoardRevisionHistoryPresentation.recentLimit, 5)
+        XCTAssertTrue(BoardRevisionHistoryPresentation.hasMore(revisions))
+        XCTAssertEqual(
+            BoardRevisionHistoryPresentation.recent(revisions).map(\.ordinal),
+            [7, 6, 5, 4, 3]
+        )
+        XCTAssertEqual(
+            BoardRevisionHistoryPresentation.all(revisions).map(\.ordinal),
+            [7, 6, 5, 4, 3, 2, 1, 0]
         )
     }
 
@@ -96,13 +124,29 @@ final class BoardNodePresentationTests: XCTestCase {
         }
     }
 
+    func testPictogramsScaleInsideTinyValidNodeFrames() {
+        let tiny = CGRect(x: 7, y: 11, width: 20, height: 16)
+        let tolerance = tiny.insetBy(dx: -0.001, dy: -0.001)
+
+        for visual in BoardNodeKind.selectableKinds.map(\.visual) {
+            for path in visual.pictogramPaths(in: tiny) {
+                XCTAssertTrue(
+                    tolerance.contains(path.cgPath.boundingBoxOfPath),
+                    "\(visual.stableKey) exceeded the tiny node frame"
+                )
+            }
+        }
+    }
+
     func testDrawIOOverlayCarriesTheExactSharedOutlineDetailsAndPictogram() throws {
         let size = CGSize(width: 180, height: 90)
         let rect = CGRect(origin: .zero, size: size)
 
         for visual in BoardNodeKind.selectableKinds.map(\.visual) {
-            let uri = visual.drawIOVisualOverlayDataURI(
+            let uri = DrawIONodeVisualOverlayEncoder.dataURI(
+                visual: visual,
                 canvasSize: size,
+                fillHex: "f4f1ff",
                 strokeHex: "1f2937"
             )
             let encoded = String(
@@ -120,6 +164,11 @@ final class BoardNodePresentationTests: XCTestCase {
                     "data-role='outline' d='\(visual.outlinePath(in: rect).svgPathData)'"
                 )
             )
+            XCTAssertTrue(
+                svg.contains(
+                    "data-role='fill' d='\(visual.outlinePath(in: rect).svgPathData)' fill='#f4f1ff'"
+                )
+            )
             for detail in visual.detailPaths(in: rect) {
                 XCTAssertTrue(
                     svg.contains(
@@ -135,6 +184,10 @@ final class BoardNodePresentationTests: XCTestCase {
                 )
             }
             XCTAssertEqual(
+                svg.components(separatedBy: "data-role='fill'").count - 1,
+                1
+            )
+            XCTAssertEqual(
                 svg.components(separatedBy: "data-role='outline'").count - 1,
                 1
             )
@@ -147,6 +200,112 @@ final class BoardNodePresentationTests: XCTestCase {
                 visual.pictogramPaths(in: rect).count
             )
         }
+    }
+
+    func testConnectorAnchorsChooseNearestHorizontalAndVerticalSides() {
+        let center = BoardBox(
+            id: BoardElementID("center"),
+            frame: BoardRect(
+                origin: BoardPoint(x: 200, y: 200),
+                size: BoardSize(width: 160, height: 90)
+            ),
+            label: "Center"
+        )
+        let left = BoardBox(
+            id: BoardElementID("left"),
+            frame: BoardRect(
+                origin: BoardPoint(x: 0, y: 210),
+                size: BoardSize(width: 120, height: 70)
+            ),
+            label: "Left"
+        )
+        let below = BoardBox(
+            id: BoardElementID("below"),
+            frame: BoardRect(
+                origin: BoardPoint(x: 220, y: 400),
+                size: BoardSize(width: 120, height: 70)
+            ),
+            label: "Below"
+        )
+
+        XCTAssertEqual(
+            BoardConnectorAnchorLayout.between(source: center, target: left),
+            BoardConnectorAnchorPair(
+                start: BoardPoint(x: 200, y: 245),
+                end: BoardPoint(x: 120, y: 245)
+            )
+        )
+        XCTAssertEqual(
+            BoardConnectorAnchorLayout.between(source: center, target: below),
+            BoardConnectorAnchorPair(
+                start: BoardPoint(x: 280, y: 290),
+                end: BoardPoint(x: 280, y: 400)
+            )
+        )
+    }
+
+    func testSharedNodeLabelLayoutWrapsAndClipsDeterministically() {
+        let rect = CGRect(x: 10, y: 49, width: 140, height: 34)
+        let layout = BoardNodeLabelLayout(
+            text: "Delivery status store",
+            in: rect
+        )
+
+        XCTAssertEqual(layout.lines, ["Delivery status", "store"])
+        XCTAssertEqual(layout.drawIOValue, "Delivery status\nstore")
+        XCTAssertEqual(layout.lineRect(at: 0).height, 15)
+        XCTAssertGreaterThanOrEqual(layout.lineRect(at: 0).minY, rect.minY)
+        XCTAssertLessThanOrEqual(layout.lineRect(at: 1).maxY, rect.maxY)
+
+        let clipped = BoardNodeLabelLayout(
+            text: "one two three four five six seven eight nine",
+            in: CGRect(x: 0, y: 0, width: 70, height: 30)
+        )
+        XCTAssertEqual(clipped.lines.count, 2)
+        XCTAssertTrue(clipped.lines.last?.hasSuffix("…") == true)
+    }
+
+    func testSharedRenderOrderIsStableAcrossMixedCreationOrder() throws {
+        let box = BoardElement.box(
+            BoardBox(
+                id: BoardElementID("box"),
+                frame: BoardRect(
+                    origin: BoardPoint(x: 20, y: 20),
+                    size: BoardSize(width: 120, height: 70)
+                ),
+                label: "Box"
+            )
+        )
+        let label = BoardElement.label(
+            BoardLabel(
+                id: BoardElementID("label"),
+                origin: BoardPoint(x: 20, y: 120),
+                text: "Label"
+            )
+        )
+        let stroke = BoardElement.stroke(
+            BoardStroke(
+                id: BoardElementID("stroke"),
+                points: [BoardPoint(x: 10, y: 10), BoardPoint(x: 30, y: 30)],
+                width: 3
+            )
+        )
+        let connector = BoardElement.connector(
+            BoardConnector(
+                id: BoardElementID("connector"),
+                start: BoardConnectorEndpoint(point: BoardPoint(x: 10, y: 40)),
+                end: BoardConnectorEndpoint(point: BoardPoint(x: 80, y: 40))
+            )
+        )
+        let document = try BoardDocument(
+            canvas: BoardCanvas(size: BoardSize(width: 400, height: 300)),
+            elements: [box, label, connector, stroke]
+        )
+
+        XCTAssertEqual(
+            BoardRenderOrder.elements(in: document).map(\.id),
+            [connector.id, stroke.id, label.id, box.id]
+        )
     }
 
     func testOrthogonalConnectorRouteUsesStableMidpointElbows() {
@@ -168,6 +327,18 @@ final class BoardNodePresentationTests: XCTestCase {
                 end: BoardPoint(x: 100, y: 20)
             ).points,
             [BoardPoint(x: 10, y: 20), BoardPoint(x: 100, y: 20)]
+        )
+        XCTAssertEqual(
+            BoardOrthogonalConnectorRoute(
+                start: BoardPoint(x: 260, y: 400),
+                end: BoardPoint(x: 180, y: 190)
+            ).points,
+            [
+                BoardPoint(x: 260, y: 400),
+                BoardPoint(x: 260, y: 295),
+                BoardPoint(x: 180, y: 295),
+                BoardPoint(x: 180, y: 190),
+            ]
         )
     }
 }

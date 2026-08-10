@@ -3,6 +3,123 @@ import InterviewArcLiveCore
 @testable import InterviewArcLive
 
 final class BoardEditorTests: XCTestCase {
+    func testConnectorKeyboardAndAccessibilityActivationShareSourceTargetFlow() {
+        XCTAssertTrue(
+            BoardAccessibilityActionPolicy.exposesDelete(isReadOnly: false)
+        )
+        XCTAssertFalse(
+            BoardAccessibilityActionPolicy.exposesDelete(isReadOnly: true)
+        )
+        let source = BoardBox(
+            id: BoardElementID("source"),
+            frame: BoardRect(
+                origin: BoardPoint(x: 20, y: 20),
+                size: BoardSize(width: 160, height: 90)
+            ),
+            label: "API"
+        )
+        let target = BoardBox(
+            id: BoardElementID("target"),
+            frame: BoardRect(
+                origin: BoardPoint(x: 260, y: 20),
+                size: BoardSize(width: 160, height: 90)
+            ),
+            label: "Database"
+        )
+
+        for key in [
+            BoardKeyboardActivationKey.returnKey,
+            BoardKeyboardActivationKey.space,
+        ] {
+            XCTAssertEqual(
+                BoardKeyboardActivation.resolve(
+                    key: key,
+                    tool: .connector,
+                    selectedElement: .box(source)
+                ),
+                .activateConnectorBox(source.id)
+            )
+        }
+
+        let chooseSource = BoardConnectorBoxActivation.resolve(
+            sourceID: nil,
+            activatedBoxID: source.id,
+            tool: .connector
+        )
+        XCTAssertEqual(chooseSource, .chooseSource)
+        XCTAssertEqual(
+            chooseSource.accessibilityActionTitle,
+            "Choose as connector source"
+        )
+        XCTAssertEqual(
+            BoardConnectorBoxActivation.resolve(
+                sourceID: source.id,
+                activatedBoxID: target.id,
+                tool: .connector
+            ),
+            .connect(sourceID: source.id, targetID: target.id)
+        )
+        let sameSource = BoardConnectorBoxActivation.resolve(
+            sourceID: source.id,
+            activatedBoxID: source.id,
+            tool: .connector
+        )
+        XCTAssertEqual(sameSource, .chooseDifferentTarget)
+        XCTAssertTrue(sameSource.accessibilityHint.contains("different target"))
+
+        XCTAssertEqual(
+            BoardKeyboardActivation.resolve(
+                key: .returnKey,
+                tool: .select,
+                selectedElement: .box(source)
+            ),
+            .editLabel(source.id, source.label)
+        )
+        XCTAssertEqual(
+            BoardKeyboardActivation.resolve(
+                key: .space,
+                tool: .select,
+                selectedElement: .box(source)
+            ),
+            .ignored
+        )
+    }
+
+    func testReducerMutationResultKeepsKeyboardFeedbackTruthful() throws {
+        var editor = BoardEditorState(document: .empty)
+        let unchanged = try editor.applyReportingMutation(.setTool(.box))
+        XCTAssertFalse(unchanged.documentChanged)
+        XCTAssertFalse(
+            BoardKeyboardCreationOutcome.didCreateElement(
+                documentChanged: unchanged.documentChanged,
+                previousSelection: nil,
+                currentSelection: nil
+            )
+        )
+
+        let previousSelection = editor.selectedElementID
+        let created = try editor.applyReportingMutation(
+            .createBox(
+                frame: BoardKeyboardPlacement.nextBoxFrame(in: editor.document),
+                label: "Service",
+                kind: .service
+            )
+        )
+        XCTAssertTrue(created.documentChanged)
+        XCTAssertTrue(
+            BoardKeyboardCreationOutcome.didCreateElement(
+                documentChanged: created.documentChanged,
+                previousSelection: previousSelection,
+                currentSelection: editor.selectedElementID
+            )
+        )
+
+        let noMove = try editor.applyReportingMutation(
+            .moveSelected(by: BoardPoint(x: 0, y: 0))
+        )
+        XCTAssertFalse(noMove.documentChanged)
+    }
+
     func testEraserSamplingDropsNearbyDuplicatePointerUpdates() {
         let first = BoardPoint(x: 100, y: 100)
 
@@ -21,6 +138,75 @@ final class BoardEditorTests: XCTestCase {
                 after: first
             )
         )
+    }
+
+    func testSelectToolStrokePointerContractMovesDeletesAndUndoesWithinCanvas() throws {
+        XCTAssertGreaterThanOrEqual(
+            BoardStrokePointerInteraction.minimumHitWidth,
+            44
+        )
+        XCTAssertEqual(
+            BoardStrokePointerInteraction.hitWidth(for: 3),
+            BoardStrokePointerInteraction.minimumHitWidth
+        )
+        XCTAssertTrue(
+            BoardStrokePointerInteraction.isEnabled(
+                tool: .select,
+                isReadOnly: false
+            )
+        )
+        for tool in BoardEditorTool.allCases where tool != .select {
+            XCTAssertFalse(
+                BoardStrokePointerInteraction.isEnabled(
+                    tool: tool,
+                    isReadOnly: false
+                ),
+                "\(tool) must retain its own pointer gesture"
+            )
+        }
+        XCTAssertFalse(
+            BoardStrokePointerInteraction.isEnabled(
+                tool: .select,
+                isReadOnly: true
+            )
+        )
+
+        let original = BoardStroke(
+            id: BoardElementID("stroke"),
+            points: [
+                BoardPoint(x: 280, y: 210),
+                BoardPoint(x: 295, y: 215),
+            ],
+            width: 3
+        )
+        var editor = BoardEditorState(
+            document: try BoardDocument(
+                canvas: BoardCanvas(size: BoardSize(width: 300, height: 220)),
+                elements: [.stroke(original)]
+            )
+        )
+
+        try editor.apply(.select(original.id))
+        try editor.apply(.moveSelected(by: BoardPoint(x: 30, y: 30)))
+        let movedDocument = editor.document
+        guard case .stroke(let moved) = movedDocument.elements.first else {
+            return XCTFail("Expected moved stroke")
+        }
+        XCTAssertEqual(
+            moved.points,
+            [BoardPoint(x: 285, y: 215), BoardPoint(x: 300, y: 220)]
+        )
+
+        try editor.apply(.deleteSelection)
+        XCTAssertTrue(editor.document.elements.isEmpty)
+        XCTAssertNil(editor.selectedElementID)
+
+        try editor.apply(.undo)
+        XCTAssertEqual(editor.document, movedDocument)
+        XCTAssertEqual(editor.selectedElementID, original.id)
+        try editor.apply(.undo)
+        XCTAssertEqual(editor.document.elements, [.stroke(original)])
+        XCTAssertEqual(editor.selectedElementID, original.id)
     }
 
     func testBoxCreationPreservesEveryExplicitCanonicalNodeKind() throws {
@@ -166,6 +352,192 @@ final class BoardEditorTests: XCTestCase {
         try editor.apply(.undo)
         XCTAssertTrue(editor.document.elements.contains { $0.boardID == queueID })
         XCTAssertTrue(editor.document.elements.contains { $0.boardID == connectorID })
+    }
+
+    func testAttachedConnectorReanchorsAcrossReversedMoveAndResize() throws {
+        let target = BoardBox(
+            id: BoardElementID("target"),
+            frame: BoardRect(
+                origin: BoardPoint(x: 100, y: 100),
+                size: BoardSize(width: 160, height: 90)
+            ),
+            label: "Target"
+        )
+        let source = BoardBox(
+            id: BoardElementID("source"),
+            frame: BoardRect(
+                origin: BoardPoint(x: 400, y: 100),
+                size: BoardSize(width: 160, height: 90)
+            ),
+            label: "Source"
+        )
+        var editor = BoardEditorState(
+            document: try BoardDocument(
+                canvas: BoardCanvas(size: BoardSize(width: 800, height: 700)),
+                elements: [.box(target), .box(source)]
+            )
+        )
+
+        try editor.apply(
+            .connect(
+                sourceBoxID: source.id,
+                targetBoxID: target.id,
+                label: "reversed"
+            )
+        )
+        guard case .connector(let reversed) = editor.document.elements.last else {
+            return XCTFail("Expected reversed connector")
+        }
+        XCTAssertEqual(reversed.start.point, BoardPoint(x: 400, y: 145))
+        XCTAssertEqual(reversed.end.point, BoardPoint(x: 260, y: 145))
+        XCTAssertEqual(
+            BoardOrthogonalConnectorRoute(
+                start: reversed.start.point,
+                end: reversed.end.point
+            ).points,
+            [reversed.start.point, reversed.end.point]
+        )
+
+        try editor.apply(.select(source.id))
+        try editor.apply(.moveSelected(by: BoardPoint(x: -220, y: 300)))
+        guard case .connector(let vertical) = editor.document.elements.last else {
+            return XCTFail("Expected vertical connector")
+        }
+        XCTAssertEqual(vertical.start.point, BoardPoint(x: 260, y: 400))
+        XCTAssertEqual(vertical.end.point, BoardPoint(x: 180, y: 190))
+        let movedDocument = editor.document
+
+        try editor.apply(
+            .resizeSelected(
+                handle: .bottomTrailing,
+                by: BoardPoint(x: 40, y: 20)
+            )
+        )
+        guard case .connector(let resized) = editor.document.elements.last else {
+            return XCTFail("Expected resized connector")
+        }
+        XCTAssertEqual(resized.start.point, BoardPoint(x: 280, y: 400))
+        XCTAssertEqual(resized.end.point, BoardPoint(x: 180, y: 190))
+
+        try editor.apply(.undo)
+        XCTAssertEqual(editor.document, movedDocument)
+        XCTAssertEqual(editor.selectedElementID, source.id)
+    }
+
+    func testResizePreservesImportedNormalizedConnectorSideOffsets() throws {
+        let source = BoardBox(
+            id: BoardElementID("source"),
+            frame: BoardRect(
+                origin: BoardPoint(x: 100, y: 100),
+                size: BoardSize(width: 160, height: 100)
+            ),
+            label: "Source"
+        )
+        let target = BoardBox(
+            id: BoardElementID("target"),
+            frame: BoardRect(
+                origin: BoardPoint(x: 500, y: 100),
+                size: BoardSize(width: 160, height: 100)
+            ),
+            label: "Target"
+        )
+        let imported = BoardConnector(
+            id: BoardElementID("custom"),
+            start: BoardConnectorEndpoint(
+                point: BoardPoint(x: 260, y: 125),
+                elementID: source.id
+            ),
+            end: BoardConnectorEndpoint(
+                point: BoardPoint(x: 500, y: 175),
+                elementID: target.id
+            )
+        )
+        var editor = BoardEditorState(
+            document: try BoardDocument(
+                canvas: BoardCanvas(size: BoardSize(width: 900, height: 600)),
+                elements: [.box(source), .box(target), .connector(imported)]
+            )
+        )
+
+        try editor.apply(.select(source.id))
+        try editor.apply(
+            .resizeSelected(
+                handle: .bottomTrailing,
+                by: BoardPoint(x: 40, y: 100)
+            )
+        )
+
+        guard case .connector(let resized) = editor.document.elements.last else {
+            return XCTFail("Expected custom connector")
+        }
+        XCTAssertEqual(resized.start.point, BoardPoint(x: 300, y: 150))
+        XCTAssertEqual(resized.end.point, BoardPoint(x: 500, y: 175))
+        let resizedSource = try XCTUnwrap(
+            editor.document.elements.compactMap { element -> BoardBox? in
+                guard case .box(let box) = element,
+                      box.id == source.id else {
+                    return nil
+                }
+                return box
+            }.first
+        )
+        XCTAssertEqual(
+            BoardConnectorAnchorLayout.normalizedAnchor(
+                for: resized.start.point,
+                on: resizedSource
+            ),
+            BoardConnectorNormalizedAnchor(side: .right, offset: 0.25)
+        )
+    }
+
+    func testResizePreservesImportedCenteredConnectorSides() throws {
+        let source = BoardBox(
+            id: BoardElementID("source"),
+            frame: BoardRect(
+                origin: BoardPoint(x: 100, y: 100),
+                size: BoardSize(width: 160, height: 100)
+            ),
+            label: "Source"
+        )
+        let target = BoardBox(
+            id: BoardElementID("target"),
+            frame: BoardRect(
+                origin: BoardPoint(x: 500, y: 100),
+                size: BoardSize(width: 160, height: 100)
+            ),
+            label: "Target"
+        )
+        let imported = BoardConnector(
+            id: BoardElementID("custom-centered"),
+            start: BoardConnectorEndpoint(
+                point: BoardPoint(x: 180, y: 100),
+                elementID: source.id
+            ),
+            end: BoardConnectorEndpoint(
+                point: BoardPoint(x: 580, y: 200),
+                elementID: target.id
+            )
+        )
+        var editor = BoardEditorState(
+            document: try BoardDocument(
+                canvas: BoardCanvas(size: BoardSize(width: 900, height: 600)),
+                elements: [.box(source), .box(target), .connector(imported)]
+            )
+        )
+
+        try editor.apply(.select(source.id))
+        try editor.apply(
+            .resizeSelected(
+                handle: .bottomTrailing,
+                by: BoardPoint(x: 40, y: 100)
+            )
+        )
+
+        guard case .connector(let resized) = editor.document.elements.last else {
+            return XCTFail("Expected custom connector")
+        }
+        XCTAssertEqual(resized.start.point, BoardPoint(x: 200, y: 100))
+        XCTAssertEqual(resized.end.point, BoardPoint(x: 580, y: 200))
     }
 
     func testMoveClampsBoxesLabelsAndStrokesAndKeepsAttachedConnectorAnchored() throws {

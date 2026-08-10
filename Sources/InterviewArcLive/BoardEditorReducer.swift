@@ -47,6 +47,10 @@ enum BoardEditorAction: Sendable {
     case redo
 }
 
+struct BoardEditorMutationResult: Equatable, Sendable {
+    let documentChanged: Bool
+}
+
 struct BoardSelectionCapabilities: Equatable, Sendable {
     let canMove: Bool
     let canResize: Bool
@@ -114,6 +118,7 @@ struct BoardEditorState: Equatable, Sendable {
 
     private var undoHistory: [HistoryEntry] = []
     private var redoHistory: [HistoryEntry] = []
+    private var documentMutationGeneration: UInt64 = 0
 
     init(document: BoardDocument) {
         self.document = document
@@ -121,6 +126,16 @@ struct BoardEditorState: Equatable, Sendable {
 
     var canUndo: Bool { !undoHistory.isEmpty }
     var canRedo: Bool { !redoHistory.isEmpty }
+
+    mutating func applyReportingMutation(
+        _ action: BoardEditorAction
+    ) throws -> BoardEditorMutationResult {
+        let previousGeneration = documentMutationGeneration
+        try apply(action)
+        return BoardEditorMutationResult(
+            documentChanged: documentMutationGeneration != previousGeneration
+        )
+    }
 
     mutating func apply(_ action: BoardEditorAction) throws {
         switch action {
@@ -138,21 +153,19 @@ struct BoardEditorState: Equatable, Sendable {
                   let target = box(id: targetBoxID) else {
                 throw BoardEditorError.missingElement
             }
+            let anchors = BoardConnectorAnchorLayout.between(
+                source: source,
+                target: target
+            )
             let id = nextElementID(prefix: "connector")
             let connector = BoardConnector(
                 id: id,
                 start: BoardConnectorEndpoint(
-                    point: BoardPoint(
-                        x: source.frame.origin.x + source.frame.size.width,
-                        y: source.frame.origin.y + source.frame.size.height / 2
-                    ),
+                    point: anchors.start,
                     elementID: source.id
                 ),
                 end: BoardConnectorEndpoint(
-                    point: BoardPoint(
-                        x: target.frame.origin.x,
-                        y: target.frame.origin.y + target.frame.size.height / 2
-                    ),
+                    point: anchors.end,
                     elementID: target.id
                 ),
                 label: label
@@ -249,7 +262,14 @@ struct BoardEditorState: Equatable, Sendable {
                     delta: boundedDelta
                 )
             }
-            try commit(elements: moved)
+            try commit(
+                elements: box(id: selectedElementID) == nil
+                    ? moved
+                    : reanchorAttachedConnectors(
+                        in: moved,
+                        previousElements: document.elements
+                    )
+            )
 
         case .resizeSelected(let handle, let delta):
             guard delta.x.isFinite, delta.y.isFinite else {
@@ -278,7 +298,12 @@ struct BoardEditorState: Equatable, Sendable {
                     resizedBox: resized
                 )
             }
-            try commit(elements: resizedElements)
+            try commit(
+                elements: reanchorAttachedConnectors(
+                    in: resizedElements,
+                    previousElements: document.elements
+                )
+            )
 
         case .deleteSelection:
             guard let selectedElementID else { return }
@@ -326,6 +351,7 @@ struct BoardEditorState: Equatable, Sendable {
         }
         redoHistory.removeAll(keepingCapacity: true)
         document = next
+        documentMutationGeneration &+= 1
     }
 
     private var historyEntry: HistoryEntry {
@@ -336,6 +362,9 @@ struct BoardEditorState: Equatable, Sendable {
     }
 
     private mutating func restore(_ entry: HistoryEntry) {
+        if document != entry.document {
+            documentMutationGeneration &+= 1
+        }
         document = entry.document
         selectedElementID = entry.selectedElementID
     }
@@ -479,13 +508,24 @@ struct BoardEditorState: Equatable, Sendable {
                 label.origin.y + height
             )
         case .stroke(let stroke):
-            guard let minX = stroke.points.map(\.x).min(),
-                  let maxX = stroke.points.map(\.x).max(),
-                  let minY = stroke.points.map(\.y).min(),
-                  let maxY = stroke.points.map(\.y).max() else {
+            guard let first = stroke.points.first else {
                 return nil
             }
-            bounds = (minX, maxX, minY, maxY)
+            bounds = stroke.points.dropFirst().reduce(
+                (
+                    minX: first.x,
+                    maxX: first.x,
+                    minY: first.y,
+                    maxY: first.y
+                )
+            ) { bounds, point in
+                (
+                    min(bounds.minX, point.x),
+                    max(bounds.maxX, point.x),
+                    min(bounds.minY, point.y),
+                    max(bounds.maxY, point.y)
+                )
+            }
         }
 
         guard let x = boundedAxisDelta(
@@ -565,31 +605,8 @@ struct BoardEditorState: Equatable, Sendable {
         switch element {
         case .box(let box) where box.id == selectedBoxID:
             return .box(resizedBox)
-        case .connector(let connector):
-            let start = connector.start.elementID == selectedBoxID
-                ? BoardConnectorEndpoint(
-                    point: sourceAnchor(for: resizedBox),
-                    elementID: selectedBoxID
-                )
-                : connector.start
-            let end = connector.end.elementID == selectedBoxID
-                ? BoardConnectorEndpoint(
-                    point: targetAnchor(for: resizedBox),
-                    elementID: selectedBoxID
-                )
-                : connector.end
-            guard start != connector.start || end != connector.end else {
-                return element
-            }
-            return .connector(
-                BoardConnector(
-                    id: connector.id,
-                    start: start,
-                    end: end,
-                    label: connector.label,
-                    stroke: connector.stroke
-                )
-            )
+        case .connector:
+            return element
         default:
             return element
         }
@@ -643,18 +660,159 @@ struct BoardEditorState: Equatable, Sendable {
         )
     }
 
-    private func sourceAnchor(for box: BoardBox) -> BoardPoint {
-        BoardPoint(
-            x: box.frame.origin.x + box.frame.size.width,
-            y: box.frame.origin.y + box.frame.size.height / 2
+    private func reanchorAttachedConnectors(
+        in elements: [BoardElement],
+        previousElements: [BoardElement]
+    ) -> [BoardElement] {
+        let boxes: [BoardElementID: BoardBox] = Dictionary(
+            uniqueKeysWithValues: elements.compactMap { element
+                -> (BoardElementID, BoardBox)? in
+                guard case .box(let box) = element else { return nil }
+                return (box.id, box)
+            }
         )
-    }
+        let previousBoxes: [BoardElementID: BoardBox] = Dictionary(
+            uniqueKeysWithValues: previousElements.compactMap { element
+                -> (BoardElementID, BoardBox)? in
+                guard case .box(let box) = element else { return nil }
+                return (box.id, box)
+            }
+        )
+        let previousConnectors: [BoardElementID: BoardConnector] = Dictionary(
+            uniqueKeysWithValues: previousElements.compactMap { element
+                -> (BoardElementID, BoardConnector)? in
+                guard case .connector(let connector) = element else {
+                    return nil
+                }
+                return (connector.id, connector)
+            }
+        )
+        return elements.map { element in
+            guard case .connector(let connector) = element else {
+                return element
+            }
 
-    private func targetAnchor(for box: BoardBox) -> BoardPoint {
-        BoardPoint(
-            x: box.frame.origin.x,
-            y: box.frame.origin.y + box.frame.size.height / 2
-        )
+            if let sourceID = connector.start.elementID,
+               let targetID = connector.end.elementID,
+               let source = boxes[sourceID],
+               let target = boxes[targetID] {
+                let previous = previousConnectors[connector.id]
+                let sourceAnchor = previous.flatMap { previous in
+                    previousBoxes[sourceID].map {
+                        BoardConnectorAnchorLayout.normalizedAnchor(
+                            for: previous.start.point,
+                            on: $0
+                        )
+                    }
+                }
+                let targetAnchor = previous.flatMap { previous in
+                    previousBoxes[targetID].map {
+                        BoardConnectorAnchorLayout.normalizedAnchor(
+                            for: previous.end.point,
+                            on: $0
+                        )
+                    }
+                }
+                let anchors: BoardConnectorAnchorPair
+                let usesAutomaticPair = previous.flatMap { previous in
+                    guard let previousSource = previousBoxes[sourceID],
+                          let previousTarget = previousBoxes[targetID] else {
+                        return nil
+                    }
+                    return BoardConnectorAnchorLayout.usesAutomaticPair(
+                        start: previous.start.point,
+                        end: previous.end.point,
+                        source: previousSource,
+                        target: previousTarget
+                    )
+                } ?? true
+                if usesAutomaticPair {
+                    anchors = BoardConnectorAnchorLayout.between(
+                        source: source,
+                        target: target
+                    )
+                } else {
+                    anchors = BoardConnectorAnchorPair(
+                        start: sourceAnchor?.point(in: source.frame)
+                            ?? BoardConnectorAnchorLayout.anchor(
+                                on: source,
+                                toward: connector.end.point
+                            ),
+                        end: targetAnchor?.point(in: target.frame)
+                            ?? BoardConnectorAnchorLayout.anchor(
+                                on: target,
+                                toward: connector.start.point
+                            )
+                    )
+                }
+                return .connector(
+                    BoardConnector(
+                        id: connector.id,
+                        start: BoardConnectorEndpoint(
+                            point: anchors.start,
+                            elementID: sourceID
+                        ),
+                        end: BoardConnectorEndpoint(
+                            point: anchors.end,
+                            elementID: targetID
+                        ),
+                        label: connector.label,
+                        stroke: connector.stroke
+                    )
+                )
+            }
+
+            let previous = previousConnectors[connector.id]
+            let start = connector.start.elementID.flatMap { id in
+                boxes[id].map { box in
+                    let normalized = previous.flatMap { previous in
+                        previousBoxes[id].map {
+                            BoardConnectorAnchorLayout.normalizedAnchor(
+                                for: previous.start.point,
+                                on: $0
+                            )
+                        }
+                    }
+                    return BoardConnectorEndpoint(
+                        point: normalized?.point(in: box.frame)
+                            ?? BoardConnectorAnchorLayout.anchor(
+                                on: box,
+                                toward: connector.end.point
+                            ),
+                        elementID: id
+                    )
+                }
+            } ?? connector.start
+            let end = connector.end.elementID.flatMap { id in
+                boxes[id].map { box in
+                    let normalized = previous.flatMap { previous in
+                        previousBoxes[id].map {
+                            BoardConnectorAnchorLayout.normalizedAnchor(
+                                for: previous.end.point,
+                                on: $0
+                            )
+                        }
+                    }
+                    return BoardConnectorEndpoint(
+                        point: normalized?.point(in: box.frame)
+                            ?? BoardConnectorAnchorLayout.anchor(
+                                on: box,
+                                toward: start.point
+                            ),
+                        elementID: id
+                    )
+                }
+            } ?? connector.end
+            return .connector(
+                BoardConnector(
+                    id: connector.id,
+                    start: start,
+                    end: end,
+                    label: connector.label,
+                    stroke: connector.stroke
+                )
+            )
+        }
     }
 
     private func box(id: BoardElementID) -> BoardBox? {

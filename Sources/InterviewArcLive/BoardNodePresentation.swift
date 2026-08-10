@@ -208,17 +208,23 @@ struct BoardNodeVisual: Equatable {
         let y = icon.minY
         let w = icon.width
         let h = icon.height
+        let unit = min(1, w / 28, h / 22)
         switch pictogram {
         case .componentGrid:
-            let side = min(8, h * 0.32)
+            let side = min(8 * unit, h * 0.32)
             return [
-                .roundedRectangle(CGRect(x: x + 4, y: y + 3, width: side, height: side), radius: 2),
-                .roundedRectangle(CGRect(x: icon.maxX - side - 4, y: y + 3, width: side, height: side), radius: 2),
-                .roundedRectangle(CGRect(x: x + 4, y: icon.maxY - side - 3, width: side, height: side), radius: 2),
-                .roundedRectangle(CGRect(x: icon.maxX - side - 4, y: icon.maxY - side - 3, width: side, height: side), radius: 2),
+                .roundedRectangle(CGRect(x: x + 4 * unit, y: y + 3 * unit, width: side, height: side), radius: 2 * unit),
+                .roundedRectangle(CGRect(x: icon.maxX - side - 4 * unit, y: y + 3 * unit, width: side, height: side), radius: 2 * unit),
+                .roundedRectangle(CGRect(x: x + 4 * unit, y: icon.maxY - side - 3 * unit, width: side, height: side), radius: 2 * unit),
+                .roundedRectangle(CGRect(x: icon.maxX - side - 4 * unit, y: icon.maxY - side - 3 * unit, width: side, height: side), radius: 2 * unit),
             ]
         case .globe:
-            let globe = CGRect(x: x + 5, y: y + 1, width: w - 10, height: h - 2)
+            let globe = CGRect(
+                x: x + 5 * unit,
+                y: y + unit,
+                width: w - 10 * unit,
+                height: h - 2 * unit
+            )
             return [
                 .ellipse(in: globe),
                 .ellipse(in: globe.insetBy(dx: globe.width * 0.29, dy: 0)),
@@ -229,55 +235,71 @@ struct BoardNodeVisual: Equatable {
             ]
         case .fanout:
             let center = CGPoint(x: icon.midX, y: icon.midY)
-            let left = CGPoint(x: x + 5, y: y + 5)
-            let upperRight = CGPoint(x: icon.maxX - 5, y: y + 4)
-            let lowerRight = CGPoint(x: icon.maxX - 5, y: icon.maxY - 4)
+            let left = CGPoint(x: x + 5 * unit, y: y + 5 * unit)
+            let upperRight = CGPoint(
+                x: icon.maxX - 5 * unit,
+                y: y + 4 * unit
+            )
+            let lowerRight = CGPoint(
+                x: icon.maxX - 5 * unit,
+                y: icon.maxY - 4 * unit
+            )
             return [
                 .line(from: center, to: left),
                 .line(from: center, to: upperRight),
                 .line(from: center, to: lowerRight),
-                .ellipse(centeredAt: left, radius: 3.5),
-                .ellipse(centeredAt: center, radius: 3.5),
-                .ellipse(centeredAt: upperRight, radius: 3.5),
-                .ellipse(centeredAt: lowerRight, radius: 3.5),
+                .ellipse(centeredAt: left, radius: 3.5 * unit),
+                .ellipse(centeredAt: center, radius: 3.5 * unit),
+                .ellipse(centeredAt: upperRight, radius: 3.5 * unit),
+                .ellipse(centeredAt: lowerRight, radius: 3.5 * unit),
             ]
         case .records:
-            let record = CGRect(x: x + 5, y: y + 1, width: w - 10, height: h - 3)
+            let record = CGRect(
+                x: x + 5 * unit,
+                y: y + unit,
+                width: w - 10 * unit,
+                height: h - 3 * unit
+            )
             return [
-                .ellipse(in: CGRect(x: record.minX, y: record.minY, width: record.width, height: 8)),
+                .ellipse(in: CGRect(x: record.minX, y: record.minY, width: record.width, height: 8 * unit)),
                 .line(
-                    from: CGPoint(x: record.minX, y: record.minY + 4),
-                    to: CGPoint(x: record.minX, y: record.maxY - 4)
+                    from: CGPoint(x: record.minX, y: record.minY + 4 * unit),
+                    to: CGPoint(x: record.minX, y: record.maxY - 4 * unit)
                 ),
                 .line(
-                    from: CGPoint(x: record.maxX, y: record.minY + 4),
-                    to: CGPoint(x: record.maxX, y: record.maxY - 4)
+                    from: CGPoint(x: record.maxX, y: record.minY + 4 * unit),
+                    to: CGPoint(x: record.maxX, y: record.maxY - 4 * unit)
                 ),
-                .ellipse(in: CGRect(x: record.minX, y: record.maxY - 8, width: record.width, height: 8)),
+                .ellipse(in: CGRect(x: record.minX, y: record.maxY - 8 * unit, width: record.width, height: 8 * unit)),
             ]
         case .messageQueue:
             return [0.18, 0.5, 0.82].map { fraction in
                 .roundedRectangle(
                     CGRect(
-                        x: x + 3,
-                        y: y + h * fraction - 3,
-                        width: w - 6,
-                        height: 6
+                        x: x + 3 * unit,
+                        y: y + h * fraction - 3 * unit,
+                        width: w - 6 * unit,
+                        height: 6 * unit
                     ),
-                    radius: 3
+                    radius: 3 * unit
                 )
             }
         case .archive:
-            let tray = CGRect(x: x + 4, y: y + 5, width: w - 8, height: h - 10)
+            let tray = CGRect(
+                x: x + 4 * unit,
+                y: y + 5 * unit,
+                width: w - 8 * unit,
+                height: h - 10 * unit
+            )
             return [
-                .roundedRectangle(tray, radius: 3),
+                .roundedRectangle(tray, radius: 3 * unit),
                 .line(
-                    from: CGPoint(x: tray.minX, y: tray.minY + 6),
-                    to: CGPoint(x: tray.maxX, y: tray.minY + 6)
+                    from: CGPoint(x: tray.minX, y: tray.minY + 6 * unit),
+                    to: CGPoint(x: tray.maxX, y: tray.minY + 6 * unit)
                 ),
                 .line(
-                    from: CGPoint(x: icon.midX - 5, y: tray.minY + 10),
-                    to: CGPoint(x: icon.midX + 5, y: tray.minY + 10)
+                    from: CGPoint(x: icon.midX - 5 * unit, y: tray.minY + 10 * unit),
+                    to: CGPoint(x: icon.midX + 5 * unit, y: tray.minY + 10 * unit)
                 ),
             ]
         }
@@ -292,39 +314,338 @@ struct BoardNodeVisual: Equatable {
         )
     }
 
-    func drawIOVisualOverlayDataURI(
-        canvasSize: CGSize,
-        strokeHex: String
-    ) -> String {
-        let rect = CGRect(origin: .zero, size: canvasSize)
-        let strokeStyle = "fill='none' stroke='#\(strokeHex)' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'"
-        var paths = [
-            "<path data-role='outline' d='\(outlinePath(in: rect).svgPathData)' \(strokeStyle)/>",
-        ]
-        paths.append(contentsOf: detailPaths(in: rect).map {
-            "<path data-role='detail' d='\($0.svgPathData)' \(strokeStyle)/>"
-        })
-        paths.append(contentsOf: pictogramPaths(in: rect).map {
-            "<path data-role='pictogram' d='\($0.svgPathData)' \(strokeStyle)/>"
-        })
-        let svg = "<svg xmlns='http://www.w3.org/2000/svg' data-board-node-visual='\(stableKey)' viewBox='0 0 \(BoardVectorPath.number(canvasSize.width)) \(BoardVectorPath.number(canvasSize.height))'>\(paths.joined())</svg>"
-        let allowed = CharacterSet.alphanumerics.union(
-            CharacterSet(charactersIn: "-._~")
-        )
-        return "data:image/svg+xml," + (svg.addingPercentEncoding(
-            withAllowedCharacters: allowed
-        ) ?? "")
-    }
-
     private func pictogramRect(in rect: CGRect) -> CGRect {
-        let width = min(40, max(28, rect.width * 0.25))
-        let height = min(28, max(22, rect.height * 0.30))
+        let horizontalInset = min(8, max(1, rect.width * 0.08))
+        let verticalInset = min(8, max(1, rect.height * 0.08))
+        let availableWidth = max(1, rect.width - horizontalInset * 2)
+        let availableHeight = max(1, rect.height - verticalInset * 2)
+        let width = min(availableWidth, min(40, max(28, rect.width * 0.25)))
+        let height = min(availableHeight, min(28, max(22, rect.height * 0.30)))
+        let preferredTop = rect.minY + max(14, rect.height * 0.16)
         return CGRect(
             x: rect.midX - width / 2,
-            y: rect.minY + max(14, rect.height * 0.16),
+            y: min(
+                max(rect.minY + verticalInset, preferredTop),
+                rect.maxY - verticalInset - height
+            ),
             width: width,
             height: height
         )
+    }
+}
+
+struct BoardConnectorAnchorPair: Equatable {
+    let start: BoardPoint
+    let end: BoardPoint
+}
+
+enum BoardConnectorSide: String, Equatable {
+    case left
+    case right
+    case top
+    case bottom
+}
+
+struct BoardConnectorNormalizedAnchor: Equatable {
+    let side: BoardConnectorSide
+    let offset: Double
+
+    func point(in frame: BoardRect) -> BoardPoint {
+        let boundedOffset = min(1, max(0, offset))
+        switch side {
+        case .left:
+            return BoardPoint(
+                x: frame.origin.x,
+                y: frame.origin.y + frame.size.height * boundedOffset
+            )
+        case .right:
+            return BoardPoint(
+                x: frame.origin.x + frame.size.width,
+                y: frame.origin.y + frame.size.height * boundedOffset
+            )
+        case .top:
+            return BoardPoint(
+                x: frame.origin.x + frame.size.width * boundedOffset,
+                y: frame.origin.y
+            )
+        case .bottom:
+            return BoardPoint(
+                x: frame.origin.x + frame.size.width * boundedOffset,
+                y: frame.origin.y + frame.size.height
+            )
+        }
+    }
+}
+
+enum BoardConnectorAnchorLayout {
+    static func usesAutomaticPair(
+        start: BoardPoint,
+        end: BoardPoint,
+        source: BoardBox,
+        target: BoardBox
+    ) -> Bool {
+        let automatic = between(source: source, target: target)
+        return pointsMatch(start, automatic.start)
+            && pointsMatch(end, automatic.end)
+    }
+
+    static func between(
+        source: BoardBox,
+        target: BoardBox
+    ) -> BoardConnectorAnchorPair {
+        let sourceCenter = center(of: source.frame)
+        let targetCenter = center(of: target.frame)
+        let horizontal = abs(targetCenter.x - sourceCenter.x)
+            >= abs(targetCenter.y - sourceCenter.y)
+
+        if horizontal {
+            if targetCenter.x >= sourceCenter.x {
+                return BoardConnectorAnchorPair(
+                    start: rightCenter(of: source.frame),
+                    end: leftCenter(of: target.frame)
+                )
+            }
+            return BoardConnectorAnchorPair(
+                start: leftCenter(of: source.frame),
+                end: rightCenter(of: target.frame)
+            )
+        }
+        if targetCenter.y >= sourceCenter.y {
+            return BoardConnectorAnchorPair(
+                start: bottomCenter(of: source.frame),
+                end: topCenter(of: target.frame)
+            )
+        }
+        return BoardConnectorAnchorPair(
+            start: topCenter(of: source.frame),
+            end: bottomCenter(of: target.frame)
+        )
+    }
+
+    static func anchor(on box: BoardBox, toward point: BoardPoint) -> BoardPoint {
+        let center = center(of: box.frame)
+        let horizontal = abs(point.x - center.x) >= abs(point.y - center.y)
+        if horizontal {
+            return point.x >= center.x
+                ? rightCenter(of: box.frame)
+                : leftCenter(of: box.frame)
+        }
+        return point.y >= center.y
+            ? bottomCenter(of: box.frame)
+            : topCenter(of: box.frame)
+    }
+
+    static func normalizedAnchor(
+        for point: BoardPoint,
+        on box: BoardBox
+    ) -> BoardConnectorNormalizedAnchor {
+        let frame = box.frame
+        let minX = frame.origin.x
+        let maxX = frame.origin.x + frame.size.width
+        let minY = frame.origin.y
+        let maxY = frame.origin.y + frame.size.height
+        let candidates: [(BoardConnectorSide, Double)] = [
+            (.left, abs(point.x - minX)),
+            (.right, abs(point.x - maxX)),
+            (.top, abs(point.y - minY)),
+            (.bottom, abs(point.y - maxY)),
+        ]
+        let side = candidates.min { lhs, rhs in
+            lhs.1 < rhs.1
+        }?.0 ?? .right
+        let offset: Double
+        switch side {
+        case .left, .right:
+            offset = frame.size.height > 0
+                ? (point.y - minY) / frame.size.height
+                : 0.5
+        case .top, .bottom:
+            offset = frame.size.width > 0
+                ? (point.x - minX) / frame.size.width
+                : 0.5
+        }
+        return BoardConnectorNormalizedAnchor(
+            side: side,
+            offset: min(1, max(0, offset))
+        )
+    }
+
+    private static func center(of frame: BoardRect) -> BoardPoint {
+        BoardPoint(
+            x: frame.origin.x + frame.size.width / 2,
+            y: frame.origin.y + frame.size.height / 2
+        )
+    }
+
+    private static func leftCenter(of frame: BoardRect) -> BoardPoint {
+        BoardPoint(
+            x: frame.origin.x,
+            y: frame.origin.y + frame.size.height / 2
+        )
+    }
+
+    private static func rightCenter(of frame: BoardRect) -> BoardPoint {
+        BoardPoint(
+            x: frame.origin.x + frame.size.width,
+            y: frame.origin.y + frame.size.height / 2
+        )
+    }
+
+    private static func topCenter(of frame: BoardRect) -> BoardPoint {
+        BoardPoint(
+            x: frame.origin.x + frame.size.width / 2,
+            y: frame.origin.y
+        )
+    }
+
+    private static func bottomCenter(of frame: BoardRect) -> BoardPoint {
+        BoardPoint(
+            x: frame.origin.x + frame.size.width / 2,
+            y: frame.origin.y + frame.size.height
+        )
+    }
+
+    private static func pointsMatch(
+        _ lhs: BoardPoint,
+        _ rhs: BoardPoint
+    ) -> Bool {
+        abs(lhs.x - rhs.x) < 0.000_001
+            && abs(lhs.y - rhs.y) < 0.000_001
+    }
+}
+
+struct BoardNodeLabelLayout: Equatable {
+    static let fontSize = 13.0
+    static let lineHeight = 15.0
+    static let estimatedCharacterWidth = 7.0
+    static let maximumLineCount = 3
+
+    let rect: CGRect
+    let lines: [String]
+
+    init(text: String, in rect: CGRect) {
+        self.rect = rect
+        let characterLimit = max(
+            1,
+            Int(floor(rect.width / Self.estimatedCharacterWidth))
+        )
+        let lineLimit = max(
+            1,
+            min(
+                Self.maximumLineCount,
+                Int(floor(rect.height / Self.lineHeight))
+            )
+        )
+        let wrapped = Self.wrap(text, characterLimit: characterLimit)
+        if wrapped.count <= lineLimit {
+            lines = wrapped
+        } else {
+            var visible = Array(wrapped.prefix(lineLimit))
+            visible[lineLimit - 1] = Self.ellipsize(
+                visible[lineLimit - 1],
+                characterLimit: characterLimit
+            )
+            lines = visible
+        }
+    }
+
+    func lineRect(at index: Int) -> CGRect {
+        let contentHeight = Double(lines.count) * Self.lineHeight
+        return CGRect(
+            x: rect.minX,
+            y: rect.midY - contentHeight / 2
+                + Double(index) * Self.lineHeight,
+            width: rect.width,
+            height: Self.lineHeight
+        )
+    }
+
+    func baselineY(at index: Int) -> Double {
+        lineRect(at: index).minY + 12
+    }
+
+    var drawIOValue: String {
+        lines.joined(separator: "\n")
+    }
+
+    private static func wrap(
+        _ text: String,
+        characterLimit: Int
+    ) -> [String] {
+        let words = text.split(whereSeparator: \.isWhitespace).map(String.init)
+        guard !words.isEmpty else { return [""] }
+        var result: [String] = []
+        var current = ""
+
+        for word in words {
+            if word.count > characterLimit {
+                if !current.isEmpty {
+                    result.append(current)
+                    current = ""
+                }
+                var remaining = word
+                while remaining.count > characterLimit {
+                    let boundary = remaining.index(
+                        remaining.startIndex,
+                        offsetBy: characterLimit
+                    )
+                    result.append(String(remaining[..<boundary]))
+                    remaining = String(remaining[boundary...])
+                }
+                current = remaining
+                continue
+            }
+
+            let candidate = current.isEmpty ? word : "\(current) \(word)"
+            if candidate.count <= characterLimit {
+                current = candidate
+            } else {
+                result.append(current)
+                current = word
+            }
+        }
+        if !current.isEmpty { result.append(current) }
+        return result.isEmpty ? [""] : result
+    }
+
+    private static func ellipsize(
+        _ value: String,
+        characterLimit: Int
+    ) -> String {
+        guard characterLimit > 1 else { return "…" }
+        return String(value.prefix(characterLimit - 1)) + "…"
+    }
+}
+
+enum BoardRenderLayer: Int, CaseIterable {
+    case connector
+    case stroke
+    case label
+    case box
+}
+
+enum BoardRenderOrder {
+    static func elements(in document: BoardDocument) -> [BoardElement] {
+        elements(document.elements)
+    }
+
+    static func elements(_ elements: [BoardElement]) -> [BoardElement] {
+        elements.enumerated().sorted { lhs, rhs in
+            let leftLayer = layer(for: lhs.element).rawValue
+            let rightLayer = layer(for: rhs.element).rawValue
+            return leftLayer == rightLayer
+                ? lhs.offset < rhs.offset
+                : leftLayer < rightLayer
+        }.map { $0.element }
+    }
+
+    static func layer(for element: BoardElement) -> BoardRenderLayer {
+        switch element {
+        case .connector: .connector
+        case .stroke: .stroke
+        case .label: .label
+        case .box: .box
+        }
     }
 }
 
@@ -334,12 +655,20 @@ struct BoardOrthogonalConnectorRoute: Equatable {
     init(start: BoardPoint, end: BoardPoint) {
         if start.x == end.x || start.y == end.y {
             points = [start, end]
-        } else {
+        } else if abs(end.x - start.x) >= abs(end.y - start.y) {
             let middleX = (start.x + end.x) / 2
             points = [
                 start,
                 BoardPoint(x: middleX, y: start.y),
                 BoardPoint(x: middleX, y: end.y),
+                end,
+            ]
+        } else {
+            let middleY = (start.y + end.y) / 2
+            points = [
+                start,
+                BoardPoint(x: start.x, y: middleY),
+                BoardPoint(x: end.x, y: middleY),
                 end,
             ]
         }

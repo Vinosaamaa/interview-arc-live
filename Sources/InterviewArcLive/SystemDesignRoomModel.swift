@@ -29,6 +29,43 @@ struct LiveInterviewerSpeechDependencies {
     let audioStore: any InterviewerSpeechAudioStoring
 }
 
+enum BoardRevisionStatusPresentation: Equatable, Sendable {
+    case saving
+    case error(String)
+    case draftNotSaved
+    case unsaved
+    case unsavedChanges(revision: Int)
+    case saved(revision: Int)
+    case viewing(revision: Int)
+
+    var fullText: String {
+        switch self {
+        case .saving: "Saving board…"
+        case .error(let message): message
+        case .draftNotSaved: "Draft not saved"
+        case .unsaved: "Unsaved board"
+        case .unsavedChanges(let revision):
+            "Unsaved changes · revision \(revision)"
+        case .saved(let revision):
+            "Board saved · revision \(revision)"
+        case .viewing(let revision):
+            "Viewing revision \(revision) · read-only"
+        }
+    }
+
+    var compactText: String {
+        switch self {
+        case .saving: "Saving…"
+        case .error: "Board issue"
+        case .draftNotSaved: "Draft unsaved"
+        case .unsaved: "Unsaved"
+        case .unsavedChanges(let revision): "Unsaved · r\(revision)"
+        case .saved(let revision): "Saved · r\(revision)"
+        case .viewing(let revision): "Viewing r\(revision) · locked"
+        }
+    }
+}
+
 @MainActor
 final class SystemDesignRoomModel: ObservableObject {
     @Published private(set) var snapshot: InterviewRoomSnapshot?
@@ -316,8 +353,26 @@ final class SystemDesignRoomModel: ObservableObject {
         return boardEditor.document
     }
 
+    var boardSelectedElementIDForPresentation: BoardElementID? {
+        guard !isInspectingBoardRevision,
+              let selectedElementID = boardEditor.selectedElementID,
+              boardDocumentForPresentation.elements.contains(where: {
+                  $0.boardID == selectedElementID
+              }) else {
+            return nil
+        }
+        return selectedElementID
+    }
+
     var isInspectingBoardRevision: Bool {
         inspectedBoardRevisionID != nil
+    }
+
+    var inspectedBoardRevision: BoardRevision? {
+        guard let inspectedBoardRevisionID else { return nil }
+        return snapshot?.board.revisions.first {
+            $0.id == inspectedBoardRevisionID
+        }
     }
 
     var latestBoardRevision: BoardRevision? {
@@ -331,19 +386,26 @@ final class SystemDesignRoomModel: ObservableObject {
             ?? latestBoardRevision
     }
 
-    var boardRevisionStatus: String {
-        if isBoardSaving { return "Saving board…" }
-        if let boardErrorMessage { return boardErrorMessage }
+    var boardRevisionStatusPresentation: BoardRevisionStatusPresentation {
+        if isBoardSaving { return .saving }
+        if let boardErrorMessage { return .error(boardErrorMessage) }
+        if let inspectedBoardRevision {
+            return .viewing(revision: inspectedBoardRevision.ordinal + 1)
+        }
         guard let latestBoardRevision else {
             return boardEditor.document.elements.isEmpty
-                ? "Draft not saved"
-                : "Unsaved board"
+                ? .draftNotSaved
+                : .unsaved
         }
         let revision = latestBoardRevision.ordinal + 1
         if boardEditor.document != latestBoardRevision.document {
-            return "Unsaved changes · revision \(revision)"
+            return .unsavedChanges(revision: revision)
         }
-        return "Board saved · revision \(revision)"
+        return .saved(revision: revision)
+    }
+
+    var boardRevisionStatus: String {
+        boardRevisionStatusPresentation.fullText
     }
 
     var isBoardDraftDirty: Bool {
@@ -413,10 +475,11 @@ final class SystemDesignRoomModel: ObservableObject {
         return selectedBoardRevision?.document == boardEditor.document
     }
 
-    func applyBoardAction(_ action: BoardEditorAction) {
+    @discardableResult
+    func applyBoardAction(_ action: BoardEditorAction) -> Bool {
         guard coordinator != nil, snapshot != nil else {
             boardErrorMessage = "Wait for the local room to finish restoring before editing."
-            return
+            return false
         }
         if isInspectingBoardRevision {
             switch action {
@@ -424,21 +487,22 @@ final class SystemDesignRoomModel: ObservableObject {
                 break
             default:
                 boardErrorMessage = "Return to the draft before editing."
-                return
+                return false
             }
         }
 
-        let original = boardEditor.document
         do {
             var updated = boardEditor
-            try updated.apply(action)
+            let mutation = try updated.applyReportingMutation(action)
             boardEditor = updated
             boardErrorMessage = nil
-            if updated.document != original {
+            if mutation.documentChanged {
                 persistBoardDraft(updated.document)
             }
+            return mutation.documentChanged
         } catch {
             boardErrorMessage = "That board change is outside the supported canvas bounds."
+            return false
         }
     }
 

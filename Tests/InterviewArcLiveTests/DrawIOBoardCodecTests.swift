@@ -78,10 +78,11 @@ final class DrawIOBoardCodecTests: XCTestCase {
         XCTAssertTrue(first.contains("iaPictogram=\"fanout\""))
         XCTAssertTrue(first.contains("iaDrawIOShapeStyle=\"shape=hexagon;perimeter=hexagonPerimeter2;fixedSize=1\""))
         XCTAssertTrue(first.contains("shape=hexagon;perimeter=hexagonPerimeter2"))
-        XCTAssertTrue(first.contains("strokeColor=none"))
-        XCTAssertTrue(first.contains("id=\"__ia_node_visual_0\""))
+        XCTAssertTrue(first.contains("fillColor=none;strokeColor=none"))
+        XCTAssertTrue(first.contains("id=\"__ia_node_visual_"))
         XCTAssertTrue(first.contains("shape=image;imageAspect=0;aspect=fixed;pointerEvents=0"))
         XCTAssertTrue(first.contains("image=data:image/svg+xml,%3Csvg"))
+        XCTAssertTrue(first.contains("data-role%3D%27fill%27"))
         XCTAssertTrue(first.contains("selectable=\"0\""))
         XCTAssertTrue(first.contains("<Array as=\"points\">"))
         XCTAssertTrue(first.contains("<mxPoint x=\"340\" y=\"145\"/>"))
@@ -89,6 +90,58 @@ final class DrawIOBoardCodecTests: XCTestCase {
         XCTAssertFalse(first.localizedCaseInsensitiveContains("<script"))
         XCTAssertFalse(first.localizedCaseInsensitiveContains("href="))
         XCTAssertEqual(try codec.decode(first), document)
+    }
+
+    func testMixedCreationOrderUsesSharedLayersWithoutChangingRoundTripOrder() throws {
+        let box = BoardElement.box(
+            BoardBox(
+                id: BoardElementID("box"),
+                frame: BoardRect(
+                    origin: BoardPoint(x: 40, y: 40),
+                    size: BoardSize(width: 160, height: 90)
+                ),
+                label: "Delivery status store",
+                kind: .queue
+            )
+        )
+        let label = BoardElement.label(
+            BoardLabel(
+                id: BoardElementID("label"),
+                origin: BoardPoint(x: 40, y: 160),
+                text: "Label"
+            )
+        )
+        let connector = BoardElement.connector(
+            BoardConnector(
+                id: BoardElementID("connector"),
+                start: BoardConnectorEndpoint(point: BoardPoint(x: 20, y: 20)),
+                end: BoardConnectorEndpoint(point: BoardPoint(x: 200, y: 20))
+            )
+        )
+        let stroke = BoardElement.stroke(
+            BoardStroke(
+                id: BoardElementID("stroke"),
+                points: [BoardPoint(x: 20, y: 200), BoardPoint(x: 80, y: 220)],
+                width: 3
+            )
+        )
+        let document = try BoardDocument(
+            canvas: BoardCanvas(size: BoardSize(width: 500, height: 320)),
+            elements: [box, label, connector, stroke]
+        )
+
+        let source = try DrawIOBoardCodec().encode(document)
+        let connectorOffset = try XCTUnwrap(source.range(of: "iaKind=\"connector\""))
+        let strokeOffset = try XCTUnwrap(source.range(of: "iaKind=\"stroke\""))
+        let labelOffset = try XCTUnwrap(source.range(of: "iaKind=\"label\""))
+        let boxOffset = try XCTUnwrap(source.range(of: "iaKind=\"box\""))
+
+        XCTAssertLessThan(connectorOffset.lowerBound, strokeOffset.lowerBound)
+        XCTAssertLessThan(strokeOffset.lowerBound, labelOffset.lowerBound)
+        XCTAssertLessThan(labelOffset.lowerBound, boxOffset.lowerBound)
+        XCTAssertTrue(source.contains("value=\"Delivery status&#10;store\""))
+        XCTAssertTrue(source.contains("iaLabelLayout=\"wrapped-v1\""))
+        XCTAssertEqual(try DrawIOBoardCodec().decode(source), document)
     }
 
     func testNodeVisualCellIDsAvoidCanonicalElementIDCollisions() throws {
@@ -157,6 +210,15 @@ final class DrawIOBoardCodecTests: XCTestCase {
         XCTAssertTrue(source.contains("source=\"__ia_element_0\" iaSourceElementID=\"0\""))
         XCTAssertTrue(source.contains("target=\"__ia_element_1\" iaTargetElementID=\"1\""))
         XCTAssertEqual(try DrawIOBoardCodec().decode(source), document)
+
+        let drawIOFallback = source
+            .replacingOccurrences(of: " iaSourceElementID=\"0\"", with: "")
+            .replacingOccurrences(of: " iaTargetElementID=\"1\"", with: "")
+        XCTAssertEqual(
+            try DrawIOBoardCodec().decode(drawIOFallback),
+            document,
+            "Draw.io cell IDs must resolve back to canonical Board IDs"
+        )
     }
 
     func testDecodeRejectsOversizedOrActiveXMLWithoutPartialDocument() throws {

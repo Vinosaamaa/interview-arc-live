@@ -86,7 +86,9 @@ struct DeterministicBoardRenderer: Sendable {
             "  <rect x=\"0\" y=\"0\" width=\"\(width)\" height=\"\(height)\" fill=\"#\(attribute(settings.background.hexRGB))\"/>",
         ]
 
-        for element in document.elements {
+        for (renderIndex, element) in BoardRenderOrder.elements(
+            in: document
+        ).enumerated() {
             switch element {
             case .box(let box):
                 let visual = box.kind.visual
@@ -97,9 +99,15 @@ struct DeterministicBoardRenderer: Sendable {
                     height: box.frame.size.height
                 )
                 let labelRect = visual.labelRect(in: rect)
+                let labelLayout = BoardNodeLabelLayout(
+                    text: box.label,
+                    in: labelRect
+                )
+                let clipID = "ia-node-label-\(renderIndex)"
                 var nodeRows = [
                     "  <g data-id=\"\(attribute(box.id.rawValue))\" data-node-kind=\"\(attribute(box.kind.rawValue))\" data-node-visual=\"\(attribute(visual.stableKey))\">",
                     "    <path d=\"\(attribute(visual.outlinePath(in: rect).svgPathData))\" fill=\"#\(attribute(box.fill.hexRGB))\" stroke=\"#\(attribute(box.stroke.hexRGB))\" stroke-width=\"1.5\" stroke-linejoin=\"round\"/>",
+                    "    <clipPath id=\"\(clipID)\"><rect x=\"\(number(labelRect.minX))\" y=\"\(number(labelRect.minY))\" width=\"\(number(labelRect.width))\" height=\"\(number(labelRect.height))\"/></clipPath>",
                 ]
                 for path in visual.detailPaths(in: rect) + visual.pictogramPaths(in: rect) {
                     nodeRows.append(
@@ -107,30 +115,18 @@ struct DeterministicBoardRenderer: Sendable {
                     )
                 }
                 nodeRows.append(
-                    "    <text x=\"\(number(labelRect.midX))\" y=\"\(number(labelRect.midY + 5))\" text-anchor=\"middle\" font-family=\"-apple-system, BlinkMacSystemFont, sans-serif\" font-size=\"13\" font-weight=\"600\" fill=\"#\(attribute(box.stroke.hexRGB))\">\(text(box.label))</text>"
+                    "    <text data-label-layout=\"wrapped-v1\" clip-path=\"url(#\(clipID))\" text-anchor=\"middle\" font-family=\"-apple-system, BlinkMacSystemFont, sans-serif\" font-size=\"13\" font-weight=\"600\" fill=\"#\(attribute(box.stroke.hexRGB))\">"
                 )
+                for (index, line) in labelLayout.lines.enumerated() {
+                    nodeRows.append(
+                        "      <tspan x=\"\(number(labelRect.midX))\" y=\"\(number(labelLayout.baselineY(at: index)))\">\(text(line))</tspan>"
+                    )
+                }
+                nodeRows.append("    </text>")
                 nodeRows.append("  </g>")
                 rows.append(contentsOf: nodeRows)
             case .connector(let connector):
-                let route = BoardOrthogonalConnectorRoute(
-                    start: connector.start.point,
-                    end: connector.end.point
-                )
-                let midpoint = BoardPoint(
-                    x: (connector.start.point.x + connector.end.point.x) / 2,
-                    y: (connector.start.point.y + connector.end.point.y) / 2
-                )
-                let arrowStart = route.points.dropLast().last ?? connector.start.point
-                let arrow = arrowWingPoints(
-                    from: arrowStart,
-                    to: connector.end.point
-                )
-                let routeData = route.points.enumerated().map { index, point in
-                    "\(index == 0 ? "M" : "L") \(number(point.x)) \(number(point.y))"
-                }.joined(separator: " ")
-                rows.append(
-                    "  <g data-id=\"\(attribute(connector.id.rawValue))\"><path d=\"\(routeData)\" fill=\"none\" stroke=\"#\(attribute(connector.stroke.hexRGB))\" stroke-width=\"1.7\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/><polygon points=\"\(number(connector.end.point.x)),\(number(connector.end.point.y)) \(number(arrow.0.x)),\(number(arrow.0.y)) \(number(arrow.1.x)),\(number(arrow.1.y))\" fill=\"#\(attribute(connector.stroke.hexRGB))\"/>\(connector.label.isEmpty ? "" : "<text x=\"\(number(midpoint.x))\" y=\"\(number(midpoint.y - 7))\" text-anchor=\"middle\" font-family=\"-apple-system, BlinkMacSystemFont, sans-serif\" font-size=\"12\" fill=\"#52628B\">\(text(connector.label))</text>")</g>"
-                )
+                rows.append(contentsOf: svgConnectorRows(connector))
             case .label(let label):
                 rows.append(
                     "  <text data-id=\"\(attribute(label.id.rawValue))\" x=\"\(number(label.origin.x))\" y=\"\(number(label.origin.y + 16))\" font-family=\"-apple-system, BlinkMacSystemFont, sans-serif\" font-size=\"16\" font-weight=\"600\" fill=\"#\(attribute(label.color.hexRGB))\">\(text(label.text))</text>"
@@ -146,6 +142,38 @@ struct DeterministicBoardRenderer: Sendable {
         }
         rows.append("</svg>")
         return rows.joined(separator: "\n") + "\n"
+    }
+
+    private func svgConnectorRows(_ connector: BoardConnector) -> [String] {
+        let route = BoardOrthogonalConnectorRoute(
+            start: connector.start.point,
+            end: connector.end.point
+        )
+        let routeData = route.points.enumerated().map { index, point in
+            "\(index == 0 ? "M" : "L") \(number(point.x)) \(number(point.y))"
+        }.joined(separator: " ")
+        let arrowStart = route.points.dropLast().last ?? connector.start.point
+        let arrow = arrowWingPoints(
+            from: arrowStart,
+            to: connector.end.point
+        )
+        let color = attribute(connector.stroke.hexRGB)
+        var rows = [
+            "  <g data-id=\"\(attribute(connector.id.rawValue))\" data-element-kind=\"connector\">",
+            "    <path data-role=\"route\" d=\"\(routeData)\" fill=\"none\" stroke=\"#\(color)\" stroke-width=\"1.7\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/>",
+            "    <polygon data-role=\"arrow\" points=\"\(number(connector.end.point.x)),\(number(connector.end.point.y)) \(number(arrow.0.x)),\(number(arrow.0.y)) \(number(arrow.1.x)),\(number(arrow.1.y))\" fill=\"#\(color)\"/>",
+        ]
+        if !connector.label.isEmpty {
+            let midpoint = BoardPoint(
+                x: (connector.start.point.x + connector.end.point.x) / 2,
+                y: (connector.start.point.y + connector.end.point.y) / 2
+            )
+            rows.append(
+                "    <text data-role=\"label\" x=\"\(number(midpoint.x))\" y=\"\(number(midpoint.y - 7))\" text-anchor=\"middle\" font-family=\"-apple-system, BlinkMacSystemFont, sans-serif\" font-size=\"12\" fill=\"#52628B\">\(text(connector.label))</text>"
+            )
+        }
+        rows.append("  </g>")
+        return rows
     }
 
     private func png(
@@ -187,7 +215,7 @@ struct DeterministicBoardRenderer: Sendable {
             )
         )
 
-        for element in document.elements {
+        for element in BoardRenderOrder.elements(in: document) {
             draw(
                 element,
                 in: context,
@@ -229,26 +257,34 @@ struct DeterministicBoardRenderer: Sendable {
             context.setLineJoin(.round)
             context.addPath(visual.outlinePath(in: boardRect).cgPath)
             context.drawPath(using: .fillStroke)
+            context.beginPath()
             for path in visual.detailPaths(in: boardRect) + visual.pictogramPaths(in: boardRect) {
                 context.addPath(path.cgPath)
-                context.strokePath()
             }
+            context.strokePath()
             context.restoreGState()
 
-            let boardLabelRect = visual.labelRect(in: boardRect)
-            drawText(
-                box.label,
-                in: CGRect(
-                    x: boardLabelRect.minX,
-                    y: viewportHeight - boardLabelRect.maxY,
-                    width: boardLabelRect.width,
-                    height: boardLabelRect.height
-                ),
-                size: 13,
-                weight: .semibold,
-                color: (try? rgb(box.stroke).nsColor) ?? NSColor.gray,
-                alignment: .center
+            let labelLayout = BoardNodeLabelLayout(
+                text: box.label,
+                in: visual.labelRect(in: boardRect)
             )
+            for (index, line) in labelLayout.lines.enumerated() {
+                let lineRect = labelLayout.lineRect(at: index)
+                drawText(
+                    line,
+                    in: CGRect(
+                        x: lineRect.minX,
+                        y: viewportHeight - lineRect.maxY,
+                        width: lineRect.width,
+                        height: lineRect.height
+                    ),
+                    size: BoardNodeLabelLayout.fontSize,
+                    weight: .semibold,
+                    color: (try? rgb(box.stroke).nsColor) ?? NSColor.gray,
+                    alignment: .center,
+                    lineBreakMode: .byClipping
+                )
+            }
 
         case .connector(let connector):
             let route = BoardOrthogonalConnectorRoute(
@@ -323,11 +359,12 @@ struct DeterministicBoardRenderer: Sendable {
         weight: NSFont.Weight,
         color: NSColor,
         alignment: NSTextAlignment,
-        fontDesign: NSFontDescriptor.SystemDesign = .default
+        fontDesign: NSFontDescriptor.SystemDesign = .default,
+        lineBreakMode: NSLineBreakMode = .byTruncatingTail
     ) {
         let paragraph = NSMutableParagraphStyle()
         paragraph.alignment = alignment
-        paragraph.lineBreakMode = .byTruncatingTail
+        paragraph.lineBreakMode = lineBreakMode
         (text as NSString).draw(
             in: rect,
             withAttributes: [

@@ -57,7 +57,9 @@ final class DeterministicBoardRendererTests: XCTestCase {
 
         let svg = try XCTUnwrap(String(data: first.svg, encoding: .utf8))
         XCTAssertTrue(svg.contains("viewBox=\"0 0 640 400\""))
-        XCTAssertTrue(svg.contains("Gateway &lt;script&gt;alert(1)&lt;/script&gt;"))
+        XCTAssertTrue(svg.contains(">Gateway</tspan>"))
+        XCTAssertTrue(svg.contains("data-label-layout=\"wrapped-v1\""))
+        XCTAssertTrue(svg.contains("<clipPath id=\"ia-node-label-"))
         XCTAssertTrue(svg.contains("data-node-kind=\"service\""))
         XCTAssertTrue(svg.contains("data-node-visual=\"hexagon.fanout\""))
         XCTAssertTrue(svg.contains("<path d=\"M 99 91 L 241 91 L 259 135"))
@@ -65,6 +67,66 @@ final class DeterministicBoardRendererTests: XCTestCase {
         XCTAssertFalse(svg.localizedCaseInsensitiveContains("<script"))
         XCTAssertFalse(svg.localizedCaseInsensitiveContains("href="))
         XCTAssertFalse(svg.contains("/Users/"))
+    }
+
+    func testSharedLayerOrderAndWrappedNodeLabelAreStableInSVGAndPNG() throws {
+        let document = try BoardDocument(
+            canvas: BoardCanvas(size: BoardSize(width: 500, height: 320)),
+            elements: [
+                .box(
+                    BoardBox(
+                        id: BoardElementID("box"),
+                        frame: BoardRect(
+                            origin: BoardPoint(x: 80, y: 80),
+                            size: BoardSize(width: 160, height: 90)
+                        ),
+                        label: "Delivery status store",
+                        kind: .queue
+                    )
+                ),
+                .label(
+                    BoardLabel(
+                        id: BoardElementID("label"),
+                        origin: BoardPoint(x: 80, y: 210),
+                        text: "Label"
+                    )
+                ),
+                .connector(
+                    BoardConnector(
+                        id: BoardElementID("connector"),
+                        start: BoardConnectorEndpoint(point: BoardPoint(x: 20, y: 30)),
+                        end: BoardConnectorEndpoint(point: BoardPoint(x: 260, y: 30))
+                    )
+                ),
+                .stroke(
+                    BoardStroke(
+                        id: BoardElementID("stroke"),
+                        points: [BoardPoint(x: 20, y: 250), BoardPoint(x: 100, y: 270)],
+                        width: 3
+                    )
+                ),
+            ]
+        )
+        let settings = try BoardExportSettings(
+            viewport: document.canvas.size,
+            scale: 1,
+            background: BoardColor(hexRGB: "fbfcfa")
+        )
+        let renderer = DeterministicBoardRenderer()
+        let first = try renderer.render(document, settings: settings)
+        let second = try renderer.render(document, settings: settings)
+        let svg = try XCTUnwrap(String(data: first.svg, encoding: .utf8))
+
+        let connectorOffset = try XCTUnwrap(svg.range(of: "data-id=\"connector\""))
+        let strokeOffset = try XCTUnwrap(svg.range(of: "data-id=\"stroke\""))
+        let labelOffset = try XCTUnwrap(svg.range(of: "data-id=\"label\""))
+        let boxOffset = try XCTUnwrap(svg.range(of: "data-id=\"box\""))
+        XCTAssertLessThan(connectorOffset.lowerBound, strokeOffset.lowerBound)
+        XCTAssertLessThan(strokeOffset.lowerBound, labelOffset.lowerBound)
+        XCTAssertLessThan(labelOffset.lowerBound, boxOffset.lowerBound)
+        XCTAssertTrue(svg.contains(">Delivery status</tspan>"))
+        XCTAssertTrue(svg.contains(">store</tspan>"))
+        XCTAssertEqual(first.png, second.png)
     }
 
     func testNodeKindChangesTheRasterizedCanonicalVectorVisual() throws {
@@ -136,6 +198,10 @@ final class DeterministicBoardRendererTests: XCTestCase {
         let svg = try XCTUnwrap(String(data: first.svg, encoding: .utf8))
 
         XCTAssertTrue(svg.contains("M 200 100 L 330 100 L 330 240 L 460 240"))
+        XCTAssertTrue(svg.contains("data-element-kind=\"connector\""))
+        XCTAssertTrue(svg.contains("data-role=\"route\""))
+        XCTAssertTrue(svg.contains("data-role=\"arrow\""))
+        XCTAssertTrue(svg.contains("data-role=\"label\""))
         XCTAssertEqual(first.png, second.png)
         XCTAssertNotEqual(first.png, Data())
     }
