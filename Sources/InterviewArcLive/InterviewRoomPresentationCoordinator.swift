@@ -48,6 +48,17 @@ enum CompactPanelLayout {
     }
 }
 
+final class PresentationFrameAdjustmentGuard {
+    private(set) var isActive = false
+
+    func perform(_ adjustment: () -> Void) {
+        guard !isActive else { return }
+        isActive = true
+        defer { isActive = false }
+        adjustment()
+    }
+}
+
 /// Owns the two process-level Presentations while the interview model remains
 /// the single interaction writer. Hiding a Presentation never tears down its
 /// hosting tree or creates session/provider state.
@@ -69,7 +80,7 @@ final class InterviewRoomPresentationCoordinator: NSObject, NSWindowDelegate {
     private var didRegisterObservers = false
     private var isAllowingFullWindowClose = false
     private(set) var isResolvingCloseChoice = false
-    private var isAdjustingFrames = false
+    private let frameAdjustmentGuard = PresentationFrameAdjustmentGuard()
     private var closeAlert: NSAlert?
     private var modelOpenTask: Task<Void, Never>?
     private var compactSizeReconciliationTask: Task<Void, Never>?
@@ -257,7 +268,7 @@ final class InterviewRoomPresentationCoordinator: NSObject, NSWindowDelegate {
     }
 
     func windowDidMove(_ notification: Notification) {
-        guard !isAdjustingFrames,
+        guard !frameAdjustmentGuard.isActive,
               let window = notification.object as? NSWindow else {
             return
         }
@@ -269,7 +280,7 @@ final class InterviewRoomPresentationCoordinator: NSObject, NSWindowDelegate {
     }
 
     func windowDidResize(_ notification: Notification) {
-        guard !isAdjustingFrames,
+        guard !frameAdjustmentGuard.isActive,
               let window = notification.object as? NSWindow,
               window === fullWindow,
               !fullWindow.isMiniaturized else {
@@ -531,19 +542,24 @@ final class InterviewRoomPresentationCoordinator: NSObject, NSWindowDelegate {
     }
 
     private func clampPresentationFramesToVisibleScreens() {
+        guard fullWindow != nil,
+              compactPanel != nil,
+              !frameAdjustmentGuard.isActive else {
+            return
+        }
         clampFullWindowToVisibleScreens()
         clampCompactPanelToVisibleScreens()
     }
 
     private func clampFullWindowToVisibleScreens(source: NSRect? = nil) {
-        let visibleFrames = NSScreen.screens.map(\.visibleFrame)
-        guard !visibleFrames.isEmpty else { return }
-        let frame = source ?? savedFullFrame ?? fullWindow.frame
-        let clamped = Self.clampedFrame(frame, to: visibleFrames)
-        isAdjustingFrames = true
-        fullWindow.setFrame(clamped, display: fullWindow.isVisible)
-        isAdjustingFrames = false
-        savedFullFrame = fullWindow.frame
+        frameAdjustmentGuard.perform { [self] in
+            let visibleFrames = NSScreen.screens.map(\.visibleFrame)
+            guard !visibleFrames.isEmpty else { return }
+            let frame = source ?? savedFullFrame ?? fullWindow.frame
+            let clamped = Self.clampedFrame(frame, to: visibleFrames)
+            fullWindow.setFrame(clamped, display: fullWindow.isVisible)
+            savedFullFrame = fullWindow.frame
+        }
     }
 
     private func clampCompactPanelToVisibleScreens() {
@@ -597,10 +613,10 @@ final class InterviewRoomPresentationCoordinator: NSObject, NSWindowDelegate {
     }
 
     private func setCompactPanelFrame(_ frame: NSRect) {
-        isAdjustingFrames = true
-        compactPanel.setFrame(frame, display: compactPanel.isVisible)
-        isAdjustingFrames = false
-        savedCompactOrigin = compactPanel.frame.origin
+        frameAdjustmentGuard.perform { [self] in
+            compactPanel.setFrame(frame, display: compactPanel.isVisible)
+            savedCompactOrigin = compactPanel.frame.origin
+        }
     }
 
     @objc
