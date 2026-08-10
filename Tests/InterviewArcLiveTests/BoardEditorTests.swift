@@ -110,8 +110,10 @@ final class BoardEditorTests: XCTestCase {
 
         try editor.apply(.undo)
         XCTAssertEqual(editor.document.elements, [.box(moved)])
+        XCTAssertEqual(editor.selectedElementID, box.id)
         try editor.apply(.undo)
         XCTAssertEqual(editor.document.elements, [.box(box)])
+        XCTAssertEqual(editor.selectedElementID, box.id)
     }
 
     func testConnectingBoxesTracksTheirMovementAndCascadesOnDelete() throws {

@@ -47,15 +47,20 @@ struct BoardEditorState: Equatable, Sendable {
     private(set) var tool: BoardEditorTool = .select
     private(set) var zoom = 1.0
 
-    private var undoDocuments: [BoardDocument] = []
-    private var redoDocuments: [BoardDocument] = []
+    private struct HistoryEntry: Equatable, Sendable {
+        let document: BoardDocument
+        let selectedElementID: BoardElementID?
+    }
+
+    private var undoHistory: [HistoryEntry] = []
+    private var redoHistory: [HistoryEntry] = []
 
     init(document: BoardDocument) {
         self.document = document
     }
 
-    var canUndo: Bool { !undoDocuments.isEmpty }
-    var canRedo: Bool { !redoDocuments.isEmpty }
+    var canUndo: Bool { !undoHistory.isEmpty }
+    var canRedo: Bool { !redoHistory.isEmpty }
 
     mutating func apply(_ action: BoardEditorAction) throws {
         switch action {
@@ -186,22 +191,14 @@ struct BoardEditorState: Equatable, Sendable {
             zoom = 1
 
         case .undo:
-            guard let previous = undoDocuments.popLast() else { return }
-            redoDocuments.append(document)
-            document = previous
-            if let selectedElementID,
-               !document.elements.contains(where: { $0.boardID == selectedElementID }) {
-                self.selectedElementID = nil
-            }
+            guard let previous = undoHistory.popLast() else { return }
+            redoHistory.append(historyEntry)
+            restore(previous)
 
         case .redo:
-            guard let next = redoDocuments.popLast() else { return }
-            undoDocuments.append(document)
-            document = next
-            if let selectedElementID,
-               !document.elements.contains(where: { $0.boardID == selectedElementID }) {
-                self.selectedElementID = nil
-            }
+            guard let next = redoHistory.popLast() else { return }
+            undoHistory.append(historyEntry)
+            restore(next)
         }
     }
 
@@ -212,12 +209,24 @@ struct BoardEditorState: Equatable, Sendable {
             elements: elements
         )
         guard next != document else { return }
-        undoDocuments.append(document)
-        if undoDocuments.count > Self.maximumHistoryCount {
-            undoDocuments.removeFirst(undoDocuments.count - Self.maximumHistoryCount)
+        undoHistory.append(historyEntry)
+        if undoHistory.count > Self.maximumHistoryCount {
+            undoHistory.removeFirst(undoHistory.count - Self.maximumHistoryCount)
         }
-        redoDocuments.removeAll(keepingCapacity: true)
+        redoHistory.removeAll(keepingCapacity: true)
         document = next
+    }
+
+    private var historyEntry: HistoryEntry {
+        HistoryEntry(
+            document: document,
+            selectedElementID: selectedElementID
+        )
+    }
+
+    private mutating func restore(_ entry: HistoryEntry) {
+        document = entry.document
+        selectedElementID = entry.selectedElementID
     }
 
     private func move(
