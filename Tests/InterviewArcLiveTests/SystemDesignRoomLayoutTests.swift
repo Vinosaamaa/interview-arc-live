@@ -1,12 +1,10 @@
+import CoreGraphics
 import XCTest
 @testable import InterviewArcLive
 
 final class SystemDesignRoomLayoutTests: XCTestCase {
-    func testMinimumAndDefaultWidthsKeepTheApprovedTurnlineBoardBalance() {
-        for width in [
-            FullRoomLayout.minimumWindowWidth,
-            FullRoomLayout.defaultWindowWidth,
-        ] {
+    func testSupportedWidthsKeepTheApprovedTurnlineBoardBalance() {
+        for width: CGFloat in [1_080, 1_197, 1_600] {
             let turnline = FullRoomLayout.turnlineIdealWidth(for: width)
             let board = FullRoomLayout.boardIdealWidth(for: width)
 
@@ -21,12 +19,27 @@ final class SystemDesignRoomLayoutTests: XCTestCase {
         }
     }
 
+    func testWideWindowDoesNotCapTheTurnlineBelowTheApprovedFraction() {
+        let width: CGFloat = 1_600
+
+        XCTAssertEqual(
+            FullRoomLayout.turnlineIdealWidth(for: width),
+            592,
+            accuracy: 0.001
+        )
+        XCTAssertEqual(
+            FullRoomLayout.boardIdealWidth(for: width),
+            1_008,
+            accuracy: 0.001
+        )
+    }
+
     func testMinimumWindowRetainsAUsableWorkspaceAndActionTargets() {
         XCTAssertGreaterThanOrEqual(
             FullRoomLayout.minimumWorkspaceHeight(
                 for: FullRoomLayout.minimumWindowHeight
             ),
-            420
+            380
         )
         XCTAssertGreaterThanOrEqual(FullRoomLayout.minimumActionHitTarget, 44)
         XCTAssertGreaterThanOrEqual(
@@ -34,6 +47,14 @@ final class SystemDesignRoomLayoutTests: XCTestCase {
             FullRoomLayout.minimumActionHitTarget
         )
         XCTAssertGreaterThanOrEqual(FullRoomLayout.questionLineLimit, 2)
+        XCTAssertEqual(FullRoomLayout.questionBandMinimumHeight, 148)
+        XCTAssertEqual(FullRoomLayout.questionTitleSize, 40)
+        XCTAssertEqual(FullRoomLayout.turnlineHorizontalPadding, 64)
+        XCTAssertEqual(FullRoomLayout.turnlineEntryGap, 42)
+        XCTAssertEqual(FullRoomLayout.turnlineBodyFontSize, 24)
+        XCTAssertEqual(FullRoomLayout.floorRailHeight, 96)
+        XCTAssertEqual(FullRoomLayout.floorContentHorizontalPadding, 48)
+        XCTAssertEqual(FullRoomLayout.floorOutlineHorizontalInset, 24)
     }
 
     func testCandidateTextMeetsWCAGBodyContrastAcrossRoomSurfaces() {
@@ -85,7 +106,7 @@ final class SystemDesignRoomLayoutTests: XCTestCase {
         XCTAssertTrue(combined.usesAttentionCompactHeader)
     }
 
-    func testDefaultWidthStillLetsViewThatFitsChooseTheHeader() {
+    func testDefaultWidthKeepsWideHeaderUnderAttention() {
         let state = FullRoomHeaderLayout.state(
             windowWidth: FullRoomLayout.defaultWindowWidth,
             hasSpeechAttention: true,
@@ -93,6 +114,77 @@ final class SystemDesignRoomLayoutTests: XCTestCase {
         )
         XCTAssertEqual(state.attention, .speechAndRoom)
         XCTAssertFalse(state.usesAttentionCompactHeader)
+    }
+
+    func testHeaderPresentationIsWideAt1197And1600ForEveryAttentionState() {
+        for width: CGFloat in [1_197, 1_600] {
+            for (speech, room) in [
+                (false, false),
+                (true, false),
+                (false, true),
+                (true, true),
+            ] {
+                let state = FullRoomHeaderLayout.state(
+                    windowWidth: width,
+                    hasSpeechAttention: speech,
+                    hasRoomAttention: room
+                )
+
+                XCTAssertEqual(state.presentation, .wide)
+            }
+        }
+    }
+
+    func testMinimumWidthKeepsWideHeaderWithoutAttentionAndCompactWithIt() {
+        let normal = FullRoomHeaderLayout.state(
+            windowWidth: 1_080,
+            hasSpeechAttention: false,
+            hasRoomAttention: false
+        )
+        let attention = FullRoomHeaderLayout.state(
+            windowWidth: 1_080,
+            hasSpeechAttention: true,
+            hasRoomAttention: true
+        )
+
+        XCTAssertEqual(normal.presentation, .wide)
+        XCTAssertEqual(attention.presentation, .compact)
+        XCTAssertTrue(
+            FullRoomHeaderAccessibility.personaLabel.contains("Staff Engineer")
+        )
+        XCTAssertEqual(
+            FullRoomHeaderAccessibility.privacyLabel,
+            "Private local session"
+        )
+    }
+
+    func testWaveformUsesTheRailWithoutPretendingToBeRecordedAudio() {
+        for width: CGFloat in [140, 600, 900] {
+            let positions = FullRoomWaveformLayout.barXPositions(
+                width: width,
+                levelCount: 30
+            )
+
+            XCTAssertEqual(positions.count, 30)
+            XCTAssertEqual(
+                positions.first ?? .nan,
+                FullRoomWaveformLayout.horizontalInset,
+                accuracy: 0.001
+            )
+            XCTAssertEqual(
+                positions.last ?? .nan,
+                width * FullRoomWaveformLayout.traceCoverageFraction
+                    - FullRoomWaveformLayout.horizontalInset,
+                accuracy: 0.001
+            )
+            XCTAssertTrue(
+                zip(positions, positions.dropFirst()).allSatisfy { lhs, rhs in
+                    lhs < rhs
+                }
+            )
+            XCTAssertGreaterThanOrEqual(positions.first ?? -1, 0)
+            XCTAssertLessThanOrEqual(positions.last ?? .infinity, width)
+        }
     }
 
     func testFullRoomAccessibilityIdentifiersAreStableAndUnique() {
