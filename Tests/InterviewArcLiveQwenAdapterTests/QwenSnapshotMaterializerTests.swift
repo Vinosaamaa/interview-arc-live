@@ -148,10 +148,19 @@ private struct MaterializerFixture {
             includingPropertiesForKeys: [.isRegularFileKey]
         ) else { return [] }
         var result = Set<String>()
-        let prefix = directory.path + "/"
+        // `temporaryDirectory` can be spelled through `/var` while the
+        // enumerator returns its canonical `/private/var` spelling on macOS.
+        // Canonicalize both sides before deriving a relative fixture path.
+        let canonicalDirectory = directory.resolvingSymlinksInPath().standardizedFileURL
+        let directoryPath = canonicalDirectory.path
+        let prefix = directoryPath.hasSuffix("/") ? directoryPath : directoryPath + "/"
         while let url = enumerator.nextObject() as? URL {
             if try url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile == true {
-                result.insert(String(url.path.dropFirst(prefix.count)))
+                let filePath = url.resolvingSymlinksInPath().standardizedFileURL.path
+                guard filePath.hasPrefix(prefix) else {
+                    throw MaterializerFixtureFailure.enumeratedPathEscapedRoot
+                }
+                result.insert(String(filePath.dropFirst(prefix.count)))
             }
         }
         return result
@@ -160,4 +169,8 @@ private struct MaterializerFixture {
     func remove() {
         try? FileManager.default.removeItem(at: root)
     }
+}
+
+private enum MaterializerFixtureFailure: Error {
+    case enumeratedPathEscapedRoot
 }

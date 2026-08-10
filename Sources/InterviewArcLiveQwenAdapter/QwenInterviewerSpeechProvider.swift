@@ -84,7 +84,8 @@ public actor QwenInterviewerSpeechProvider: InterviewerSpeechProvider {
             return .preparing(
                 latestPreparationProgress ?? Self.progress(
                     stage: .checkingStorage,
-                    completedBytes: 0
+                    completedBytes: 0,
+                    totalBytes: store.snapshotByteCount
                 )
             )
         }
@@ -99,7 +100,8 @@ public actor QwenInterviewerSpeechProvider: InterviewerSpeechProvider {
             return .preparing(
                 latestPreparationProgress ?? Self.progress(
                     stage: .checkingStorage,
-                    completedBytes: 0
+                    completedBytes: 0,
+                    totalBytes: store.snapshotByteCount
                 )
             )
         }
@@ -110,7 +112,11 @@ public actor QwenInterviewerSpeechProvider: InterviewerSpeechProvider {
         isPreparing = true
         let preparationID = UUID()
         activePreparationID = preparationID
-        let checking = Self.progress(stage: .checkingStorage, completedBytes: 0)
+        let checking = Self.progress(
+            stage: .checkingStorage,
+            completedBytes: 0,
+            totalBytes: store.snapshotByteCount
+        )
         latestPreparationProgress = checking
         progress(checking)
         defer {
@@ -374,12 +380,13 @@ public actor QwenInterviewerSpeechProvider: InterviewerSpeechProvider {
 
     private static func progress(
         stage: InterviewerSpeechPreparationStage,
-        completedBytes: Int64
+        completedBytes: Int64,
+        totalBytes: Int64
     ) -> InterviewerSpeechPreparationProgress {
         InterviewerSpeechPreparationProgress(
             stage: stage,
             completedBytes: completedBytes,
-            totalBytes: Qwen3TTSProvenance.snapshotByteCount
+            totalBytes: totalBytes
         )
     }
 

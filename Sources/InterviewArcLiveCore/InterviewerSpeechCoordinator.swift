@@ -98,9 +98,10 @@ public final class InterviewerSpeechCoordinator {
         initiallyMuted: Bool = false
     ) async throws -> InterviewerSpeechCoordinator {
         let currentReadiness = await provider.readiness()
+        let currentSnapshot = await conversation.interviewRoomSession.snapshot()
         return InterviewerSpeechCoordinator(
             session: conversation.interviewRoomSession,
-            initialSnapshot: conversation.snapshot,
+            initialSnapshot: currentSnapshot,
             readiness: currentReadiness,
             provider: provider,
             player: player,

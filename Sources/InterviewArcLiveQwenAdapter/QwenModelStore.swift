@@ -86,6 +86,11 @@ actor QwenModelStore {
     static let derivedReceiptName = ".interview-arc-live-derived-runtime.json"
     static let derivedTokenizerName = "tokenizer.json"
 
+    /// Authoritative byte count for this store's exact manifest. Keeping the
+    /// value at the storage boundary prevents provider progress from drifting
+    /// from an injected or future snapshot manifest.
+    nonisolated let snapshotByteCount: Int64
+
     private let modelRoot: URL
     private let privateStorageRoot: URL
     private let manifest: QwenSnapshotManifest
@@ -112,6 +117,7 @@ actor QwenModelStore {
         self.modelRoot = modelRoot.standardizedFileURL
         self.privateStorageRoot = (privateStorageRoot ?? modelRoot).standardizedFileURL
         self.manifest = manifest
+        snapshotByteCount = manifest.byteCount
         self.downloader = downloader
         self.freeSpaceReader = freeSpaceReader
         self.fileManager = fileManager

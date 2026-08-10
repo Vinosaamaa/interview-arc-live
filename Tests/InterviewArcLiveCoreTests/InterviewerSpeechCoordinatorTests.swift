@@ -503,7 +503,7 @@ final class InterviewerSpeechCoordinatorTests: XCTestCase {
         let stopTask = Task { @MainActor in
             try await speech.stop(commandID: CommandID("stop-blocked-finalize"))
         }
-        await Task.yield()
+        await provider.waitUntilCancellationRequested()
         await audioStore.releaseFinalize()
         try await stopTask.value
 
@@ -787,6 +787,8 @@ private actor ScriptedSpeechProvider: InterviewerSpeechProvider {
     private let manifestStore: (any SessionManifestStore)?
     private var synthesisCalls = 0
     private var preparationCalls = 0
+    private var cancellationRequests = 0
+    private var cancellationStartedContinuation: CheckedContinuation<Void, Never>?
     private var observedDurableAuthorization = false
 
     init(
@@ -829,11 +831,22 @@ private actor ScriptedSpeechProvider: InterviewerSpeechProvider {
     }
 
     func unload() {}
-    func cancelSynthesis() {}
+    func cancelSynthesis() {
+        cancellationRequests += 1
+        cancellationStartedContinuation?.resume()
+        cancellationStartedContinuation = nil
+    }
     func removePreparedModel() -> InterviewerSpeechReadiness { .notInstalled }
     func synthesisCount() -> Int { synthesisCalls }
     func prepareCount() -> Int { preparationCalls }
     func authorizationWasDurable() -> Bool { observedDurableAuthorization }
+
+    func waitUntilCancellationRequested() async {
+        if cancellationRequests > 0 { return }
+        await withCheckedContinuation { continuation in
+            cancellationStartedContinuation = continuation
+        }
+    }
 }
 
 private actor CancellationJoiningSpeechProvider: InterviewerSpeechProvider {
