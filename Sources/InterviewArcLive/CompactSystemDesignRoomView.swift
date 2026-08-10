@@ -3,8 +3,20 @@ import SwiftUI
 struct CompactSystemDesignRoomView: View {
   @ObservedObject var model: SystemDesignRoomModel
   let onExpand: () -> Void
+  let dynamicTypeSizeOverride: DynamicTypeSize?
 
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+
+  init(
+    model: SystemDesignRoomModel,
+    onExpand: @escaping () -> Void,
+    dynamicTypeSizeOverride: DynamicTypeSize? = nil
+  ) {
+    self.model = model
+    self.onExpand = onExpand
+    self.dynamicTypeSizeOverride = dynamicTypeSizeOverride
+  }
 
   private var presentation: CompactRoomPresentation {
     model.compactPresentation
@@ -45,13 +57,23 @@ struct CompactSystemDesignRoomView: View {
   }
 
   private var capsuleContent: some View {
-    ViewThatFits(in: .horizontal) {
-      horizontalCapsule
-      stackedCapsule
+    Group {
+      if effectiveDynamicTypeSize.isAccessibilitySize {
+        stackedCapsule
+      } else {
+        ViewThatFits(in: .horizontal) {
+          horizontalCapsule
+          stackedCapsule
+        }
+      }
     }
     .padding(7)
     .frame(maxWidth: .infinity, alignment: .leading)
     .fixedSize(horizontal: false, vertical: true)
+  }
+
+  private var effectiveDynamicTypeSize: DynamicTypeSize {
+    dynamicTypeSizeOverride ?? dynamicTypeSize
   }
 
   private var horizontalCapsule: some View {

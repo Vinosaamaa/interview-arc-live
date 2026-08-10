@@ -1,4 +1,5 @@
 import AppKit
+import SwiftUI
 import XCTest
 
 @testable import InterviewArcLive
@@ -42,20 +43,6 @@ final class InterviewRoomPresentationCoordinatorTests: XCTestCase {
         )
         XCTAssertTrue(
             coordinator.compactPanel.collectionBehavior.contains(.fullScreenNone)
-        )
-        XCTAssertEqual(
-            coordinator.compactPanel.contentMinSize,
-            NSSize(
-                width: CompactPanelLayout.contentWidth,
-                height: CompactPanelLayout.minimumContentHeight
-            )
-        )
-        XCTAssertEqual(
-            coordinator.compactPanel.contentMaxSize,
-            NSSize(
-                width: CompactPanelLayout.contentWidth,
-                height: CompactPanelLayout.maximumContentHeight
-            )
         )
     }
 
@@ -278,6 +265,59 @@ final class InterviewRoomPresentationCoordinatorTests: XCTestCase {
         XCTAssertEqual(resized.maxY, original.maxY)
     }
 
+    func testCollapsedCompactPanelHugsHorizontalHostedContent() throws {
+        let coordinator = makeCoordinator()
+        defer { coordinator.prepareForTermination() }
+
+        coordinator.collapse()
+
+        let contentView = try XCTUnwrap(coordinator.compactPanel.contentView)
+        contentView.layoutSubtreeIfNeeded()
+        let hostedContentHeight = CompactPanelLayout.boundedContentHeight(
+            contentView.fittingSize.height
+        )
+
+        XCTAssertTrue(coordinator.compactPanel.isVisible)
+        XCTAssertEqual(
+            hostedContentHeight,
+            CompactPanelLayout.minimumContentHeight
+        )
+        XCTAssertTrue(
+            abs(coordinator.compactPanel.frame.height - hostedContentHeight) <= 0.5
+        )
+        XCTAssertTrue(
+            abs(contentView.frame.height - hostedContentHeight) <= 0.5
+        )
+    }
+
+    func testCollapsedCompactPanelGrowsForStackedAccessibilityContent() throws {
+        let coordinator = makeCoordinator(
+            compactDynamicTypeSizeOverride: .accessibility1
+        )
+        defer { coordinator.prepareForTermination() }
+
+        coordinator.collapse()
+
+        let contentView = try XCTUnwrap(coordinator.compactPanel.contentView)
+        contentView.layoutSubtreeIfNeeded()
+        let hostedContentHeight = CompactPanelLayout.boundedContentHeight(
+            contentView.fittingSize.height
+        )
+
+        XCTAssertTrue(coordinator.compactPanel.isVisible)
+        XCTAssertTrue(
+            coordinator.compactPanel.frame.height
+                > CompactPanelLayout.minimumContentHeight
+        )
+        XCTAssertTrue(
+            coordinator.compactPanel.frame.height
+                <= CompactPanelLayout.maximumContentHeight
+        )
+        XCTAssertTrue(
+            abs(coordinator.compactPanel.frame.height - hostedContentHeight) <= 0.5
+        )
+    }
+
     func testGrowingCompactPanelRemainsInsideVisibleScreen() {
         let visibleFrame = NSRect(x: 0, y: 0, width: 1_440, height: 900)
         let panelNearBottom = NSRect(x: 780, y: 20, width: 580, height: 82)
@@ -299,12 +339,14 @@ final class InterviewRoomPresentationCoordinatorTests: XCTestCase {
     }
 
     private func makeCoordinator(
-        model: SystemDesignRoomModel = SystemDesignRoomModel()
+        model: SystemDesignRoomModel? = nil,
+        compactDynamicTypeSizeOverride: DynamicTypeSize? = nil
     ) -> InterviewRoomPresentationCoordinator {
         _ = NSApplication.shared
         return InterviewRoomPresentationCoordinator(
-            model: model,
-            frameAutosaveName: "InterviewArcLiveTests.TransientFrame"
+            model: model ?? SystemDesignRoomModel(),
+            frameAutosaveName: "InterviewArcLiveTests.TransientFrame",
+            compactDynamicTypeSizeOverride: compactDynamicTypeSizeOverride
         )
     }
 }
