@@ -655,14 +655,14 @@ private struct Fixture {
         let downloader = FixtureDownloader(
             behaviors: behaviors,
             contents: contents,
-            fileManager: fileManager
+            fileManager: FileManager()
         )
         let store = QwenModelStore(
             modelRoot: modelRoot,
             manifest: manifest,
             downloader: downloader,
             freeSpaceReader: FixedFreeSpaceReader(availableBytes: availableBytes),
-            fileManager: fileManager,
+            fileManager: FileManager(),
             minimumFreeBytes: minimumFreeBytes,
             postReplacementValidation: postReplacementValidation
         )
