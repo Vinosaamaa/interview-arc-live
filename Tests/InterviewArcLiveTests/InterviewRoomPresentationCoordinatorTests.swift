@@ -5,6 +5,12 @@ import XCTest
 
 @MainActor
 final class InterviewRoomPresentationCoordinatorTests: XCTestCase {
+    func testCompactPanelUsesToolPaletteScale() {
+        XCTAssertEqual(CompactPanelLayout.contentWidth, 580)
+        XCTAssertEqual(CompactPanelLayout.minimumContentHeight, 82)
+        XCTAssertEqual(CompactPanelLayout.maximumContentHeight, 180)
+    }
+
     func testCoordinatorOwnsOneFullWindowAndOneNonactivatingPanelWithSharedModel() {
         let model = SystemDesignRoomModel()
         let coordinator = makeCoordinator(model: model)
@@ -236,24 +242,24 @@ final class InterviewRoomPresentationCoordinatorTests: XCTestCase {
     }
 
     func testCompactPanelSizingIsBoundedAndPreservesTopEdge() {
-        XCTAssertEqual(CompactPanelLayout.boundedContentHeight(180), 214)
-        XCTAssertEqual(CompactPanelLayout.boundedContentHeight(310), 310)
-        XCTAssertEqual(CompactPanelLayout.boundedContentHeight(600), 420)
+        XCTAssertEqual(CompactPanelLayout.boundedContentHeight(50), 82)
+        XCTAssertEqual(CompactPanelLayout.boundedContentHeight(120), 120)
+        XCTAssertEqual(CompactPanelLayout.boundedContentHeight(600), 180)
 
         let original = NSRect(x: 100, y: 200, width: 700, height: 254)
         let resized = CompactPanelLayout.framePreservingTopEdge(
             original,
-            measuredContentHeight: 310
+            measuredContentHeight: 120
         )
 
-        XCTAssertEqual(resized.width, 640)
-        XCTAssertEqual(resized.height, 310)
+        XCTAssertEqual(resized.width, 580)
+        XCTAssertEqual(resized.height, 120)
         XCTAssertEqual(resized.maxY, original.maxY)
     }
 
     func testGrowingCompactPanelRemainsInsideVisibleScreen() {
         let visibleFrame = NSRect(x: 0, y: 0, width: 1_440, height: 900)
-        let panelNearBottom = NSRect(x: 780, y: 20, width: 640, height: 214)
+        let panelNearBottom = NSRect(x: 780, y: 20, width: 580, height: 82)
         let resized = CompactPanelLayout.framePreservingTopEdge(
             panelNearBottom,
             measuredContentHeight: 600
@@ -268,7 +274,7 @@ final class InterviewRoomPresentationCoordinatorTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(clamped.minY, visibleFrame.minY + 12)
         XCTAssertLessThanOrEqual(clamped.maxX, visibleFrame.maxX - 12)
         XCTAssertLessThanOrEqual(clamped.maxY, visibleFrame.maxY - 12)
-        XCTAssertEqual(clamped.size, NSSize(width: 640, height: 420))
+        XCTAssertEqual(clamped.size, NSSize(width: 580, height: 180))
     }
 
     private func makeCoordinator(
