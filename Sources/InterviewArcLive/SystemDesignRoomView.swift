@@ -668,14 +668,16 @@ struct SystemDesignRoomView: View {
     }
 
     private var floorRail: some View {
-        HStack(spacing: 14) {
+        let floorState = model.floorStatePresentation
+
+        return HStack(spacing: 14) {
             VStack(alignment: .leading, spacing: 3) {
-                Text(floorLabel.uppercased())
+                Text(floorState.full.label.uppercased())
                     .font(.system(.callout, design: .rounded, weight: .bold))
                     .foregroundStyle(LivePalette.violet)
                     .lineLimit(1)
                     .minimumScaleFactor(0.8)
-                Text(floorStatusDetail)
+                Text(floorState.full.detail)
                     .font(.system(.caption, design: .rounded, weight: .medium))
                     .foregroundStyle(LivePalette.muted)
                     .lineLimit(1)
@@ -702,6 +704,7 @@ struct SystemDesignRoomView: View {
             .disabled(!model.canAct)
             .keyboardShortcut(.return, modifiers: [.command])
             .accessibilityIdentifier(FullRoomAccessibility.primaryAction)
+            .accessibilityHint(floorState.primaryActionHint)
 
             if model.canStopRecording {
                 headerDivider
@@ -757,47 +760,6 @@ struct SystemDesignRoomView: View {
                 .stroke(LivePalette.line, lineWidth: 1)
                 .padding(.horizontal, 14)
                 .padding(.vertical, 8)
-        }
-    }
-
-    private var floorLabel: String {
-        if model.isInterviewerRequestInFlight {
-            return "Answer saved · Codex working"
-        }
-        switch model.snapshot?.phase {
-        case .candidateFloor:
-            return "Your floor"
-        case .interviewerProcessing:
-            return model.isCodexReady
-                ? "Answer saved · interviewer retry required"
-                : "Answer saved · check Codex to retry"
-        case .interviewerTurn:
-            return "Interviewer turn"
-        case .completed:
-            return "Session complete"
-        default:
-            return "Preparing room"
-        }
-    }
-
-    private var floorStatusDetail: String {
-        if model.canStopRecording {
-            return "Recording segment"
-        }
-        if model.isInterviewerRequestInFlight {
-            return "Codex is preparing Mara"
-        }
-        switch model.snapshot?.phase {
-        case .candidateFloor:
-            return model.segments.isEmpty ? "No segment yet" : segmentCountLabel.capitalized
-        case .interviewerProcessing:
-            return "Candidate answer saved"
-        case .interviewerTurn:
-            return "Mara has the floor"
-        case .completed:
-            return "Local session saved"
-        default:
-            return "Restoring local session"
         }
     }
 

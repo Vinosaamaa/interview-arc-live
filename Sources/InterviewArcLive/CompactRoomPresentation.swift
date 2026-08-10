@@ -21,35 +21,9 @@ struct CompactRoomControl: Equatable, Identifiable {
 }
 
 struct CompactRoomPresentation: Equatable {
-    enum StatusKind: Equatable {
-        case restoring
-        case preparing
-        case candidateFloor
-        case recording
-        case saving
-        case transcribing
-        case interviewerWorking
-        case retryRequired
-        case interviewerTurn
-        case speechGenerating
-        case speechPlayback
-        case recoveryAttention
-        case completed
-    }
-
-    enum Tone: Equatable {
-        case quiet
-        case candidate
-        case working
-        case interviewer
-        case warning
-        case completed
-    }
-
-    enum SpeechActivity: Equatable {
-        case generating
-        case playing
-    }
+    typealias StatusKind = FloorStatePresentation.StatusKind
+    typealias Tone = FloorStatePresentation.Tone
+    typealias SpeechActivity = FloorStatePresentation.SpeechActivity
 
     struct Input {
         var phase: InterviewRoomPhase?
@@ -145,8 +119,22 @@ struct CompactRoomPresentation: Equatable {
         controls.first { $0.action == .expand }!
     }
 
-    static func make(input: Input) -> CompactRoomPresentation {
-        let status = status(for: input)
+    static func make(
+        input: Input,
+        floorState: FloorStatePresentation? = nil
+    ) -> CompactRoomPresentation {
+        let floorState = floorState ?? FloorStatePresentation.make(
+            input: FloorStatePresentation.Input(
+                phase: input.phase,
+                candidateSegmentLifecycles: input.candidateSegmentLifecycles,
+                candidateSegmentCount: input.candidateSegmentLifecycles.count,
+                statusMessage: input.statusMessage,
+                attentionMessage: input.attentionMessage,
+                speechActivity: input.speechActivity,
+                isInterviewerRequestInFlight: input.isInterviewerRequestInFlight,
+                canStopRecording: input.canStopRecording
+            )
+        )
         var controls: [CompactRoomControl] = []
 
         if input.phase == .candidateFloor {
@@ -185,7 +173,7 @@ struct CompactRoomPresentation: Equatable {
                     title: input.phaseActionTitle,
                     systemImage: input.phaseActionSystemImage,
                     isEnabled: input.canPerformPhaseAction,
-                    accessibilityHint: phaseActionHint(for: input.phase),
+                    accessibilityHint: floorState.primaryActionHint,
                     accessibilityValue: nil
                 )
             )
@@ -237,183 +225,18 @@ struct CompactRoomPresentation: Equatable {
         )
 
         return CompactRoomPresentation(
-            statusKind: status.kind,
-            tone: status.tone,
-            floorTitle: floorTitle(for: input.phase),
-            statusValue: status.value,
-            systemImage: status.systemImage,
+            statusKind: floorState.statusKind,
+            tone: floorState.tone,
+            floorTitle: floorState.compact.label,
+            statusValue: floorState.compact.detail,
+            systemImage: floorState.systemImage,
             controls: controls
         )
-    }
-
-    private static func status(
-        for input: Input
-    ) -> (kind: StatusKind, tone: Tone, value: String, systemImage: String) {
-        if input.phase == .completed {
-            return (
-                .completed,
-                .completed,
-                input.statusMessage,
-                "checkmark.circle.fill"
-            )
-        }
-
-        let normalizedStatus = input.statusMessage.lowercased()
-        if input.candidateSegmentLifecycles.contains(.finalizationAuthorized)
-            || normalizedStatus.contains("saving recording")
-            || normalizedStatus.contains("saving source")
-            || normalizedStatus.contains("recovering the source") {
-            return (.saving, .working, input.statusMessage, "square.and.arrow.down")
-        }
-        if input.candidateSegmentLifecycles.contains(.transcribing)
-            || normalizedStatus.contains("transcrib") {
-            return (.transcribing, .working, input.statusMessage, "waveform")
-        }
-        if input.candidateSegmentLifecycles.contains(.recording) {
-            return (.recording, .candidate, input.statusMessage, "record.circle.fill")
-        }
-        if input.candidateSegmentLifecycles.contains(.captureAuthorized)
-            || normalizedStatus.contains("preparing microphone") {
-            return (.preparing, .working, input.statusMessage, "mic.badge.plus")
-        }
-
-        switch input.speechActivity {
-        case .generating:
-            return (
-                .speechGenerating,
-                .working,
-                "Generating Mara’s response locally",
-                "waveform"
-            )
-        case .playing:
-            return (
-                .speechPlayback,
-                .interviewer,
-                "Mara is speaking",
-                "speaker.wave.2.fill"
-            )
-        case nil:
-            break
-        }
-
-        if input.isInterviewerRequestInFlight {
-            return (
-                .interviewerWorking,
-                .working,
-                input.statusMessage,
-                "ellipsis.bubble.fill"
-            )
-        }
-
-        if let attentionMessage = input.attentionMessage {
-            return (
-                .recoveryAttention,
-                .warning,
-                attentionMessage,
-                "exclamationmark.triangle.fill"
-            )
-        }
-        if input.candidateSegmentLifecycles.contains(.audioReady)
-            || input.candidateSegmentLifecycles.contains(.failed)
-            || normalizedStatus.contains("recovery")
-            || normalizedStatus.contains("required") {
-            return (
-                .recoveryAttention,
-                .warning,
-                input.statusMessage,
-                "exclamationmark.triangle.fill"
-            )
-        }
-
-        switch input.phase {
-        case .candidateFloor:
-            return (
-                .candidateFloor,
-                .candidate,
-                input.statusMessage,
-                "person.wave.2.fill"
-            )
-        case .interviewerProcessing:
-            return (
-                .retryRequired,
-                .warning,
-                input.statusMessage,
-                "arrow.clockwise.circle.fill"
-            )
-        case .interviewerTurn:
-            return (
-                .interviewerTurn,
-                .interviewer,
-                input.statusMessage,
-                "bubble.left.and.bubble.right.fill"
-            )
-        case .ready:
-            return (
-                .preparing,
-                .quiet,
-                input.statusMessage,
-                "hourglass"
-            )
-        case .completed:
-            preconditionFailure("Completed status is handled above")
-        case nil:
-            return (
-                .restoring,
-                .quiet,
-                input.statusMessage,
-                "clock.arrow.circlepath"
-            )
-        }
-    }
-
-    private static func floorTitle(
-        for phase: InterviewRoomPhase?
-    ) -> String {
-        switch phase {
-        case .candidateFloor: return "Your floor"
-        case .interviewerProcessing: return "Answer saved"
-        case .interviewerTurn: return "Interviewer turn"
-        case .completed: return "Interview complete"
-        case .ready, nil: return "Preparing room"
-        }
-    }
-
-    private static func phaseActionHint(
-        for phase: InterviewRoomPhase?
-    ) -> String {
-        switch phase {
-        case .candidateFloor:
-            return "Commits the ready Segment transcripts as one candidate answer."
-        case .interviewerProcessing:
-            return "Starts one explicit retry of the saved interviewer request."
-        case .interviewerTurn:
-            return "Returns the existing room to the candidate floor."
-        case .ready, .completed, nil:
-            return "Uses the current room phase action."
-        }
     }
 }
 
 extension SystemDesignRoomModel {
     var compactPresentation: CompactRoomPresentation {
-        let draftLifecycles = snapshot?.segments
-            .filter { $0.committedTurnID == nil }
-            .map(\.lifecycle) ?? []
-
-        let speechActivity: CompactRoomPresentation.SpeechActivity?
-        if playingUtteranceID != nil
-            || snapshot?.interviewerUtterances.contains(where: {
-                $0.lifecycle == .speaking
-            }) == true {
-            speechActivity = .playing
-        } else if snapshot?.interviewerUtterances.contains(where: {
-            $0.lifecycle == .generating
-        }) == true {
-            speechActivity = .generating
-        } else {
-            speechActivity = nil
-        }
-
         let canStopSpeech = playingUtteranceID != nil
             || snapshot?.interviewerUtterances.contains(where: {
                 speechPresentation(for: $0).canStop
@@ -422,13 +245,6 @@ extension SystemDesignRoomModel {
         return CompactRoomPresentation.make(
             input: CompactRoomPresentation.Input(
                 phase: snapshot?.phase,
-                candidateSegmentLifecycles: draftLifecycles,
-                statusMessage: statusMessage,
-                attentionMessage: errorMessage
-                    ?? speechErrorMessage
-                    ?? codexAttentionMessage,
-                speechActivity: speechActivity,
-                isInterviewerRequestInFlight: isInterviewerRequestInFlight,
                 isWorking: isWorking,
                 canStopRecording: canStopRecording,
                 stopRecordingTitle: stopActionTitle,
@@ -443,7 +259,8 @@ extension SystemDesignRoomModel {
                 showsSpeechMuteControl: showsSpeechMuteControl,
                 canToggleSpeechMute: canToggleSpeechMute,
                 isSpeechMuted: isSpeechMuted
-            )
+            ),
+            floorState: floorStatePresentation
         )
     }
 }
