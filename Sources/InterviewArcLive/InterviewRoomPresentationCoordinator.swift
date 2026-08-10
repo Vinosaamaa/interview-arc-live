@@ -403,14 +403,6 @@ final class InterviewRoomPresentationCoordinator: NSObject, NSWindowDelegate {
         )
         panel.title = "Interview Arc Live compact interview controls"
         panel.contentViewController = compactHostingController
-        panel.contentMinSize = NSSize(
-            width: CompactPanelLayout.contentWidth,
-            height: CompactPanelLayout.minimumContentHeight
-        )
-        panel.contentMaxSize = NSSize(
-            width: CompactPanelLayout.contentWidth,
-            height: CompactPanelLayout.maximumContentHeight
-        )
         panel.isReleasedWhenClosed = false
         panel.isOpaque = false
         panel.backgroundColor = .clear
