@@ -94,19 +94,19 @@ final class SystemDesignRoomModelTests: XCTestCase {
         }
     }
 
-    func testTurnModeSurfaceOffersOnlyManualAndPatientAutoShadow() {
+    func testTurnModeSurfaceOffersCueOnlyAsTheNewSessionDefault() {
         let model = SystemDesignRoomModel(
             codexRuntime: CodexRuntimeFixture(readiness: .ready)
         )
 
-        XCTAssertEqual(model.availableTurnModes, [.manual, .patientAuto])
-        XCTAssertFalse(model.availableTurnModes.contains(.cueOnly))
-        XCTAssertEqual(model.turnMode, .manual)
+        XCTAssertEqual(model.availableTurnModes, [.cueOnly, .manual, .patientAuto])
+        XCTAssertEqual(model.turnMode, .cueOnly)
+        XCTAssertEqual(model.turnModeTitle(.cueOnly), "Cue Only")
         XCTAssertEqual(model.turnModeTitle(.manual), "Manual")
         XCTAssertEqual(model.turnModeTitle(.patientAuto), "Patient Auto · Shadow")
         XCTAssertEqual(
             model.endpointShadowPresentation.detail,
-            "Semantic endpoint calls are off. Hand off remains explicit."
+            "A terminal finish, clarification, or hint cue Hands off after its transcript is saved. The Hand off control remains available."
         )
     }
 
