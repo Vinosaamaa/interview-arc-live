@@ -43,7 +43,7 @@ struct EndpointShadowPresentation: Equatable {
         if turnMode == .cueOnly {
             return EndpointShadowPresentation(
                 title: "Cue Only turn-taking",
-                detail: "A terminal finish, clarification, or hint cue Hands off after its transcript is saved. The Hand off control remains available.",
+                detail: "A terminal finish, direct question, or hint cue triggers Hand off after its transcript is saved. The Hand off control remains available.",
                 systemImage: "quote.bubble.fill",
                 tone: .neutral
             )

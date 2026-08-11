@@ -2,7 +2,7 @@ import Foundation
 
 public enum CueOnlyHandoffReason: String, Sendable, Equatable {
     case explicitCompletion = "explicit_completion"
-    case interviewerClarification = "interviewer_clarification"
+    case interviewerQuestion = "interviewer_question"
     case hintRequest = "hint_request"
 }
 
@@ -21,11 +21,12 @@ public enum CueOnlyHandoffPolicy {
         if matchesTerminalPhrase(in: words, phrases: completionPhrases) {
             return .explicitCompletion
         }
-        if matchesTerminalPhrase(in: words, phrases: clarificationPhrases) {
-            return .interviewerClarification
-        }
         if matchesTerminalPhrase(in: words, phrases: hintPhrases) {
             return .hintRequest
+        }
+        if isTerminalQuestion(transcript)
+            || matchesTerminalPhrase(in: words, phrases: interviewerQuestionPhrases) {
+            return .interviewerQuestion
         }
         return nil
     }
@@ -44,7 +45,9 @@ public enum CueOnlyHandoffPolicy {
         ["over", "to", "you"],
     ]
 
-    private static let clarificationPhrases = [
+    /// Exact fallbacks cover transcripts whose provider omitted question-mark
+    /// punctuation. A genuine terminal `?` is itself an explicit floor cue.
+    private static let interviewerQuestionPhrases = [
         ["can", "you", "clarify", "the", "question"],
         ["could", "you", "clarify", "the", "question"],
         ["would", "you", "clarify", "the", "question"],
@@ -109,6 +112,15 @@ public enum CueOnlyHandoffPolicy {
             words.append(String(current))
         }
         return words
+    }
+
+    private static func isTerminalQuestion(_ transcript: String) -> Bool {
+        guard let last = transcript
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .last else {
+            return false
+        }
+        return last == "?" || last == "？"
     }
 
     private static func endsWithQuotedExample(_ transcript: String) -> Bool {

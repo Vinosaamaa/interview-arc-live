@@ -106,7 +106,7 @@ final class SystemDesignRoomModelTests: XCTestCase {
         XCTAssertEqual(model.turnModeTitle(.patientAuto), "Patient Auto · Shadow")
         XCTAssertEqual(
             model.endpointShadowPresentation.detail,
-            "A terminal finish, clarification, or hint cue Hands off after its transcript is saved. The Hand off control remains available."
+            "A terminal finish, direct question, or hint cue triggers Hand off after its transcript is saved. The Hand off control remains available."
         )
     }
 
