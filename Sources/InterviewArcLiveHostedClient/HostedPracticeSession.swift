@@ -839,6 +839,18 @@ public actor HostedPracticeSession {
                     lastSafeErrorCode: "unauthorized"
                 )
                 state = copy(connection: .signedOut)
+            } else if Self.isDefinitiveNoMutation(error) {
+                try await outbox.remove(
+                    operationID: operationID,
+                    credentialFingerprint: fingerprint
+                )
+                state = copy(
+                    connection: error.code == "lease_held"
+                        ? .readOnly(reason: "Another writer holds this activity")
+                        : state.connection,
+                    clearLease: error.code == "lease_held",
+                    pendingOperationCount: try await pendingCount()
+                )
             } else {
                 try await outbox.mark(
                     operationID: operationID,
