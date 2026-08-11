@@ -127,6 +127,15 @@ filesystem path. Each box carries a bounded Node Kind so the live canvas and
 derived artifacts render the same semantic symbol without guessing from its
 label.
 
+### Board Editor Adapter
+
+The replaceable local interaction surface that projects one Board Document
+into an editor and returns only the supported bounded boxes, connectors,
+labels, and strokes. It may use a bundled third-party canvas, but it never
+owns revision history, persistence, Turn evidence, or exports. Invalid or
+unavailable Adapter output leaves the canonical Board Document unchanged and
+the native editor available.
+
 ### Board Revision
 
 An immutable, session-owned snapshot of one explicitly saved Board Document.

@@ -16,6 +16,10 @@ final class BoardNodePresentationTests: XCTestCase {
         XCTAssertEqual(BoardCanvasVisualMetrics.gridDotDiameter, 1.6)
         XCTAssertEqual(BoardCanvasVisualMetrics.gridDotOpacity, 0.22)
         XCTAssertEqual(BoardCanvasVisualMetrics.footerMaximumWidth, 420)
+        XCTAssertEqual(BoardRailInteractionMetrics.cornerRadius, 9)
+        XCTAssertEqual(BoardRailInteractionMetrics.pressedScale, 0.985)
+        XCTAssertEqual(BoardRailInteractionMetrics.disabledOpacity, 0.5)
+        XCTAssertEqual(BoardRailInteractionMetrics.transitionDuration, 0.12)
     }
 
     func testCompactBoardRailsFitTheSupported680PointBoardWidth() {

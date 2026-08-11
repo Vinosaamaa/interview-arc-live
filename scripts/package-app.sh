@@ -21,6 +21,7 @@ smoke_executable_name="InterviewArcLiveCodexSmoke"
 endpoint_smoke_executable_name="InterviewArcLiveEndpointSmoke"
 speech_smoke_executable_name="InterviewArcLiveSpeechSmoke"
 info_plist="$repo_root/Resources/Info.plist"
+app_icon="$repo_root/Resources/InterviewArcLive.icns"
 signing_identity="${INTERVIEW_ARC_LIVE_SIGNING_IDENTITY:--}"
 manifest_path="$repo_root/dist/InterviewArcLive.package-manifest.txt"
 allow_dirty="${INTERVIEW_ARC_LIVE_ALLOW_DIRTY:-0}"
@@ -28,6 +29,10 @@ derived_data="${INTERVIEW_ARC_LIVE_DERIVED_DATA_PATH:-$repo_root/.build/xcode-de
 
 if [[ ! -f "$info_plist" ]]; then
   echo "Missing application metadata: Resources/Info.plist" >&2
+  exit 66
+fi
+if [[ ! -f "$app_icon" || -L "$app_icon" ]]; then
+  echo "Missing application icon: Resources/InterviewArcLive.icns" >&2
   exit 66
 fi
 if [[ ! -f "$repo_root/Package.resolved" ]]; then
@@ -103,6 +108,7 @@ fi
 rm -rf "$app_dir"
 mkdir -p "$contents_dir/MacOS" "$contents_dir/Helpers" "$contents_dir/Resources"
 cp "$info_plist" "$contents_dir/Info.plist"
+cp "$app_icon" "$contents_dir/Resources/InterviewArcLive.icns"
 cp "$executable" "$contents_dir/MacOS/$executable_name"
 cp "$smoke_executable" "$contents_dir/Helpers/$smoke_executable_name"
 cp "$endpoint_smoke_executable" "$contents_dir/Helpers/$endpoint_smoke_executable_name"

@@ -38,7 +38,7 @@ final class InterviewRoomPresentationCoordinatorTests: XCTestCase {
         XCTAssertEqual(CompactPanelLayout.maximumContentHeight, 180)
     }
 
-    func testFullWindowMinimumSizeUsesTheTwoLineQuestionBudget() {
+    func testFullWindowUsesTheRequestedCompactMinimumSize() {
         let coordinator = makeCoordinator()
         defer { coordinator.prepareForTermination() }
 
@@ -50,14 +50,69 @@ final class InterviewRoomPresentationCoordinatorTests: XCTestCase {
             coordinator.fullWindow.contentMinSize.width,
             FullRoomLayout.minimumWindowWidth
         )
-        XCTAssertEqual(coordinator.fullWindow.contentMinSize.height, 742)
-        XCTAssertEqual(
+        XCTAssertEqual(coordinator.fullWindow.contentMinSize.width, 800)
+        XCTAssertEqual(coordinator.fullWindow.contentMinSize.height, 500)
+        XCTAssertGreaterThanOrEqual(
             FullRoomLayout.minimumWorkspaceHeight(
                 for: coordinator.fullWindow.contentMinSize.height,
                 questionLineCount: FullRoomLayout.questionLineLimit
             ),
             FullRoomLayout.requiredWorkspaceHeight
         )
+        XCTAssertGreaterThanOrEqual(
+            FullRoomLayout.minimumTurnlineHeight(
+                for: coordinator.fullWindow.contentMinSize.height,
+                questionLineCount: FullRoomLayout.questionLineLimit
+            ),
+            FullRoomLayout.requiredTurnlineHeight
+        )
+    }
+
+    func testTrafficLightsCenterInTheFiftyPointRoomHeader() throws {
+        let coordinator = makeCoordinator()
+        defer { coordinator.prepareForTermination() }
+        coordinator.fullWindow.contentView?.layoutSubtreeIfNeeded()
+        let expectedCenterY = coordinator.fullWindow.frame.height
+            - FullRoomLayout.headerHeight / 2
+
+        for type in [
+            NSWindow.ButtonType.closeButton,
+            .miniaturizeButton,
+            .zoomButton,
+        ] {
+            let button = try XCTUnwrap(
+                coordinator.fullWindow.standardWindowButton(type)
+            )
+            let center = button.convert(
+                NSPoint(x: button.bounds.midX, y: button.bounds.midY),
+                to: nil
+            )
+            XCTAssertEqual(center.y, expectedCenterY, accuracy: 0.5)
+        }
+    }
+
+    func testScreenTransitionDoesNotMutateAWindowDuringLiveDrag() throws {
+        let coordinator = makeCoordinator()
+        defer { coordinator.prepareForTermination() }
+        let visibleFrame = try XCTUnwrap(NSScreen.main?.visibleFrame)
+        let frame = NSRect(
+            x: visibleFrame.maxX - 450,
+            y: visibleFrame.midY - 310,
+            width: 900,
+            height: 620
+        )
+        coordinator.fullWindow.setFrame(frame, display: false)
+        let frameBeforeCallback = coordinator.fullWindow.frame
+        XCTAssertGreaterThan(frameBeforeCallback.maxX, visibleFrame.maxX)
+
+        coordinator.windowDidChangeScreen(
+            Notification(
+                name: NSWindow.didChangeScreenNotification,
+                object: coordinator.fullWindow
+            )
+        )
+
+        XCTAssertEqual(coordinator.fullWindow.frame, frameBeforeCallback)
     }
 
     func testCoordinatorOwnsOneFullWindowAndOneNonactivatingPanelWithSharedModel() {

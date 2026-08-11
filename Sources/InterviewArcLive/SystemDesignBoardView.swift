@@ -12,9 +12,15 @@ struct SystemDesignBoardView: View {
     @State private var editingText = ""
     @State private var interactionFeedback: String?
     @State private var isRevisionHistoryPresented = false
+    @State private var enhancedEditorIsReady = false
+    @State private var enhancedEditorFailure: String?
     @FocusState private var isCanvasFocused: Bool
     @FocusState private var isLabelEditorFocused: Bool
     @AccessibilityFocusState private var accessibilityFocusedElementID: BoardElementID?
+
+    private var enhancedEditorBridgeController: ExcalidrawBoardBridgeController {
+        model.enhancedBoardBridgeController
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -30,7 +36,9 @@ struct SystemDesignBoardView: View {
         .onDeleteCommand {
             guard model.selectedWorkSurface == .board,
                   !model.isInspectingBoardRevision else { return }
-            model.applyBoardAction(.deleteSelection)
+            enhancedEditorBridgeController.performAfterFlushing {
+                model.applyBoardAction(.deleteSelection)
+            }
         }
         .onExitCommand {
             guard model.selectedWorkSurface == .board,
@@ -255,13 +263,17 @@ struct SystemDesignBoardView: View {
                     compact: compact
                 )
             }
-            .buttonStyle(.plain)
-            .foregroundStyle(BoardPalette.violet)
+            .buttonStyle(
+                BoardRailButtonStyle(
+                    role: .accent,
+                    addsHorizontalPadding: !compact
+                )
+            )
             .help("Return to draft")
             .accessibilityHint("Closes the immutable revision without changing the editable draft")
         } else if model.isBoardDraftDirty {
             Button {
-                Task { await model.saveBoardRevision() }
+                saveRevisionAfterEnhancedFlush()
             } label: {
                 adaptiveRailLabel(
                     "Save revision",
@@ -269,8 +281,12 @@ struct SystemDesignBoardView: View {
                     compact: compact
                 )
             }
-            .buttonStyle(.plain)
-            .foregroundStyle(BoardPalette.violet)
+            .buttonStyle(
+                BoardRailButtonStyle(
+                    role: .accent,
+                    addsHorizontalPadding: !compact
+                )
+            )
             .disabled(!model.canSaveBoardRevision)
             .keyboardShortcut("s", modifiers: .command)
             .help("Save revision")
@@ -363,10 +379,18 @@ struct SystemDesignBoardView: View {
                 compact: compact
             )
         }
-        .buttonStyle(.plain)
-        .foregroundStyle(BoardPalette.navy)
+        .buttonStyle(
+            BoardRailButtonStyle(
+                role: .standard,
+                addsHorizontalPadding: !compact
+            )
+        )
         .disabled(!model.canAttachBoardRevision)
-        .help("Attach revision")
+        .help(
+            model.canAttachBoardRevision
+                ? "Attach revision"
+                : "Save a revision and complete a candidate answer before attaching"
+        )
         .accessibilityHint("Attaches the selected immutable revision to the latest unattached answer")
     }
 
@@ -390,18 +414,18 @@ struct SystemDesignBoardView: View {
                 )
             }
         }
-        .buttonStyle(.plain)
-        .foregroundStyle(BoardPalette.violet)
-        .background(
-            BoardPalette.violet.opacity(0.08),
-            in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+        .buttonStyle(
+            BoardRailButtonStyle(
+                role: .accent,
+                addsHorizontalPadding: !compact
+            )
         )
-        .overlay {
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .stroke(BoardPalette.violet.opacity(0.28), lineWidth: 1)
-        }
         .disabled(!model.canExportBoardRevision || model.isBoardExporting)
-        .help("Export board revision")
+        .help(
+            model.canExportBoardRevision
+                ? "Export board revision"
+                : "Save or select a revision before exporting"
+        )
         .accessibilityHint("Exports Draw.io source, SVG, and PNG as one private bundle")
     }
 
@@ -681,7 +705,7 @@ struct SystemDesignBoardView: View {
                     newBoxKind = kind
                     connectorSourceID = nil
                     model.applyBoardAction(.setTool(.box))
-                    interactionFeedback = "\(kind.displayName) box tool active · click the canvas to place"
+                    interactionFeedback = "\(kind.displayName) box tool active · draw on the canvas"
                     isCanvasFocused = true
                 } label: {
                     boxKindMenuLabel(kind)
@@ -719,7 +743,7 @@ struct SystemDesignBoardView: View {
         } primaryAction: {
             connectorSourceID = nil
             model.applyBoardAction(.setTool(.box))
-            interactionFeedback = "\(newBoxKind.displayName) box tool active · click the canvas to place"
+            interactionFeedback = "\(newBoxKind.displayName) box tool active · draw on the canvas"
             isCanvasFocused = true
         }
         .menuStyle(.borderlessButton)
@@ -735,7 +759,7 @@ struct SystemDesignBoardView: View {
         .accessibilityValue(
             "\(newBoxKind.displayName)\(model.boardEditor.tool == .box ? ", selected" : "")"
         )
-        .accessibilityHint("Choose the architecture node kind, then click the canvas")
+        .accessibilityHint("Choose the architecture node kind, then draw it on the canvas")
         .help("Box · \(newBoxKind.displayName)")
     }
 
@@ -773,26 +797,12 @@ struct SystemDesignBoardView: View {
                     width: compact ? BoardLayoutMetrics.minimumHitTarget : nil
                 )
                 .frame(minHeight: BoardLayoutMetrics.toolControlHeight)
-                .background(
-                    model.boardEditor.tool == tool
-                        ? BoardPalette.violet.opacity(0.14)
-                        : Color.clear,
-                    in: RoundedRectangle(cornerRadius: 9, style: .continuous)
-                )
-                .overlay {
-                    RoundedRectangle(cornerRadius: 9, style: .continuous)
-                        .stroke(
-                            model.boardEditor.tool == tool
-                                ? BoardPalette.violet.opacity(0.72)
-                                : .clear,
-                            lineWidth: 1
-                        )
-                }
         }
-        .foregroundStyle(
-            model.boardEditor.tool == tool
-                ? BoardPalette.violet
-                : BoardPalette.navy
+        .buttonStyle(
+            BoardRailButtonStyle(
+                role: .tool(isSelected: model.boardEditor.tool == tool),
+                addsHorizontalPadding: false
+            )
         )
         .keyboardShortcut(shortcut(for: tool), modifiers: .control)
         .disabled(model.isInspectingBoardRevision)
@@ -805,10 +815,7 @@ struct SystemDesignBoardView: View {
         let title = isUndo ? "Undo" : "Redo"
         let icon = isUndo ? "arrow.uturn.backward" : "arrow.uturn.forward"
         return Button {
-            model.applyBoardAction(isUndo ? .undo : .redo)
-            interactionFeedback = isUndo
-                ? "Undid the last board edit"
-                : "Restored the last board edit"
+            performHistoryAfterEnhancedFlush(isUndo: isUndo)
         } label: {
             Group {
                 if compact {
@@ -823,6 +830,12 @@ struct SystemDesignBoardView: View {
             )
             .frame(minHeight: BoardLayoutMetrics.toolControlHeight)
         }
+        .buttonStyle(
+            BoardRailButtonStyle(
+                role: .standard,
+                addsHorizontalPadding: !compact
+            )
+        )
         .disabled(
             isUndo
                 ? !model.boardEditor.canUndo || model.isInspectingBoardRevision
@@ -877,7 +890,100 @@ struct SystemDesignBoardView: View {
         .accessibilityValue("\(Int((model.boardEditor.zoom * 100).rounded())) percent")
     }
 
+    @ViewBuilder
     private var canvas: some View {
+        if enhancedEditorFailure == nil {
+            ZStack {
+                enhancedCanvas
+                nativeCanvas(showsStatusOverlays: false)
+                    .opacity(0.001)
+                    .allowsHitTesting(false)
+            }
+        } else {
+            nativeCanvas(showsStatusOverlays: true)
+        }
+    }
+
+    private var enhancedCanvas: some View {
+        ZStack(alignment: .topLeading) {
+            ExcalidrawBoardEditorView(
+                document: model.boardDocumentForPresentation,
+                selectedElementID: model.boardSelectedElementIDForPresentation,
+                zoom: model.boardEditor.zoom,
+                tool: model.boardEditor.tool,
+                boxKind: newBoxKind,
+                isReadOnly: model.isInspectingBoardRevision,
+                bridgeController: enhancedEditorBridgeController,
+                onSceneChange: { decoded in
+                    let previousIDs = Set(
+                        model.boardEditor.document.elements.map(\.id)
+                    )
+                    let activeTool = model.boardEditor.tool
+                    _ = model.applyBoardAction(
+                        .replaceDocument(
+                            decoded.document,
+                            selectedElementID: decoded.selectedElementID
+                        )
+                    )
+                    let accepted = model.boardEditor.document == decoded.document
+                    guard accepted else { return false }
+                    if let zoom = decoded.zoom,
+                       abs(zoom - model.boardEditor.zoom) > 0.000_1 {
+                        model.applyBoardAction(.setZoom(zoom))
+                    }
+                    let addedElements = decoded.document.elements.filter {
+                        !previousIDs.contains($0.id)
+                    }
+                    if ExcalidrawBoardToolPolicy.returnsToSelect(
+                        afterAdding: addedElements,
+                        with: activeTool
+                    ) {
+                        model.applyBoardAction(.setTool(.select))
+                        interactionFeedback = "Canvas element added and selected"
+                    }
+                    return true
+                },
+                onCommand: handleEnhancedEditorCommand,
+                onReady: {
+                    enhancedEditorIsReady = true
+                    interactionFeedback = "Enhanced canvas ready · edits stay local"
+                },
+                onIssue: { message in
+                    interactionFeedback = message
+                },
+                onFailure: { message in
+                    enhancedEditorFailure = message
+                    enhancedEditorIsReady = false
+                    interactionFeedback = "\(message) Using the native canvas."
+                }
+            )
+            .accessibilityHidden(true)
+
+            if !enhancedEditorIsReady {
+                HStack(spacing: 8) {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text("Loading the local canvas…")
+                }
+                .font(.system(.caption, design: .rounded, weight: .medium))
+                .foregroundStyle(BoardPalette.muted)
+                .padding(12)
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel("Loading the local Board canvas")
+            } else if model.boardDocumentForPresentation.elements.isEmpty {
+                emptyState
+                    .padding(.leading, 28)
+                    .padding(.top, 26)
+            }
+        }
+        .background(BoardPalette.canvas)
+        .overlay(alignment: .bottomLeading) {
+            boardFooter
+                .padding(12)
+        }
+    }
+
+    private func nativeCanvas(showsStatusOverlays: Bool) -> some View {
         GeometryReader { proxy in
             ScrollView([.horizontal, .vertical]) {
                 let document = model.boardDocumentForPresentation
@@ -896,7 +1002,7 @@ struct SystemDesignBoardView: View {
                     labelLayer(document)
                     boxLayer(document)
 
-                    if document.elements.isEmpty {
+                    if showsStatusOverlays && document.elements.isEmpty {
                         emptyState
                             .padding(.leading, 28)
                             .padding(.top, 26)
@@ -949,9 +1055,55 @@ struct SystemDesignBoardView: View {
                     .allowsHitTesting(false)
             }
             .overlay(alignment: .bottomLeading) {
-                boardFooter
-                    .padding(12)
+                if showsStatusOverlays {
+                    boardFooter
+                        .padding(12)
+                }
             }
+        }
+    }
+
+    private func saveRevisionAfterEnhancedFlush() {
+        enhancedEditorBridgeController.performAfterFlushing {
+            Task { await model.saveBoardRevision() }
+        }
+    }
+
+    private func performHistoryAfterEnhancedFlush(isUndo: Bool) {
+        enhancedEditorBridgeController.performAfterFlushing {
+            model.applyBoardAction(isUndo ? .undo : .redo)
+            interactionFeedback = isUndo
+                ? "Undid the last board edit"
+                : "Restored the last board edit"
+        }
+    }
+
+    private func handleEnhancedEditorCommand(
+        _ command: ExcalidrawBoardCommand
+    ) {
+        switch command {
+        case .undo:
+            model.applyBoardAction(.undo)
+        case .redo:
+            model.applyBoardAction(.redo)
+        case .saveRevision:
+            guard model.isBoardDraftDirty else {
+                interactionFeedback = "Board already matches the latest revision"
+                return
+            }
+            Task { await model.saveBoardRevision() }
+        case .zoomIn:
+            model.applyBoardAction(
+                .setZoom(model.boardEditor.zoom * 1.25)
+            )
+        case .zoomOut:
+            model.applyBoardAction(
+                .setZoom(model.boardEditor.zoom / 1.25)
+            )
+        case .zoomReset:
+            model.applyBoardAction(.resetZoom)
+        case .tool(let tool):
+            model.applyBoardAction(.setTool(tool))
         }
     }
 
@@ -1812,7 +1964,7 @@ struct SystemDesignBoardView: View {
         switch tool {
         case .select: "Select, move, relabel, or delete board elements"
         case .connector: "Choose a source box, then a target box"
-        case .box: "Click the canvas to add an architecture box"
+        case .box: "Draw on the canvas to add an architecture box"
         case .label: "Click the canvas to add editable text"
         case .pen: "Drag on the canvas to draw a freehand annotation"
         case .eraser: "Drag across a freehand annotation to erase it"
@@ -2310,6 +2462,123 @@ enum BoardPalette {
     static let errorText = Color(red: 169 / 255, green: 54 / 255, blue: 30 / 255)
     static let muted = Color(red: 82 / 255, green: 98 / 255, blue: 139 / 255)
     static let line = Color(red: 224 / 255, green: 226 / 255, blue: 237 / 255)
+}
+
+enum BoardRailControlRole: Equatable {
+    case standard
+    case accent
+    case tool(isSelected: Bool)
+
+    var isSelected: Bool {
+        if case .tool(let isSelected) = self { return isSelected }
+        return false
+    }
+
+    var isAccent: Bool {
+        if case .accent = self { return true }
+        return false
+    }
+}
+
+enum BoardRailInteractionMetrics {
+    static let cornerRadius: CGFloat = 9
+    static let pressedScale = 0.985
+    static let disabledOpacity = 0.5
+    static let transitionDuration = 0.12
+}
+
+struct BoardRailButtonStyle: ButtonStyle {
+    let role: BoardRailControlRole
+    let addsHorizontalPadding: Bool
+
+    func makeBody(configuration: Configuration) -> some View {
+        BoardRailButtonStyleBody(
+            configuration: configuration,
+            role: role,
+            addsHorizontalPadding: addsHorizontalPadding
+        )
+    }
+}
+
+private struct BoardRailButtonStyleBody: View {
+    let configuration: ButtonStyleConfiguration
+    let role: BoardRailControlRole
+    let addsHorizontalPadding: Bool
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.isEnabled) private var isEnabled
+    @State private var isHovered = false
+
+    var body: some View {
+        configuration.label
+            .padding(.horizontal, addsHorizontalPadding ? 10 : 0)
+            .frame(minHeight: BoardLayoutMetrics.minimumHitTarget)
+            .foregroundStyle(foreground)
+            .background(
+                background,
+                in: RoundedRectangle(
+                    cornerRadius: BoardRailInteractionMetrics.cornerRadius,
+                    style: .continuous
+                )
+            )
+            .overlay {
+                RoundedRectangle(
+                    cornerRadius: BoardRailInteractionMetrics.cornerRadius,
+                    style: .continuous
+                )
+                .stroke(border, lineWidth: 1)
+            }
+            .contentShape(Rectangle())
+            .opacity(isEnabled ? 1 : BoardRailInteractionMetrics.disabledOpacity)
+            .scaleEffect(
+                reduceMotion || !configuration.isPressed
+                    ? 1
+                    : BoardRailInteractionMetrics.pressedScale
+            )
+            .animation(
+                reduceMotion
+                    ? nil
+                    : .easeOut(
+                        duration: BoardRailInteractionMetrics.transitionDuration
+                    ),
+                value: isHovered
+            )
+            .animation(
+                reduceMotion
+                    ? nil
+                    : .easeOut(
+                        duration: BoardRailInteractionMetrics.transitionDuration
+                    ),
+                value: configuration.isPressed
+            )
+            .onHover { isHovered = $0 }
+    }
+
+    private var foreground: Color {
+        guard isEnabled else { return BoardPalette.muted }
+        return role.isAccent || role.isSelected
+            ? BoardPalette.violet
+            : BoardPalette.navy
+    }
+
+    private var background: Color {
+        guard isEnabled else { return .clear }
+        if role.isSelected { return BoardPalette.violet.opacity(0.14) }
+        if configuration.isPressed { return BoardPalette.violet.opacity(0.13) }
+        if isHovered { return BoardPalette.violet.opacity(0.08) }
+        if role.isAccent { return BoardPalette.violet.opacity(0.055) }
+        return .clear
+    }
+
+    private var border: Color {
+        guard isEnabled else { return BoardPalette.line.opacity(0.7) }
+        if role.isSelected { return BoardPalette.violet.opacity(0.72) }
+        if role.isAccent { return BoardPalette.violet.opacity(0.32) }
+        if isHovered || configuration.isPressed {
+            return BoardPalette.violet.opacity(0.22)
+        }
+        return .clear
+    }
 }
 
 private struct BoardNodeVisualLayer: View {

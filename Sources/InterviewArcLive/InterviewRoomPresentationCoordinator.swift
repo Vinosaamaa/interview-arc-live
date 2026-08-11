@@ -304,7 +304,16 @@ final class InterviewRoomPresentationCoordinator: NSObject, NSWindowDelegate {
     }
 
     func windowDidChangeScreen(_ notification: Notification) {
-        clampPresentationFramesToVisibleScreens()
+        guard let window = notification.object as? NSWindow else { return }
+        // A screen transition is part of AppKit's live titlebar drag. Clamping
+        // here fights the user's pointer and can snap the window back to the
+        // display it is leaving. Display-removal changes are clamped by
+        // `screenParametersDidChange` instead.
+        if window === fullWindow, !fullWindow.isMiniaturized {
+            savedFullFrame = fullWindow.frame
+        } else if window === compactPanel {
+            savedCompactOrigin = compactPanel.frame.origin
+        }
     }
 
     static func clampedFrame(
@@ -375,6 +384,7 @@ final class InterviewRoomPresentationCoordinator: NSObject, NSWindowDelegate {
         full.title = "Interview Arc Live"
         full.titleVisibility = .hidden
         full.titlebarAppearsTransparent = true
+        full.titlebarSeparatorStyle = .none
         full.isReleasedWhenClosed = false
         full.contentMinSize = InterviewRoomWindowLayout.fullMinimumContentSize
         full.animationBehavior = .none
@@ -606,16 +616,14 @@ final class InterviewRoomPresentationCoordinator: NSObject, NSWindowDelegate {
             compactPanel.frame,
             measuredContentHeight: hostedView.fittingSize.height
         )
-        let clamped = Self.clampedFrame(
-            resized,
-            to: NSScreen.screens.map(\.visibleFrame)
-        )
-        guard abs(compactPanel.frame.height - clamped.height) > 0.5
-                || abs(compactPanel.frame.minX - clamped.minX) > 0.5
-                || abs(compactPanel.frame.minY - clamped.minY) > 0.5 else {
+        guard abs(compactPanel.frame.height - resized.height) > 0.5
+                || abs(compactPanel.frame.width - resized.width) > 0.5 else {
             return
         }
-        setCompactPanelFrame(clamped)
+        // Do not clamp x/y from a hosting layout callback: that callback can
+        // fire while AppKit owns a live cross-display drag. Initial/show and
+        // display-topology paths clamp position explicitly.
+        setCompactPanelFrame(resized)
     }
 
     private func setCompactPanelFrame(_ frame: NSRect) {
@@ -700,6 +708,36 @@ private final class FullRoomContainerController: NSViewController {
             fallbackFirstResponder.widthAnchor.constraint(equalToConstant: 1),
             fallbackFirstResponder.heightAnchor.constraint(equalToConstant: 1),
         ])
+    }
+
+    override func viewDidLayout() {
+        super.viewDidLayout()
+        centerTrafficLightsInRoomHeader()
+    }
+
+    private func centerTrafficLightsInRoomHeader() {
+        guard let window = view.window else { return }
+        let desiredCenterY = window.frame.height
+            - FullRoomLayout.headerHeight / 2
+        for buttonType in [
+            NSWindow.ButtonType.closeButton,
+            .miniaturizeButton,
+            .zoomButton,
+        ] {
+            guard let button = window.standardWindowButton(buttonType),
+                  let superview = button.superview else {
+                continue
+            }
+            let target = superview.convert(
+                NSPoint(x: 0, y: desiredCenterY),
+                from: nil
+            )
+            let deltaY = target.y - button.frame.midY
+            guard abs(deltaY) > 0.5 else { continue }
+            var frame = button.frame
+            frame.origin.y += deltaY
+            button.setFrameOrigin(frame.origin)
+        }
     }
 }
 

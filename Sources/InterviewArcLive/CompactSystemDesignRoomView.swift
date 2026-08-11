@@ -191,11 +191,12 @@ struct CompactSystemDesignRoomView: View {
     Button {
       dispatch(.expand)
     } label: {
-      CompactHandoffMark()
+      Image(systemName: presentation.expandControl.systemImage)
+        .font(.system(size: 16, weight: .semibold))
         .frame(width: 36, height: 36)
         .contentShape(Rectangle())
     }
-    .buttonStyle(.plain)
+    .buttonStyle(CompactHoverIconButtonStyle())
     .help(presentation.expandControl.accessibilityHint)
     .accessibilityIdentifier("compact-room-expand")
     .accessibilityLabel(presentation.expandControl.title)
@@ -204,15 +205,19 @@ struct CompactSystemDesignRoomView: View {
   }
 
   private func utilityButton(_ control: CompactRoomControl) -> some View {
-    Button {
+    let foreground = control.action == .stopRecording
+      || control.action == .stopSpeech
+      ? CompactMockupPalette.stop
+      : CompactMockupPalette.ink
+    return Button {
       dispatch(control.action)
     } label: {
-      CompactUtilityGlyph(action: control.action)
-        .frame(width: 30, height: 30)
+      Image(systemName: control.systemImage)
+        .font(.system(size: 14, weight: .semibold))
+        .frame(width: 36, height: 36)
         .contentShape(Rectangle())
     }
-    .buttonStyle(.plain)
-    .foregroundStyle(CompactMockupPalette.ink)
+    .buttonStyle(CompactHoverIconButtonStyle(foreground: foreground))
     .disabled(!control.isEnabled)
     .help(control.accessibilityHint)
     .accessibilityIdentifier("compact-room-\(control.action.rawValue)")
@@ -299,117 +304,6 @@ struct CompactSystemDesignRoomView: View {
   ]
 }
 
-private struct CompactUtilityGlyph: View {
-  let action: CompactRoomAction
-
-  @ViewBuilder
-  var body: some View {
-    switch action {
-    case .recordSegment:
-      ZStack {
-        RoundedRectangle(cornerRadius: 4, style: .continuous)
-          .stroke(CompactMockupPalette.ink, lineWidth: 1.7)
-          .frame(width: 8, height: 13)
-          .offset(y: -3)
-        CompactMicrophoneStandShape()
-          .stroke(
-            CompactMockupPalette.ink,
-            style: StrokeStyle(lineWidth: 1.7, lineCap: .round)
-          )
-          .frame(width: 18, height: 17)
-          .offset(y: 3)
-      }
-      .accessibilityHidden(true)
-
-    case .toggleSpeechMute:
-      ZStack {
-        CompactSpeakerShape()
-          .stroke(
-            CompactMockupPalette.ink,
-            style: StrokeStyle(lineWidth: 1.7, lineJoin: .round)
-          )
-          .frame(width: 17, height: 17)
-          .offset(x: -2)
-        Capsule()
-          .fill(CompactMockupPalette.ink)
-          .frame(width: 1.8, height: 23)
-          .rotationEffect(.degrees(-42))
-      }
-      .accessibilityHidden(true)
-
-    case .stopRecording, .stopSpeech:
-      RoundedRectangle(cornerRadius: 2, style: .continuous)
-        .fill(CompactMockupPalette.stop)
-        .frame(width: 12, height: 12)
-        .accessibilityHidden(true)
-
-    case .primaryPhaseAction, .expand:
-      Circle()
-        .stroke(CompactMockupPalette.ink, lineWidth: 1.7)
-        .frame(width: 14, height: 14)
-        .accessibilityHidden(true)
-    }
-  }
-}
-
-private struct CompactMicrophoneStandShape: Shape {
-  func path(in rect: CGRect) -> Path {
-    var path = Path()
-    path.move(to: CGPoint(x: rect.minX, y: rect.minY))
-    path.addCurve(
-      to: CGPoint(x: rect.maxX, y: rect.minY),
-      control1: CGPoint(x: rect.minX, y: rect.maxY * 0.62),
-      control2: CGPoint(x: rect.maxX, y: rect.maxY * 0.62)
-    )
-    path.move(to: CGPoint(x: rect.midX, y: rect.maxY * 0.55))
-    path.addLine(to: CGPoint(x: rect.midX, y: rect.maxY))
-    path.move(to: CGPoint(x: rect.width * 0.3, y: rect.maxY))
-    path.addLine(to: CGPoint(x: rect.width * 0.7, y: rect.maxY))
-    return path
-  }
-}
-
-private struct CompactSpeakerShape: Shape {
-  func path(in rect: CGRect) -> Path {
-    var path = Path()
-    path.move(to: CGPoint(x: rect.minX, y: rect.height * 0.36))
-    path.addLine(to: CGPoint(x: rect.width * 0.34, y: rect.height * 0.36))
-    path.addLine(to: CGPoint(x: rect.maxX, y: rect.minY))
-    path.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY))
-    path.addLine(to: CGPoint(x: rect.width * 0.34, y: rect.height * 0.64))
-    path.addLine(to: CGPoint(x: rect.minX, y: rect.height * 0.64))
-    path.closeSubpath()
-    return path
-  }
-}
-
-private struct CompactHandoffMark: View {
-  var body: some View {
-    ZStack {
-      Circle()
-        .trim(from: 0.04, to: 0.44)
-        .stroke(
-          CompactMockupPalette.violet,
-          style: StrokeStyle(lineWidth: 2.2, lineCap: .round)
-        )
-        .rotationEffect(.degrees(-24))
-      Circle()
-        .trim(from: 0.54, to: 0.92)
-        .stroke(
-          CompactMockupPalette.ink,
-          style: StrokeStyle(lineWidth: 2.2, lineCap: .round)
-        )
-        .rotationEffect(.degrees(-24))
-      Circle()
-        .fill(CompactMockupPalette.stop)
-        .frame(width: 7, height: 7)
-        .offset(x: 11, y: 10)
-    }
-    .padding(3)
-    .accessibilityHidden(true)
-  }
-}
-
 private enum CompactMockupPalette {
   static let outerShell = Color(red: 244 / 255, green: 246 / 255, blue: 253 / 255)
   static let outerLine = Color(red: 218 / 255, green: 222 / 255, blue: 240 / 255)
@@ -419,6 +313,58 @@ private enum CompactMockupPalette {
   static let muted = Color(red: 91 / 255, green: 102 / 255, blue: 142 / 255)
   static let violet = Color(red: 68 / 255, green: 48 / 255, blue: 184 / 255)
   static let stop = Color(red: 216 / 255, green: 48 / 255, blue: 32 / 255)
+}
+
+private struct CompactHoverIconButtonStyle: ButtonStyle {
+  var foreground: Color = CompactMockupPalette.ink
+
+  func makeBody(configuration: Configuration) -> some View {
+    CompactHoverIconButtonBody(
+      configuration: configuration,
+      foreground: foreground
+    )
+  }
+
+  private struct CompactHoverIconButtonBody: View {
+    let configuration: ButtonStyleConfiguration
+    let foreground: Color
+    @Environment(\.isEnabled) private var isEnabled
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var isHovering = false
+
+    var body: some View {
+      configuration.label
+        .foregroundStyle(
+          isEnabled ? foreground : CompactMockupPalette.muted.opacity(0.55)
+        )
+        .background {
+          RoundedRectangle(cornerRadius: 9, style: .continuous)
+            .fill(
+              CompactMockupPalette.violet.opacity(
+                isEnabled
+                  ? (configuration.isPressed ? 0.16 : (isHovering ? 0.09 : 0))
+                  : 0
+              )
+            )
+        }
+        .scaleEffect(
+          reduceMotion
+            ? 1
+            : (isEnabled
+              ? (configuration.isPressed ? 0.97 : (isHovering ? 1.02 : 1))
+              : 1)
+        )
+        .onHover { isHovering = $0 }
+        .animation(
+          reduceMotion ? nil : .easeOut(duration: 0.14),
+          value: isHovering
+        )
+        .animation(
+          reduceMotion ? nil : .easeOut(duration: 0.08),
+          value: configuration.isPressed
+        )
+    }
+  }
 }
 
 extension View {

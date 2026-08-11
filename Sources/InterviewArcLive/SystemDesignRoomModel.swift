@@ -106,6 +106,8 @@ enum CandidateNotesSavePresentation: Equatable, Sendable {
 
 @MainActor
 final class SystemDesignRoomModel: ObservableObject {
+    let enhancedBoardBridgeController = ExcalidrawBoardBridgeController()
+
     @Published private(set) var snapshot: InterviewRoomSnapshot?
     @Published private(set) var segments: [CandidateSegmentPresentation] = []
     @Published private(set) var isWorking = false {
@@ -624,6 +626,11 @@ final class SystemDesignRoomModel: ObservableObject {
             candidateNotesSavePresentation = .error(
                 "A room operation is still finishing. Quit was cancelled so it can complete safely."
             )
+            return false
+        }
+
+        guard await enhancedBoardBridgeController.flushPendingScene() else {
+            boardErrorMessage = "The latest canvas edit could not be confirmed. Quit was cancelled so you can retry."
             return false
         }
 
