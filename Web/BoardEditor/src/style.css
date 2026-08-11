@@ -27,6 +27,47 @@ body,
   height: 100%;
 }
 
+.semantic-node-label,
+.semantic-free-label {
+  position: absolute;
+  box-sizing: border-box;
+  overflow: hidden;
+  font-family: "Assistant", sans-serif;
+  font-weight: 650;
+  line-height: 1.15;
+  text-overflow: ellipsis;
+}
+
+.semantic-node-label {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+}
+
+.semantic-free-label {
+  display: flex;
+  align-items: center;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.semantic-connector-label {
+  position: absolute;
+  max-width: 160px;
+  padding: 2px 5px;
+  transform: translate(-50%, -50%);
+  overflow: hidden;
+  border-radius: 4px;
+  background: rgb(251 250 247 / 92%);
+  font-family: "Assistant", sans-serif;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.15;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 body {
   background: #fbfaf7;
 }

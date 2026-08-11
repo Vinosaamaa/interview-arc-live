@@ -345,8 +345,8 @@ struct ExcalidrawBoardEditorView: NSViewRepresentable {
                 isReady = true
                 readyDeadlineTask?.cancel()
                 readyDeadlineTask = nil
-                if let snapshot { load(snapshot) }
                 onReady()
+                if let snapshot { scheduleLoad(snapshot) }
 
             case "scene":
                 _ = receiveScene(object)
@@ -444,12 +444,12 @@ struct ExcalidrawBoardEditorView: NSViewRepresentable {
                 )
                 guard onSceneChange(decoded) else {
                     onIssue("That canvas change could not be saved. The last valid Board remains available.")
-                    load(snapshot)
+                    scheduleLoad(snapshot)
                     return false
                 }
                 lastLoadedDocument = decoded.document
                 if decoded.requiresReload {
-                    load(
+                    scheduleLoad(
                         Snapshot(
                             document: decoded.document,
                             selectedElementID: decoded.selectedElementID,
@@ -463,12 +463,22 @@ struct ExcalidrawBoardEditorView: NSViewRepresentable {
                 return true
             } catch ExcalidrawBoardCodecError.unsupportedElements {
                 onIssue("That shape is not part of the Interview Arc Board. Use Box, Connector, Text, Pen, or Eraser.")
-                load(snapshot)
+                scheduleLoad(snapshot)
                 return false
             } catch {
                 onIssue("That canvas change is outside the supported Board bounds. The last valid Board remains available.")
-                load(snapshot)
+                scheduleLoad(snapshot)
                 return false
+            }
+        }
+
+        private func scheduleLoad(_ snapshot: Snapshot) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
+                // WKScriptMessageHandler and evaluateJavaScript callbacks must
+                // return before native code calls back into the same WKWebView.
+                // Deferring past the message callback prevents a re-entrant
+                // deadlock that otherwise leaves the canvas stuck on startup.
+                self?.load(snapshot)
             }
         }
 

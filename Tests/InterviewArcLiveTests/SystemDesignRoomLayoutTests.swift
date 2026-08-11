@@ -92,6 +92,46 @@ final class SystemDesignRoomLayoutTests: XCTestCase {
         XCTAssertEqual(FullRoomLayout.workspaceDividerHitWidth, 13)
     }
 
+    func testDividerCommitsStableWorkspaceTranslationExactlyOnce() {
+        let workspaceWidth: CGFloat = 1_180
+        let baseWidth = FullRoomLayout.turnlineBaseWidth(
+            for: workspaceWidth,
+            preferredTurnlineWidth: 420
+        )
+
+        XCTAssertEqual(baseWidth, 420, accuracy: 0.001)
+        XCTAssertEqual(
+            FullRoomLayout.workspaceWidths(
+                for: workspaceWidth,
+                preferredTurnlineWidth: baseWidth,
+                dragTranslation: 60
+            ).turnlineWidth,
+            480,
+            accuracy: 0.001
+        )
+        XCTAssertEqual(
+            FullRoomLayout.committedTurnlineWidth(
+                baseWidth: baseWidth,
+                dragTranslation: 60,
+                workspaceWidth: workspaceWidth
+            ),
+            480,
+            accuracy: 0.001
+        )
+        XCTAssertEqual(
+            FullRoomLayout.workspaceWidths(
+                for: workspaceWidth,
+                preferredTurnlineWidth: 480
+            ).turnlineWidth,
+            480,
+            accuracy: 0.001
+        )
+        XCTAssertEqual(
+            FullRoomLayout.workspaceCoordinateSpaceName,
+            "system-design-workspace"
+        )
+    }
+
     func testMinimumWindowRetainsAUsableWorkspaceAndActionTargets() {
         XCTAssertEqual(
             FullRoomLayout.questionBandHeight(forLineCount: 1),

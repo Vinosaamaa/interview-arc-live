@@ -14,6 +14,7 @@ struct SystemDesignBoardView: View {
     @State private var isRevisionHistoryPresented = false
     @State private var enhancedEditorIsReady = false
     @State private var enhancedEditorFailure: String?
+    @State private var enhancedEditorAttemptID = UUID()
     @FocusState private var isCanvasFocused: Bool
     @FocusState private var isLabelEditorFocused: Bool
     @AccessibilityFocusState private var accessibilityFocusedElementID: BoardElementID?
@@ -901,6 +902,24 @@ struct SystemDesignBoardView: View {
             }
         } else {
             nativeCanvas(showsStatusOverlays: true)
+                .overlay(alignment: .topTrailing) {
+                    Button {
+                        enhancedEditorFailure = nil
+                        enhancedEditorIsReady = false
+                        enhancedEditorAttemptID = UUID()
+                        interactionFeedback = "Retrying the local Excalidraw canvas"
+                    } label: {
+                        Label("Retry Excalidraw", systemImage: "arrow.clockwise")
+                    }
+                    .buttonStyle(
+                        BoardRailButtonStyle(
+                            role: .standard,
+                            addsHorizontalPadding: true
+                        )
+                    )
+                    .padding(12)
+                    .help("Retry the bundled offline Excalidraw editor")
+                }
         }
     }
 
@@ -957,6 +976,7 @@ struct SystemDesignBoardView: View {
                     interactionFeedback = "\(message) Using the native canvas."
                 }
             )
+            .id(enhancedEditorAttemptID)
             .accessibilityHidden(true)
 
             if !enhancedEditorIsReady {
@@ -974,6 +994,24 @@ struct SystemDesignBoardView: View {
                 emptyState
                     .padding(.leading, 28)
                     .padding(.top, 26)
+            }
+
+            if enhancedEditorIsReady {
+                Label("Excalidraw · Local", systemImage: "checkmark.circle.fill")
+                    .font(.system(.caption2, design: .rounded, weight: .semibold))
+                    .foregroundStyle(BoardPalette.violet)
+                    .padding(.horizontal, 9)
+                    .frame(minHeight: 28)
+                    .background(BoardPalette.paper.opacity(0.92))
+                    .clipShape(Capsule())
+                    .overlay {
+                        Capsule()
+                            .stroke(BoardPalette.violet.opacity(0.24), lineWidth: 1)
+                    }
+                    .padding(12)
+                    .frame(maxWidth: .infinity, alignment: .topTrailing)
+                    .allowsHitTesting(false)
+                    .accessibilityLabel("Local Excalidraw canvas ready")
             }
         }
         .background(BoardPalette.canvas)
