@@ -45,8 +45,13 @@ final class HostedPracticeSessionTests: XCTestCase {
         XCTAssertEqual(recovered.connection, .loading)
         XCTAssertEqual(recovered.pendingOperationCount, 0)
         let paths = await fixture.transport.paths()
-        XCTAssertTrue(paths.suffix(2)[0].contains("/receipts/"))
-        XCTAssertEqual(paths.last, "/live/v1/activities/activity-1/commands")
+        let recoveryPaths = Array(paths.suffix(2))
+        XCTAssertEqual(recoveryPaths.count, 2)
+        XCTAssertTrue(recoveryPaths.first?.contains("/receipts/") == true)
+        XCTAssertEqual(
+            recoveryPaths.last,
+            "/live/v1/activities/activity-1/commands"
+        )
         let commandBodies = await fixture.transport.commandBodies()
         XCTAssertEqual(commandBodies.count, 2)
         XCTAssertEqual(commandBodies[0], commandBodies[1])
