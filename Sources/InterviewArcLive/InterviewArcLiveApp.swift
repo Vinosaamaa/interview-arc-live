@@ -1,5 +1,35 @@
 import AppKit
 
+@MainActor
+final class InterviewArcLiveTerminationGate {
+    typealias Preparation = @MainActor () async -> Bool
+    typealias Reply = @MainActor (Bool) -> Void
+
+    private let preparation: Preparation
+    private var preparationTask: Task<Void, Never>?
+    private var pendingReplies: [Reply] = []
+
+    init(preparation: @escaping Preparation) {
+        self.preparation = preparation
+    }
+
+    func requestTermination(
+        reply: @escaping Reply
+    ) -> NSApplication.TerminateReply {
+        pendingReplies.append(reply)
+        guard preparationTask == nil else { return .terminateLater }
+        preparationTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            let shouldTerminate = await preparation()
+            preparationTask = nil
+            let replies = pendingReplies
+            pendingReplies.removeAll()
+            replies.forEach { $0(shouldTerminate) }
+        }
+        return .terminateLater
+    }
+}
+
 @main
 @MainActor
 final class InterviewArcLiveApp: NSObject, NSApplicationDelegate {
@@ -7,6 +37,7 @@ final class InterviewArcLiveApp: NSObject, NSApplicationDelegate {
 
     private let model = SystemDesignRoomModel()
     private var presentationCoordinator: InterviewRoomPresentationCoordinator?
+    private var terminationGate: InterviewArcLiveTerminationGate?
 
     static func main() {
         let application = NSApplication.shared
@@ -20,6 +51,9 @@ final class InterviewArcLiveApp: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         installMainMenu()
+        terminationGate = InterviewArcLiveTerminationGate { [weak model] in
+            await model?.prepareLocalPersistenceForTermination() ?? true
+        }
         let coordinator = InterviewRoomPresentationCoordinator(model: model)
         presentationCoordinator = coordinator
         coordinator.start()
@@ -37,6 +71,15 @@ final class InterviewArcLiveApp: NSObject, NSApplicationDelegate {
         _ sender: NSApplication
     ) -> Bool {
         false
+    }
+
+    func applicationShouldTerminate(
+        _ sender: NSApplication
+    ) -> NSApplication.TerminateReply {
+        guard let terminationGate else { return .terminateNow }
+        return terminationGate.requestTermination { [weak sender] shouldTerminate in
+            sender?.reply(toApplicationShouldTerminate: shouldTerminate)
+        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {

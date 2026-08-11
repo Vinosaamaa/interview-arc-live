@@ -4,6 +4,7 @@ import Foundation
 public enum InterviewRoomCommand: Codable, Sendable, Equatable {
     case giveCandidateFloor(commandID: CommandID)
     case setTurnMode(commandID: CommandID, mode: TurnMode)
+    case updateCandidateNotes(commandID: CommandID, notes: CandidateNotes)
     case beginSegment(commandID: CommandID)
     case finalizeSegment(commandID: CommandID, segmentID: SegmentID)
     case recordSegmentCaptureOutcome(
@@ -98,6 +99,7 @@ public enum InterviewRoomCommand: Codable, Sendable, Equatable {
         switch self {
         case .giveCandidateFloor(let commandID),
              .setTurnMode(let commandID, _),
+             .updateCandidateNotes(let commandID, _),
              .beginSegment(let commandID),
              .finalizeSegment(let commandID, _),
              .recordSegmentCaptureOutcome(let commandID, _, _),
@@ -418,6 +420,7 @@ public actor InterviewRoomSession {
         var endpointEvaluations = manifest.endpointEvaluations
         var interviewerUtterances = manifest.interviewerUtterances
         var board = manifest.board
+        var candidateNotes = manifest.candidateNotes
 
         switch command {
         case .giveCandidateFloor:
@@ -431,6 +434,12 @@ public actor InterviewRoomSession {
                 throw invalidTransition("setTurnMode")
             }
             mode = selectedMode
+
+        case .updateCandidateNotes(_, let notes):
+            guard phase != .completed else {
+                throw invalidTransition("updateCandidateNotes")
+            }
+            candidateNotes = notes
 
         case .beginSegment(let commandID):
             guard phase == .candidateFloor else {
@@ -941,7 +950,8 @@ public actor InterviewRoomSession {
             segments: segments,
             endpointEvaluations: endpointEvaluations,
             interviewerUtterances: interviewerUtterances,
-            board: board
+            board: board,
+            candidateNotes: candidateNotes
         )
     }
 
@@ -1181,6 +1191,7 @@ public actor InterviewRoomSession {
             endpointEvaluations: manifest.endpointEvaluations,
             interviewerUtterances: manifest.interviewerUtterances,
             board: manifest.board,
+            candidateNotes: manifest.candidateNotes,
             revision: candidateRevision,
             appliedCommands: manifest.appliedCommands + [receipt]
         )
@@ -1213,6 +1224,7 @@ public actor InterviewRoomSession {
             endpointEvaluations: manifest.endpointEvaluations,
             interviewerUtterances: manifest.interviewerUtterances,
             board: manifest.board,
+            candidateNotes: manifest.candidateNotes,
             revision: manifest.revision + 1,
             appliedCommands: manifest.appliedCommands + [receipt]
         )
@@ -1270,6 +1282,7 @@ public actor InterviewRoomSession {
             endpointEvaluations: manifest.endpointEvaluations,
             interviewerUtterances: manifest.interviewerUtterances + [utterance],
             board: manifest.board,
+            candidateNotes: manifest.candidateNotes,
             revision: manifest.revision + 1,
             appliedCommands: manifest.appliedCommands
         )
@@ -1286,7 +1299,8 @@ public actor InterviewRoomSession {
         segments: [CandidateSegment],
         endpointEvaluations: [EndpointEvaluation],
         interviewerUtterances: [InterviewerUtterance]? = nil,
-        board: BoardWorkspace? = nil
+        board: BoardWorkspace? = nil,
+        candidateNotes: CandidateNotes? = nil
     ) -> SessionManifest {
         let nextRevision = manifest.revision + 1
         let applied = AppliedCommandRecord(
@@ -1305,6 +1319,7 @@ public actor InterviewRoomSession {
             endpointEvaluations: endpointEvaluations,
             interviewerUtterances: interviewerUtterances ?? manifest.interviewerUtterances,
             board: board ?? manifest.board,
+            candidateNotes: candidateNotes ?? manifest.candidateNotes,
             revision: nextRevision,
             appliedCommands: manifest.appliedCommands + [applied]
         )

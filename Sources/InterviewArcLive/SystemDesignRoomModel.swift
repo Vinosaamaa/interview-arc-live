@@ -66,11 +66,55 @@ enum BoardRevisionStatusPresentation: Equatable, Sendable {
     }
 }
 
+enum SystemDesignWorkSurfacePane: String, CaseIterable, Identifiable, Sendable {
+    case board
+    case brief
+    case notes
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .board: "Board"
+        case .brief: "Brief"
+        case .notes: "Notes"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .board: "square.grid.2x2"
+        case .brief: "doc.text"
+        case .notes: "note.text"
+        }
+    }
+}
+
+enum CandidateNotesSavePresentation: Equatable, Sendable {
+    case saved
+    case saving
+    case error(String)
+
+    var text: String {
+        switch self {
+        case .saved: "Saved locally"
+        case .saving: "Saving notes…"
+        case .error(let message): message
+        }
+    }
+}
+
 @MainActor
 final class SystemDesignRoomModel: ObservableObject {
     @Published private(set) var snapshot: InterviewRoomSnapshot?
     @Published private(set) var segments: [CandidateSegmentPresentation] = []
-    @Published private(set) var isWorking = false
+    @Published private(set) var isWorking = false {
+        didSet {
+            if !isWorking {
+                startCandidateNotesPersistenceIfNeeded()
+            }
+        }
+    }
     @Published private(set) var statusMessage = "Restoring local session…"
     @Published private(set) var errorMessage: String?
     @Published private(set) var codexReadiness: CodexAppServerReadiness?
@@ -88,6 +132,10 @@ final class SystemDesignRoomModel: ObservableObject {
     @Published private(set) var boardErrorMessage: String?
     @Published private(set) var boardExportMessage: String?
     @Published private(set) var inspectedBoardRevisionID: BoardRevisionID?
+    @Published private(set) var selectedWorkSurface: SystemDesignWorkSurfacePane = .board
+    @Published private(set) var candidateNotesDraft = ""
+    @Published private(set) var candidateNotesSavePresentation: CandidateNotesSavePresentation = .saved
+    @Published private(set) var isFinishingInterview = false
 
     @Published var isCredentialSetupPresented = false
     @Published private(set) var isSavingCredential = false
@@ -134,12 +182,18 @@ final class SystemDesignRoomModel: ObservableObject {
     private var interviewerSpeechCoordinator: InterviewerSpeechCoordinator?
     private var speechPreparationTask: Task<Void, Never>?
     private var audioPlayer: AVAudioPlayer?
-    private var boardPersistenceTail: Task<Void, Never>?
+    private var localPersistenceTail: Task<Void, Never>?
+    private var localPersistenceGeneration = 0
     private var pendingBoardWriteCount = 0
     private var didLoadInitialBoard = false
+    private var candidateNotesPersistenceTask: Task<Void, Never>?
+    private var pendingCandidateNotes: CandidateNotes?
+    private var didLoadInitialCandidateNotes = false
 
     private static let speechMutedPreferenceKey =
         "interviewArcLive.interviewerSpeechMuted"
+    private static let workSurfacePreferenceKey =
+        "interviewArcLive.systemDesignWorkSurface"
 
     init(
         credentialStore: LiveGroqCredentialStore = LiveGroqCredentialStore(),
@@ -165,6 +219,9 @@ final class SystemDesignRoomModel: ObservableObject {
         isSpeechMuted = preferences.bool(
             forKey: Self.speechMutedPreferenceKey
         )
+        selectedWorkSurface = SystemDesignWorkSurfacePane(
+            rawValue: preferences.string(forKey: Self.workSurfacePreferenceKey) ?? ""
+        ) ?? .board
         if let initialCoordinator {
             publish(initialCoordinator.snapshot)
         }
@@ -172,6 +229,56 @@ final class SystemDesignRoomModel: ObservableObject {
 
     var question: String {
         snapshot?.activityPrompt.question ?? activityPrompt.question
+    }
+
+    var activityPromptForPresentation: ActivityPrompt {
+        snapshot?.activityPrompt ?? activityPrompt
+    }
+
+    var canEditCandidateNotes: Bool {
+        guard let snapshot else { return false }
+        return snapshot.phase != .completed && !isFinishingInterview
+    }
+
+    private var hasPendingLocalPersistence: Bool {
+        isBoardSaving
+            || candidateNotesPersistenceTask != nil
+            || pendingCandidateNotes != nil
+    }
+
+    func selectWorkSurface(_ pane: SystemDesignWorkSurfacePane) {
+        guard snapshot != nil else { return }
+        selectedWorkSurface = pane
+        preferences.set(pane.rawValue, forKey: Self.workSurfacePreferenceKey)
+    }
+
+    func updateCandidateNotesDraft(_ body: String) {
+        guard canEditCandidateNotes else { return }
+        do {
+            let notes = try CandidateNotes(body: body)
+            candidateNotesDraft = body
+            pendingCandidateNotes = notes
+            candidateNotesSavePresentation = .saving
+            startCandidateNotesPersistenceIfNeeded()
+        } catch {
+            candidateNotesSavePresentation = .error(
+                "Notes are limited to 16 KB. Shorten the text to continue saving."
+            )
+        }
+    }
+
+    func retryCandidateNotesSave() {
+        guard canEditCandidateNotes else { return }
+        guard let notes = try? CandidateNotes(body: candidateNotesDraft) else {
+            return
+        }
+        pendingCandidateNotes = notes
+        candidateNotesSavePresentation = .saving
+        startCandidateNotesPersistenceIfNeeded()
+    }
+
+    func waitForCandidateNotesPersistence() async {
+        await waitForLocalPersistence()
     }
 
     var isCodexReady: Bool {
@@ -281,7 +388,9 @@ final class SystemDesignRoomModel: ObservableObject {
     }
 
     var canSelectTurnMode: Bool {
-        guard !isWorking, let snapshot else { return false }
+        guard !isWorking,
+              !hasPendingLocalPersistence,
+              let snapshot else { return false }
         return snapshot.phase != .completed
     }
 
@@ -438,7 +547,7 @@ final class SystemDesignRoomModel: ObservableObject {
             phase: snapshot?.phase,
             isWorking: isWorking,
             isInspectingRevision: isInspectingBoardRevision,
-            isSaving: isBoardSaving,
+            isSaving: hasPendingLocalPersistence,
             isExporting: isBoardExporting
         )
     }
@@ -507,11 +616,44 @@ final class SystemDesignRoomModel: ObservableObject {
     }
 
     func waitForBoardPersistence() async {
-        await boardPersistenceTail?.value
+        await waitForLocalPersistence()
+    }
+
+    func prepareLocalPersistenceForTermination() async -> Bool {
+        guard !isWorking else {
+            candidateNotesSavePresentation = .error(
+                "A room operation is still finishing. Quit was cancelled so it can complete safely."
+            )
+            return false
+        }
+
+        startCandidateNotesPersistenceIfNeeded()
+        await waitForLocalPersistence()
+
+        guard pendingCandidateNotes == nil,
+              candidateNotesPersistenceTask == nil,
+              pendingBoardWriteCount == 0 else {
+            candidateNotesSavePresentation = .error(
+                "The latest local changes are still saving. Quit was cancelled so you can retry."
+            )
+            return false
+        }
+        guard let coordinator else { return snapshot == nil }
+        guard coordinator.snapshot.board.draft == boardEditor.document else {
+            boardErrorMessage = "The latest Board edit is not durable yet. Quit was cancelled so you can retry."
+            return false
+        }
+        guard coordinator.snapshot.candidateNotes.body == candidateNotesDraft else {
+            candidateNotesSavePresentation = .error(
+                "The latest Notes text is not durable yet. Quit was cancelled so you can retry."
+            )
+            return false
+        }
+        return true
     }
 
     func saveBoardRevision() async {
-        guard !isBoardSaving,
+        guard !hasPendingLocalPersistence,
               canSaveBoardRevision,
               let coordinator else { return }
         beginBoardWork()
@@ -536,7 +678,8 @@ final class SystemDesignRoomModel: ObservableObject {
     }
 
     func inspectBoardRevision(_ revisionID: BoardRevisionID) async {
-        guard let coordinator,
+        guard !hasPendingLocalPersistence,
+              let coordinator,
               snapshot?.board.revisions.contains(where: { $0.id == revisionID }) == true else {
             boardErrorMessage = "That saved board revision is unavailable."
             return
@@ -556,6 +699,7 @@ final class SystemDesignRoomModel: ObservableObject {
     }
 
     func returnToBoardDraft() async {
+        guard !hasPendingLocalPersistence else { return }
         guard let coordinator else {
             inspectedBoardRevisionID = nil
             return
@@ -575,7 +719,8 @@ final class SystemDesignRoomModel: ObservableObject {
     }
 
     func attachSelectedBoardRevision() async {
-        guard let coordinator,
+        guard !hasPendingLocalPersistence,
+              let coordinator,
               let revision = selectedBoardRevision,
               let turn = snapshot?.turns.reversed().compactMap({ turn -> CandidateTurn? in
                   guard case .candidate(let candidate) = turn,
@@ -603,6 +748,7 @@ final class SystemDesignRoomModel: ObservableObject {
 
     func exportSelectedBoardRevision() async {
         guard !isBoardExporting,
+              !hasPendingLocalPersistence,
               let coordinator,
               canExportBoardRevision,
               let revision = selectedBoardRevision else {
@@ -697,9 +843,9 @@ final class SystemDesignRoomModel: ObservableObject {
             boardErrorMessage = "The room is still restoring. This board change is not durable yet."
             return
         }
-        let previous = boardPersistenceTail
+        let previous = localPersistenceTail
         beginBoardWork()
-        boardPersistenceTail = Task { @MainActor [weak self, weak coordinator] in
+        let operation = Task { @MainActor [weak self, weak coordinator] in
             await previous?.value
             guard let self, let coordinator else { return }
             defer {
@@ -716,6 +862,8 @@ final class SystemDesignRoomModel: ObservableObject {
                 boardErrorMessage = "The latest board change is visible but not saved. Try the action again."
             }
         }
+        localPersistenceGeneration += 1
+        localPersistenceTail = operation
     }
 
     private func beginBoardWork() {
@@ -768,6 +916,7 @@ final class SystemDesignRoomModel: ObservableObject {
 
     var canRecordSegment: Bool {
         guard !isWorking,
+              !hasPendingLocalPersistence,
               hasUsableGroqCredential,
               snapshot?.phase == .candidateFloor else {
             return false
@@ -785,7 +934,9 @@ final class SystemDesignRoomModel: ObservableObject {
     }
 
     var canAct: Bool {
-        guard !isWorking, !isBoardSaving, let snapshot else { return false }
+        guard !isWorking,
+              !hasPendingLocalPersistence,
+              let snapshot else { return false }
         switch snapshot.phase {
         case .candidateFloor:
             guard boardAttachmentForHandOff != nil else { return false }
@@ -995,7 +1146,8 @@ final class SystemDesignRoomModel: ObservableObject {
     func stopRecording() async {
         guard let coordinator,
               let activeSegment = activeCaptureSegment,
-              !isWorking else {
+              !isWorking,
+              !hasPendingLocalPersistence else {
             return
         }
 
@@ -1032,7 +1184,9 @@ final class SystemDesignRoomModel: ObservableObject {
     }
 
     func transcribeSegment(id: String) async {
-        guard let coordinator, !isWorking else { return }
+        guard let coordinator,
+              !isWorking,
+              !hasPendingLocalPersistence else { return }
         guard hasUsableGroqCredential else {
             credentialErrorMessage = "Add a Groq API key before retrying this transcript."
             presentCredentialSetup()
@@ -1067,7 +1221,9 @@ final class SystemDesignRoomModel: ObservableObject {
     }
 
     func excludeSegment(id: String) async {
-        guard let coordinator, !isWorking else { return }
+        guard let coordinator,
+              !isWorking,
+              !hasPendingLocalPersistence else { return }
         guard let segment = draftSegments.first(where: { $0.id.rawValue == id }),
               segment.canExcludeFromAnswer else {
             return
@@ -1179,17 +1335,19 @@ final class SystemDesignRoomModel: ObservableObject {
     /// keeps sole ownership of the model's visible and durable state.
     @discardableResult
     func finishInterview() async -> Bool {
-        guard !isWorking else { return false }
+        guard !isWorking, !hasPendingLocalPersistence else { return false }
         guard let coordinator, let snapshot else { return false }
         if snapshot.phase == .completed {
             return true
         }
 
+        isFinishingInterview = true
         isWorking = true
         errorMessage = nil
         statusMessage = "Ending interview…"
         defer {
             isWorking = false
+            isFinishingInterview = false
             statusMessage = status(for: self.snapshot)
         }
 
@@ -1606,11 +1764,79 @@ final class SystemDesignRoomModel: ObservableObject {
         }
     }
 
+    private func startCandidateNotesPersistenceIfNeeded() {
+        guard !isWorking,
+              pendingCandidateNotes != nil,
+              candidateNotesPersistenceTask == nil else { return }
+        let previous = localPersistenceTail
+        let operation = Task { @MainActor [weak self] in
+            await previous?.value
+            await self?.drainCandidateNotesPersistence()
+        }
+        candidateNotesPersistenceTask = operation
+        localPersistenceGeneration += 1
+        localPersistenceTail = operation
+    }
+
+    private func waitForLocalPersistence() async {
+        while true {
+            startCandidateNotesPersistenceIfNeeded()
+            let observedGeneration = localPersistenceGeneration
+            let observed = localPersistenceTail
+            await observed?.value
+            if pendingCandidateNotes == nil,
+               candidateNotesPersistenceTask == nil,
+               localPersistenceGeneration == observedGeneration {
+                return
+            }
+            if isWorking {
+                return
+            }
+        }
+    }
+
+    private func drainCandidateNotesPersistence() async {
+        while let notes = pendingCandidateNotes {
+            pendingCandidateNotes = nil
+            guard let coordinator else {
+                candidateNotesSavePresentation = .error(
+                    "Wait for the local room to finish restoring, then retry."
+                )
+                break
+            }
+            do {
+                let updated = try await coordinator.updateCandidateNotes(
+                    notes,
+                    commandID: commandID("update-candidate-notes")
+                )
+                publish(updated)
+                if pendingCandidateNotes == nil,
+                   candidateNotesDraft == notes.body {
+                    candidateNotesSavePresentation = .saved
+                }
+            } catch {
+                publish(coordinator.snapshot)
+                candidateNotesSavePresentation = .error(
+                    "Notes were not saved. Your text remains here; choose Retry."
+                )
+                break
+            }
+        }
+        candidateNotesPersistenceTask = nil
+        if pendingCandidateNotes != nil {
+            startCandidateNotesPersistenceIfNeeded()
+        }
+    }
+
     private func publish(_ snapshot: InterviewRoomSnapshot) {
         if !didLoadInitialBoard {
             boardEditor = BoardEditorState(document: snapshot.board.draft)
             inspectedBoardRevisionID = snapshot.board.selectedRevisionID
             didLoadInitialBoard = true
+        }
+        if !didLoadInitialCandidateNotes {
+            candidateNotesDraft = snapshot.candidateNotes.body
+            didLoadInitialCandidateNotes = true
         }
         if self.snapshot != snapshot {
             self.snapshot = snapshot
