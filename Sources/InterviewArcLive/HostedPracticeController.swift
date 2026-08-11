@@ -212,7 +212,7 @@ final class HostedPracticeController: ObservableObject {
     }
 
     func prepareForTermination() async -> Bool {
-        guard snapshot.pendingOperationCount == 0 else {
+        if snapshot.pendingOperationCount > 0 {
             await session.recoverPendingOperations()
             snapshot = await session.snapshot()
             guard snapshot.pendingOperationCount == 0 else { return false }
