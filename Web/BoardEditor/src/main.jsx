@@ -182,16 +182,19 @@ const SemanticNodeOverlay = ({ elements, appState }) => {
 const normalizeScene = (elements, appState, files, currentBoxKind) => {
   const live = getNonDeletedElements(elements);
   const textByContainer = new Map();
-  for (const element of live) {
-    if (element.type !== "text") continue;
-    const containerID = element.containerId
-      ?? element.customData?.iaContainerID;
-    if (containerID) textByContainer.set(containerID, element);
-  }
   const supported = [];
+  const pendingContainerLabels = [];
   let unsupportedElementCount = Object.keys(files ?? {}).length;
 
   for (const element of live) {
+    if (element.type === "text") {
+      const containerID = element.containerId
+        ?? element.customData?.iaContainerID;
+      if (containerID) {
+        textByContainer.set(containerID, element);
+        continue;
+      }
+    }
     if (element.containerId || element.customData?.iaContainerID) continue;
     const customData = element.customData ?? {};
     const boardID = typeof customData.iaElementID === "string"
@@ -199,6 +202,7 @@ const normalizeScene = (elements, appState, files, currentBoxKind) => {
       : null;
 
     if (customData.iaElementType === "label") {
+      const supportedIndex = supported.length;
       supported.push({
         type: "label",
         webID: element.id,
@@ -224,19 +228,21 @@ const normalizeScene = (elements, appState, files, currentBoxKind) => {
         y: Number(element.y),
         width: Number(element.width),
         height: Number(element.height),
-        label: elementLabel(element, textByContainer),
+        label: String(customData.iaLabel ?? ""),
         nodeKind: typeof customData.iaKind === "string"
           ? customData.iaKind
           : currentBoxKind,
         fill: normalizedHex(element.backgroundColor, "#ffffff"),
         stroke: normalizedHex(element.strokeColor, "#4b3abf"),
       });
+      pendingContainerLabels.push({ element, supportedIndex });
       continue;
     }
 
     if (element.type === "arrow") {
       const start = pointAt(element, 0);
       const end = pointAt(element, -1);
+      const supportedIndex = supported.length;
       supported.push({
         type: "connector",
         webID: element.id,
@@ -249,9 +255,10 @@ const normalizeScene = (elements, appState, files, currentBoxKind) => {
         targetWebID: element.endBinding?.elementId ?? null,
         startAnchorPolicy: customData.iaStartAnchorPolicy ?? "automatic",
         endAnchorPolicy: customData.iaEndAnchorPolicy ?? "automatic",
-        label: elementLabel(element, textByContainer),
+        label: String(customData.iaLabel ?? ""),
         stroke: normalizedHex(element.strokeColor, "#1f2937"),
       });
+      pendingContainerLabels.push({ element, supportedIndex });
       continue;
     }
 
@@ -287,6 +294,10 @@ const normalizeScene = (elements, appState, files, currentBoxKind) => {
     }
 
     unsupportedElementCount += 1;
+  }
+
+  for (const { element, supportedIndex } of pendingContainerLabels) {
+    supported[supportedIndex].label = elementLabel(element, textByContainer);
   }
 
   return {
