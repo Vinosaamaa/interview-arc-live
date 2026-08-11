@@ -1030,6 +1030,7 @@ final class SystemDesignRoomModel: ObservableObject {
         } catch {
             publish(coordinator.snapshot)
             handleCredentialFailure(error)
+            errorWasCodexFailure = applyCodexFailure(error)
             errorMessage = safeMessage(for: error)
         }
     }
@@ -1068,6 +1069,7 @@ final class SystemDesignRoomModel: ObservableObject {
         } catch {
             publish(coordinator.snapshot)
             handleCredentialFailure(error)
+            errorWasCodexFailure = applyCodexFailure(error)
             errorMessage = safeMessage(for: error)
         }
     }
