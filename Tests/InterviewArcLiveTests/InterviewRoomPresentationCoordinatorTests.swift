@@ -6,6 +6,25 @@ import XCTest
 
 @MainActor
 final class InterviewRoomPresentationCoordinatorTests: XCTestCase {
+    func testApplicationTerminationReplyWaitsForDurabilityPreparation() async {
+        let preparation = TerminationPreparationFixture()
+        let gate = InterviewArcLiveTerminationGate {
+            await preparation.run()
+        }
+        var reply: Bool?
+
+        XCTAssertEqual(
+            gate.requestTermination { reply = $0 },
+            .terminateLater
+        )
+        await preparation.waitUntilStarted()
+        XCTAssertNil(reply)
+
+        await preparation.release(result: true)
+        while reply == nil { await Task.yield() }
+        XCTAssertEqual(reply, true)
+    }
+
     func testCompactPanelUsesToolPaletteScale() {
         XCTAssertEqual(CompactPanelLayout.contentWidth, 580)
         XCTAssertEqual(CompactPanelLayout.minimumContentHeight, 82)
@@ -425,5 +444,32 @@ final class InterviewRoomPresentationCoordinatorTests: XCTestCase {
             frameAutosaveName: "InterviewArcLiveTests.TransientFrame",
             compactDynamicTypeSizeOverride: compactDynamicTypeSizeOverride
         )
+    }
+}
+
+private actor TerminationPreparationFixture {
+    private var started = false
+    private var startContinuation: CheckedContinuation<Void, Never>?
+    private var resultContinuation: CheckedContinuation<Bool, Never>?
+
+    func run() async -> Bool {
+        started = true
+        startContinuation?.resume()
+        startContinuation = nil
+        return await withCheckedContinuation { continuation in
+            resultContinuation = continuation
+        }
+    }
+
+    func waitUntilStarted() async {
+        if started { return }
+        await withCheckedContinuation { continuation in
+            startContinuation = continuation
+        }
+    }
+
+    func release(result: Bool) {
+        resultContinuation?.resume(returning: result)
+        resultContinuation = nil
     }
 }

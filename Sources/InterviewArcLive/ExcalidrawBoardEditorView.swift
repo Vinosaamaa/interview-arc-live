@@ -37,7 +37,7 @@ enum ExcalidrawBoardStartupPolicy {
 }
 
 @MainActor
-private protocol ExcalidrawBoardSceneFlushing: AnyObject {
+protocol ExcalidrawBoardSceneFlushing: AnyObject {
     func flushPendingScene(
         completion: @escaping @MainActor (Bool) -> Void
     )
@@ -47,13 +47,22 @@ private protocol ExcalidrawBoardSceneFlushing: AnyObject {
 final class ExcalidrawBoardBridgeController: ObservableObject {
     private weak var flusher: (any ExcalidrawBoardSceneFlushing)?
 
-    fileprivate func attach(_ flusher: any ExcalidrawBoardSceneFlushing) {
+    func attach(_ flusher: any ExcalidrawBoardSceneFlushing) {
         self.flusher = flusher
     }
 
-    fileprivate func detach(_ flusher: any ExcalidrawBoardSceneFlushing) {
+    func detach(_ flusher: any ExcalidrawBoardSceneFlushing) {
         guard self.flusher === flusher else { return }
         self.flusher = nil
+    }
+
+    func flushPendingScene() async -> Bool {
+        guard let flusher else { return true }
+        return await withCheckedContinuation { continuation in
+            flusher.flushPendingScene { accepted in
+                continuation.resume(returning: accepted)
+            }
+        }
     }
 
     func performAfterFlushing(_ operation: @escaping @MainActor () -> Void) {

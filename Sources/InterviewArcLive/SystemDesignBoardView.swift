@@ -14,11 +14,13 @@ struct SystemDesignBoardView: View {
     @State private var isRevisionHistoryPresented = false
     @State private var enhancedEditorIsReady = false
     @State private var enhancedEditorFailure: String?
-    @StateObject private var enhancedEditorBridgeController =
-        ExcalidrawBoardBridgeController()
     @FocusState private var isCanvasFocused: Bool
     @FocusState private var isLabelEditorFocused: Bool
     @AccessibilityFocusState private var accessibilityFocusedElementID: BoardElementID?
+
+    private var enhancedEditorBridgeController: ExcalidrawBoardBridgeController {
+        model.enhancedBoardBridgeController
+    }
 
     var body: some View {
         VStack(spacing: 0) {

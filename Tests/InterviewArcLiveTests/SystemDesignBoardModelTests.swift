@@ -5,6 +5,50 @@ import InterviewArcLiveCore
 
 @MainActor
 final class SystemDesignBoardModelTests: XCTestCase {
+    func testTerminationFlushesEnhancedSceneAndAwaitsDurableBoardTail() async throws {
+        let (model, store) = try await makeCompletionBlockingRoomModel()
+        await store.holdNextBoardRevisionSave()
+        let flusher = TerminationBoardFlusher { completion in
+            XCTAssertTrue(
+                model.applyBoardAction(
+                    .createLabel(
+                        origin: BoardPoint(x: 80, y: 80),
+                        text: "Termination-safe edit"
+                    )
+                )
+            )
+            completion(true)
+        }
+        model.enhancedBoardBridgeController.attach(flusher)
+
+        let preparation = Task { @MainActor in
+            await model.prepareBoardForTermination()
+        }
+        await store.waitUntilBoardRevisionSaveStarts()
+
+        XCTAssertTrue(model.isBoardSaving)
+        XCTAssertFalse(model.snapshot?.board.draft == model.boardEditor.document)
+
+        await store.releaseBoardRevisionSave()
+        let shouldTerminate = await preparation.value
+        XCTAssertTrue(shouldTerminate)
+        XCTAssertEqual(model.snapshot?.board.draft, model.boardEditor.document)
+        XCTAssertEqual(model.snapshot?.phase, .ready)
+    }
+
+    func testTerminationCancelsWhenEnhancedSceneCannotBeAccepted() async throws {
+        let (model, _) = try await makeCompletionBlockingRoomModel()
+        let flusher = TerminationBoardFlusher { completion in
+            completion(false)
+        }
+        model.enhancedBoardBridgeController.attach(flusher)
+
+        let shouldTerminate = await model.prepareBoardForTermination()
+        XCTAssertFalse(shouldTerminate)
+        XCTAssertEqual(model.snapshot?.phase, .ready)
+        XCTAssertTrue(model.boardErrorMessage?.contains("Quit was cancelled") == true)
+    }
+
     func testBoardRevisionSaveAvailabilityRequiresPublishedNonworkingRoom() {
         XCTAssertFalse(
             SystemDesignRoomModel.boardRevisionSaveIsAvailable(
@@ -262,5 +306,20 @@ final class SystemDesignBoardModelTests: XCTestCase {
 
         XCTAssertTrue(model.boardErrorMessage?.contains("missing") == true)
         XCTAssertEqual(model.snapshot?.board.exports.count, exportCount)
+    }
+}
+
+@MainActor
+private final class TerminationBoardFlusher: ExcalidrawBoardSceneFlushing {
+    private let flush: (@escaping @MainActor (Bool) -> Void) -> Void
+
+    init(flush: @escaping (@escaping @MainActor (Bool) -> Void) -> Void) {
+        self.flush = flush
+    }
+
+    func flushPendingScene(
+        completion: @escaping @MainActor (Bool) -> Void
+    ) {
+        flush(completion)
     }
 }

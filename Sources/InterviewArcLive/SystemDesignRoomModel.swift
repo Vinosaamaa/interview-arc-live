@@ -68,6 +68,8 @@ enum BoardRevisionStatusPresentation: Equatable, Sendable {
 
 @MainActor
 final class SystemDesignRoomModel: ObservableObject {
+    let enhancedBoardBridgeController = ExcalidrawBoardBridgeController()
+
     @Published private(set) var snapshot: InterviewRoomSnapshot?
     @Published private(set) var segments: [CandidateSegmentPresentation] = []
     @Published private(set) var isWorking = false
@@ -508,6 +510,20 @@ final class SystemDesignRoomModel: ObservableObject {
 
     func waitForBoardPersistence() async {
         await boardPersistenceTail?.value
+    }
+
+    func prepareBoardForTermination() async -> Bool {
+        guard await enhancedBoardBridgeController.flushPendingScene() else {
+            boardErrorMessage = "The latest canvas edit could not be confirmed. Quit was cancelled so you can retry."
+            return false
+        }
+        await waitForBoardPersistence()
+        guard let coordinator else { return true }
+        guard coordinator.snapshot.board.draft == boardEditor.document else {
+            boardErrorMessage = "The latest Board edit is not durable yet. Quit was cancelled so you can retry."
+            return false
+        }
+        return true
     }
 
     func saveBoardRevision() async {
