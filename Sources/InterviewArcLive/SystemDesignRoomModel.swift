@@ -1,8 +1,10 @@
 import AVFoundation
+import Combine
 import CryptoKit
 import Foundation
 import InterviewArcLiveCore
 import InterviewArcLiveCodexAdapter
+import InterviewArcLiveHostedClient
 import InterviewArcLiveQwenAdapter
 import InterviewArcLiveSpeechOutputAdapter
 import InterviewArcLiveVoiceAdapter
@@ -88,6 +90,10 @@ final class SystemDesignRoomModel: ObservableObject {
     @Published private(set) var boardErrorMessage: String?
     @Published private(set) var boardExportMessage: String?
     @Published private(set) var inspectedBoardRevisionID: BoardRevisionID?
+    @Published private(set) var hostedSnapshot = HostedPracticeSnapshot(
+        connection: .signedOut
+    )
+    @Published var isLiveIntegrationSetupPresented = false
 
     @Published var isCredentialSetupPresented = false
     @Published private(set) var isSavingCredential = false
@@ -120,14 +126,16 @@ final class SystemDesignRoomModel: ObservableObject {
 
     // The first prompt-bound manifest uses a new identity. Existing tracer
     // manifests remain untouched because they predate durable ActivityPrompt.
-    private let sessionID = SessionID("local-system-design-tracer-v2")
+    private static let fallbackSessionID = SessionID("local-system-design-tracer-v2")
     private let activityPrompt: ActivityPrompt
     private let credentialStore: LiveGroqCredentialStore
     private let codexRuntime: any LiveCodexInterviewerRuntime
     private let speechDependencies: LiveInterviewerSpeechDependencies?
     private let preferences: UserDefaults
-    private let boardArtifactStore: PrivateBoardArtifactStore?
+    private var boardArtifactStore: PrivateBoardArtifactStore?
     private let boardRenderer: DeterministicBoardRenderer
+    private let hostedController: HostedPracticeController?
+    private var hostedSnapshotObservation: AnyCancellable?
     private var credentialState: CredentialState = .checking
     private var errorWasCodexFailure = false
     private var coordinator: SegmentSpeechCoordinator?
@@ -149,7 +157,8 @@ final class SystemDesignRoomModel: ObservableObject {
         preferences: UserDefaults = .standard,
         initialCoordinator: SegmentSpeechCoordinator? = nil,
         boardArtifactStore: PrivateBoardArtifactStore? = nil,
-        boardRenderer: DeterministicBoardRenderer = DeterministicBoardRenderer()
+        boardRenderer: DeterministicBoardRenderer = DeterministicBoardRenderer(),
+        hostedController: HostedPracticeController? = nil
     ) {
         self.credentialStore = credentialStore
         self.codexRuntime = codexRuntime ?? Self.makeDefaultCodexRuntime()
@@ -157,10 +166,8 @@ final class SystemDesignRoomModel: ObservableObject {
         self.speechDependencies = speechDependencies
         self.preferences = preferences
         self.boardArtifactStore = boardArtifactStore
-            ?? Self.makeDefaultBoardArtifactStore(
-                sessionIdentity: "local-system-design-tracer-v2"
-            )
         self.boardRenderer = boardRenderer
+        self.hostedController = hostedController
         coordinator = initialCoordinator
         isSpeechMuted = preferences.bool(
             forKey: Self.speechMutedPreferenceKey
@@ -168,10 +175,76 @@ final class SystemDesignRoomModel: ObservableObject {
         if let initialCoordinator {
             publish(initialCoordinator.snapshot)
         }
+        if let hostedController {
+            hostedSnapshot = hostedController.snapshot
+            hostedSnapshotObservation = hostedController.$snapshot.sink {
+                [weak self] snapshot in
+                self?.hostedSnapshot = snapshot
+            }
+        }
     }
 
     var question: String {
-        snapshot?.activityPrompt.question ?? activityPrompt.question
+        hostedSnapshot.question
+            ?? snapshot?.activityPrompt.question
+            ?? activityPrompt.question
+    }
+
+    var hostedConnectionTitle: String {
+        switch hostedSnapshot.connection {
+        case .signedOut: "Connect Interview Arc"
+        case .loading: "Syncing Interview Arc"
+        case .noOpenSystemDesignActivity: "No System Design activity"
+        case .readOnly: "Hosted read-only"
+        case .writable: "Hosted and writable"
+        case .offline: "Hosted offline"
+        case .recoveryRequired: "Hosted recovery required"
+        }
+    }
+
+    var isHostedWritable: Bool {
+        hostedController == nil || hostedSnapshot.connection == .writable
+    }
+
+    var usesHostedAuthority: Bool { hostedController != nil }
+
+    var hostedTimerIsRunning: Bool {
+        hostedSnapshot.activity?.activity.timer?.runningSince != nil
+            && hostedSnapshot.activity?.activity.timer?.completed == false
+    }
+
+    var hostedElapsedText: String? {
+        guard let seconds = hostedSnapshot.elapsedSeconds(
+            localNow: LiveEpochMilliseconds(
+                (Date().timeIntervalSince1970 * 1_000).rounded()
+            )
+        ) else { return nil }
+        let total = max(0, Int(seconds.rounded(.down)))
+        return String(format: "%02d:%02d", total / 60, total % 60)
+    }
+
+    var hostedResult: LiveResult? {
+        hostedSnapshot.activity?.activity.result.value
+    }
+
+    var hostedPairs: [LivePair] { hostedSnapshot.activity?.pairs ?? [] }
+
+    var hostedNextSystemDesignActivityID: String? {
+        guard let today = hostedSnapshot.today,
+              let current = hostedSnapshot.activity?.activity,
+              let sessionID = current.sessionId,
+              let session = today.sessions.first(where: { $0.id == sessionID }),
+              let currentIndex = session.activityIds.firstIndex(of: current.id) else {
+            return nil
+        }
+        let remainingIDs = session.activityIds.dropFirst(currentIndex + 1)
+        return remainingIDs.first { activityID in
+            today.activities.contains {
+                $0.id == activityID
+                    && $0.type == .systemDesign
+                    && $0.lifecycle != .completed
+            }
+        }
     }
 
     var isCodexReady: Bool {
@@ -769,6 +842,7 @@ final class SystemDesignRoomModel: ObservableObject {
     var canRecordSegment: Bool {
         guard !isWorking,
               hasUsableGroqCredential,
+              isHostedWritable,
               snapshot?.phase == .candidateFloor else {
             return false
         }
@@ -785,7 +859,10 @@ final class SystemDesignRoomModel: ObservableObject {
     }
 
     var canAct: Bool {
-        guard !isWorking, !isBoardSaving, let snapshot else { return false }
+        guard !isWorking,
+              !isBoardSaving,
+              isHostedWritable,
+              let snapshot else { return false }
         switch snapshot.phase {
         case .candidateFloor:
             guard boardAttachmentForHandOff != nil else { return false }
@@ -831,13 +908,73 @@ final class SystemDesignRoomModel: ObservableObject {
         defer { isWorking = false }
 
         async let codexCheck = codexRuntime.preflight()
+
+        var launchPrompt = activityPrompt
+        var launchSessionID = Self.fallbackSessionID
+        var launchActivityID = "local-system-design-tracer"
+        if let hostedController {
+            hostedSnapshot = await hostedController.open()
+            switch hostedSnapshot.connection {
+            case .signedOut:
+                isLiveIntegrationSetupPresented = true
+                statusMessage = "Connect Interview Arc to open Today’s System Design activity"
+                isCheckingCodex = false
+                _ = await codexCheck
+                return
+            case .noOpenSystemDesignActivity:
+                statusMessage = "No System Design activity is open in Interview Arc Today"
+                errorMessage = "Add a System Design activity to Today, then reopen this room."
+                isCheckingCodex = false
+                _ = await codexCheck
+                return
+            case .offline, .recoveryRequired:
+                statusMessage = hostedController.errorMessage
+                    ?? "Hosted recovery needs attention"
+                errorMessage = hostedController.errorMessage
+                isCheckingCodex = false
+                _ = await codexCheck
+                return
+            case .loading:
+                statusMessage = "Reading Interview Arc Today…"
+            case .readOnly, .writable:
+                break
+            }
+
+            if let hostedActivity = hostedSnapshot.activity?.activity {
+                do {
+                    launchPrompt = try ActivityPrompt(
+                        specialty: .systemDesign,
+                        stage: hostedActivity.source ?? "Interview Arc Today",
+                        question: hostedActivity.prompt ?? hostedActivity.title,
+                        requestedParts: []
+                    )
+                    launchActivityID = hostedActivity.id
+                    launchSessionID = SessionID(
+                        "hosted-system-design-\(hostedActivity.id)"
+                    )
+                } catch {
+                    statusMessage = "Hosted activity is incompatible"
+                    errorMessage = "The selected System Design activity has an invalid prompt. Fix it in Interview Arc."
+                    isCheckingCodex = false
+                    _ = await codexCheck
+                    return
+                }
+            }
+        }
+
         await refreshCredentialReadiness(presentWhenMissing: true)
+
+        if boardArtifactStore == nil {
+            boardArtifactStore = Self.makeDefaultBoardArtifactStore(
+                sessionIdentity: launchSessionID.rawValue
+            )
+        }
 
         do {
             let opened = try await SegmentSpeechCoordinator.openLocal(
-                sessionID: sessionID,
-                activityID: "local-system-design-tracer",
-                activityPrompt: activityPrompt,
+                sessionID: launchSessionID,
+                activityID: launchActivityID,
+                activityPrompt: launchPrompt,
                 turnMode: .manual,
                 interviewerRuntime: codexRuntime,
                 recording: VoiceCoreSegmentRecorder(),
@@ -943,6 +1080,74 @@ final class SystemDesignRoomModel: ObservableObject {
         applyCodexReadiness(await codexRuntime.preflight())
     }
 
+    func saveLiveIntegrationToken(_ value: String, untilQuit: Bool) async {
+        guard let hostedController else { return }
+        await hostedController.saveToken(value, untilQuit: untilQuit)
+        hostedSnapshot = hostedController.snapshot
+        isLiveIntegrationSetupPresented = hostedController.isConnectionSetupPresented
+        if hostedSnapshot.activity != nil, coordinator == nil {
+            await open()
+        }
+    }
+
+    func disconnectLiveIntegration() async {
+        guard let hostedController else { return }
+        await hostedController.disconnect()
+        hostedSnapshot = hostedController.snapshot
+        isLiveIntegrationSetupPresented = true
+    }
+
+    func refreshHostedAuthority() async {
+        guard let hostedController,
+              hostedSnapshot.connection != .signedOut else { return }
+        await hostedController.refresh()
+        hostedSnapshot = hostedController.snapshot
+        errorMessage = hostedController.errorMessage
+    }
+
+    func prepareHostedForTermination() async -> Bool {
+        guard let hostedController else { return true }
+        let prepared = await hostedController.prepareForTermination()
+        hostedSnapshot = hostedController.snapshot
+        if !prepared {
+            errorMessage = hostedController.errorMessage
+                ?? "Hosted writes are still pending. Retry Quit after recovery."
+        }
+        return prepared
+    }
+
+    func toggleHostedTimer() async {
+        guard let hostedController, hostedSnapshot.connection == .writable else {
+            errorMessage = "Reconnect the hosted writer before changing the timer."
+            return
+        }
+        do {
+            if hostedTimerIsRunning { try await hostedController.pauseTimer() }
+            else { try await hostedController.startTimer() }
+            hostedSnapshot = hostedController.snapshot
+            errorMessage = nil
+        } catch {
+            hostedSnapshot = hostedController.snapshot
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    func setHostedResult(_ result: LiveResult?) async {
+        guard let hostedController, hostedSnapshot.connection == .writable else {
+            errorMessage = "Reconnect the hosted writer before changing the result."
+            return
+        }
+        do {
+            if let result { try await hostedController.setResult(result) }
+            else { try await hostedController.clearResult() }
+            hostedSnapshot = hostedController.snapshot
+            errorMessage = nil
+        } catch {
+            hostedSnapshot = hostedController.snapshot
+            errorMessage = error.localizedDescription
+        }
+    }
+
     func selectTurnMode(_ mode: TurnMode) async {
         guard mode == .manual || mode == .patientAuto,
               mode != turnMode,
@@ -986,6 +1191,22 @@ final class SystemDesignRoomModel: ObservableObject {
                 commandID: commandID("begin-segment")
             )
             publish(updated)
+            if let hostedController, !hostedTimerIsRunning {
+                do {
+                    try await hostedController.startTimer()
+                    hostedSnapshot = hostedController.snapshot
+                } catch {
+                    // Capture already started and is locally durable. Stop and
+                    // preserve its source bytes rather than leaving a hidden
+                    // microphone or a false hosted timer.
+                    let preserved = try await coordinator.finalizeSegment(
+                        commandID: commandID("hosted-timer-start-failed")
+                    )
+                    publish(preserved)
+                    hostedSnapshot = hostedController.snapshot
+                    errorMessage = "Recording was preserved, but the hosted timer could not start. Refresh Interview Arc before recording again."
+                }
+            }
         } catch {
             publish(coordinator.snapshot)
             errorMessage = safeMessage(for: error)
@@ -1157,6 +1378,7 @@ final class SystemDesignRoomModel: ObservableObject {
                     commandID: commandID("retry-interviewer")
                 )
             case .interviewerTurn:
+                try await syncHostedPairs(from: snapshot)
                 updated = try await coordinator.giveCandidateFloor(
                     commandID: commandID("give-floor")
                 )
@@ -1164,6 +1386,7 @@ final class SystemDesignRoomModel: ObservableObject {
                 return
             }
             publish(updated)
+            try await syncHostedPairs(from: updated)
             await interviewerSpeechCoordinator?
                 .observeNewlyPersistedSnapshot(updated)
         } catch {
@@ -1179,9 +1402,32 @@ final class SystemDesignRoomModel: ObservableObject {
     /// keeps sole ownership of the model's visible and durable state.
     @discardableResult
     func finishInterview() async -> Bool {
+        await finishInterview(hostedNextActivityID: nil)
+    }
+
+    @discardableResult
+    func finishAndOpenNextInterview() async -> Bool {
+        guard let nextActivityID = hostedNextSystemDesignActivityID else {
+            errorMessage = "There is no later System Design activity in this hosted session."
+            return false
+        }
+        guard await finishInterview(hostedNextActivityID: nextActivityID) else {
+            return false
+        }
+
+        resetForNextHostedActivity()
+        await open()
+        return hostedSnapshot.activityID == nextActivityID && coordinator != nil
+    }
+
+    private func finishInterview(hostedNextActivityID: String?) async -> Bool {
         guard !isWorking else { return false }
         guard let coordinator, let snapshot else { return false }
-        if snapshot.phase == .completed {
+        if snapshot.phase == .completed,
+           (
+               hostedController == nil
+                   || hostedSnapshot.activity?.activity.lifecycle == .completed
+           ) {
             return true
         }
 
@@ -1194,16 +1440,123 @@ final class SystemDesignRoomModel: ObservableObject {
         }
 
         do {
-            let updated = try await coordinator.finishSession(
-                commandID: commandID("finish-interview")
-            )
-            publish(updated)
+            await waitForBoardPersistence()
+            if snapshot.phase != .completed {
+                try await syncHostedPairs(from: snapshot)
+                let updated = try await coordinator.finishSession(
+                    commandID: commandID("finish-interview")
+                )
+                publish(updated)
+            }
+            if let hostedController {
+                if let hostedNextActivityID {
+                    try await hostedController.finishNext(
+                        nextActivityID: hostedNextActivityID
+                    )
+                } else {
+                    try await hostedController.finish()
+                }
+                hostedSnapshot = hostedController.snapshot
+            }
             return true
         } catch {
             publish(coordinator.snapshot)
             errorMessage = safeMessage(for: error)
             return false
         }
+    }
+
+    private func resetForNextHostedActivity() {
+        audioPlayer?.stop()
+        audioPlayer = nil
+        speechPreparationTask?.cancel()
+        speechPreparationTask = nil
+        interviewerSpeechCoordinator = nil
+        coordinator = nil
+        snapshot = nil
+        segments = []
+        boardPersistenceTail = nil
+        pendingBoardWriteCount = 0
+        boardArtifactStore = nil
+        boardEditor = BoardEditorState(document: .empty)
+        inspectedBoardRevisionID = nil
+        didLoadInitialBoard = false
+        boardErrorMessage = nil
+        boardExportMessage = nil
+        errorMessage = nil
+        statusMessage = "Opening the next hosted System Design activity…"
+    }
+
+    func confirmHostedCandidateEvidence(pairID: String) async {
+        guard let hostedController else { return }
+        do {
+            try await hostedController.confirmCandidateEvidence(pairID: pairID)
+            hostedSnapshot = hostedController.snapshot
+            errorMessage = nil
+        } catch {
+            hostedSnapshot = hostedController.snapshot
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    private func syncHostedPairs(from snapshot: InterviewRoomSnapshot) async throws {
+        guard let hostedController else { return }
+        guard hostedSnapshot.connection == .writable else {
+            throw HostedPracticeSessionError.leaseUnavailable
+        }
+        let hostedCandidateIDs = Set(
+            hostedSnapshot.activity?.pairs.map(\.candidate.turnId) ?? []
+        )
+        var index = 0
+        while index + 1 < snapshot.turns.count {
+            guard case .candidate(let candidate) = snapshot.turns[index],
+                  case .interviewer(let interviewer) = snapshot.turns[index + 1],
+                  interviewer.replyToTurnID == candidate.id else {
+                index += 1
+                continue
+            }
+            defer { index += 2 }
+            guard !hostedCandidateIDs.contains(candidate.id.rawValue) else {
+                continue
+            }
+            let candidateOccurredAt = snapshot.segments
+                .filter { $0.committedTurnID == candidate.id }
+                .compactMap(\.capturedAudio?.endedAtMilliseconds)
+                .max()
+                ?? hostedSnapshot.activity?.serverTime
+                ?? LiveEpochMilliseconds(
+                    (Date().timeIntervalSince1970 * 1_000).rounded()
+                )
+            let evidence: LiveCandidateEvidenceStatus = switch candidate.transcript.quality {
+            case .verified: .verified
+            case .bestAvailable: .bestAvailable
+            case .possibleContamination: .possibleContamination
+            }
+            try await hostedController.commitPair(
+                pairID: Self.hostedPairID(candidateTurnID: candidate.id.rawValue),
+                candidate: LiveCandidatePairInput(
+                    turnId: candidate.id.rawValue,
+                    text: candidate.transcript.body,
+                    evidenceStatus: evidence,
+                    occurredAt: candidateOccurredAt
+                ),
+                interviewer: LiveInterviewerPairInput(
+                    turnId: interviewer.id.rawValue,
+                    displayMarkdown: interviewer.displayMarkdown,
+                    spokenText: interviewer.spokenText,
+                    occurredAt: candidateOccurredAt + 1
+                )
+            )
+            hostedSnapshot = hostedController.snapshot
+        }
+    }
+
+    private static func hostedPairID(candidateTurnID: String) -> String {
+        let digest = SHA256.hash(data: Data(candidateTurnID.utf8))
+            .prefix(16)
+            .map { String(format: "%02x", $0) }
+            .joined()
+        return "pair-\(digest)"
     }
 
     func startSpeechModelDownload() {

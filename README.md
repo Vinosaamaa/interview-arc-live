@@ -1,7 +1,14 @@
 # interview-arc-live
-Experimental native macOS technical mock-interview client for Interview Arc
+Experimental native macOS technical mock-interview client for Interview Arc.
 
 Current product design: [specialty room concepts](docs/design/specialty-rooms.md).
+
+The System Design room can connect to Interview Arc's authoritative `/live/v1`
+practice state using a separate personal integration token. Today, question,
+timer, result, canonical turn pairs, writer leases, finish, and finish-next are
+hosted projections; recordings, provider credentials, local speech, and Board
+artifacts remain private to this Mac. See
+[ADR 0009](docs/adr/0009-authoritative-hosted-practice-session.md).
 
 ## Current implementation
 
@@ -58,8 +65,8 @@ save/attach/export/relaunch recovery smoke from issue #17.
 The preview keeps its Session Manifest and source recordings under Live's local
 Application Support root. Manual Hand off joins selected Groq transcripts and
 uses the exactly preflighted, locally authenticated Codex App Server for one
-canonical interviewer response. Automatic endpoint handoff and hosted
-Interview Arc state remain later slices.
+canonical interviewer response. Automatic endpoint handoff remains a later
+slice.
 
 Interviewer speech is optional and never runs for historical turns
 automatically. The app discloses and downloads only the pinned

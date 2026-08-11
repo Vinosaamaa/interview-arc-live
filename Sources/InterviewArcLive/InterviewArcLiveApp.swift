@@ -5,8 +5,12 @@ import AppKit
 final class InterviewArcLiveApp: NSObject, NSApplicationDelegate {
     private static var retainedDelegate: InterviewArcLiveApp?
 
-    private let model = SystemDesignRoomModel()
+    private let model = SystemDesignRoomModel(
+        hostedController: try? HostedPracticeController.makeDefault()
+    )
     private var presentationCoordinator: InterviewRoomPresentationCoordinator?
+    private var terminationTask: Task<Void, Never>?
+    private var activationRefreshTask: Task<Void, Never>?
 
     static func main() {
         let application = NSApplication.shared
@@ -39,7 +43,30 @@ final class InterviewArcLiveApp: NSObject, NSApplicationDelegate {
         false
     }
 
+    func applicationDidBecomeActive(_ notification: Notification) {
+        guard activationRefreshTask == nil else { return }
+        activationRefreshTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer { activationRefreshTask = nil }
+            await model.refreshHostedAuthority()
+        }
+    }
+
+    func applicationShouldTerminate(
+        _ sender: NSApplication
+    ) -> NSApplication.TerminateReply {
+        guard terminationTask == nil else { return .terminateLater }
+        terminationTask = Task { @MainActor [weak self, weak sender] in
+            guard let self, let sender else { return }
+            let prepared = await model.prepareHostedForTermination()
+            terminationTask = nil
+            sender.reply(toApplicationShouldTerminate: prepared)
+        }
+        return .terminateLater
+    }
+
     func applicationWillTerminate(_ notification: Notification) {
+        activationRefreshTask?.cancel()
         presentationCoordinator?.prepareForTermination()
     }
 
