@@ -1023,6 +1023,57 @@ final class SegmentLifecycleTests: XCTestCase {
         XCTAssertEqual(completed.phase, .interviewerTurn)
     }
 
+    func testCueOnlyReturnsDurableRetryStateWhenInterviewerFailsAfterHandOff() async throws {
+        let store = InMemorySessionManifestStore()
+        let runtime = FailingCueOnlyInterviewerRuntime()
+        let coordinator = try await SegmentSpeechCoordinator.open(
+            sessionID: SessionID("cue-only-interviewer-retry"),
+            activityID: "cue-only-interviewer-retry-activity",
+            activityPrompt: try fixtureActivityPrompt(),
+            turnMode: .cueOnly,
+            manifestStore: store,
+            interviewerRuntime: runtime,
+            recording: StubSegmentRecorder(
+                capture: try capturedAudio(fileName: "cue-only-interviewer-retry.m4a")
+            ),
+            transcriber: SequencedSegmentTranscriber(
+                results: [
+                    .success(
+                        SegmentTranscriptionResult(
+                            body: "That is my answer.",
+                            quality: .verified
+                        )
+                    )
+                ]
+            ),
+            credentialReader: FixedCredentialReader(value: "credential")
+        )
+        _ = try await coordinator.giveCandidateFloor(
+            commandID: CommandID("cue-only-interviewer-retry-floor")
+        )
+        _ = try await coordinator.beginSegment(
+            commandID: CommandID("cue-only-interviewer-retry-begin")
+        )
+
+        let retryable = try await coordinator.finishSegment(
+            commandID: CommandID("cue-only-interviewer-retry-finish"),
+            transcriptionCommandID: CommandID("cue-only-interviewer-retry-transcribe")
+        )
+
+        XCTAssertEqual(retryable.phase, .interviewerProcessing)
+        XCTAssertEqual(retryable.turns.count, 1)
+        guard case .candidate(let candidate) = retryable.turns.first else {
+            return XCTFail("Expected the durable Candidate Turn")
+        }
+        XCTAssertEqual(candidate.transcript.body, "That is my answer.")
+        XCTAssertEqual(candidate.boardAttachment, .noBoard)
+        let runtimeCalls = await runtime.invocationCount()
+        XCTAssertEqual(runtimeCalls, 1)
+        let durable = await store.load(sessionID: retryable.sessionID)
+        XCTAssertEqual(durable?.phase, .interviewerProcessing)
+        XCTAssertEqual(durable?.turns, retryable.turns)
+    }
+
     func testPatientAutoPersistsAuthorizationBeforeExactShadowContextAndProposal() async throws {
         let store = InMemorySessionManifestStore()
         let session = try await makeCandidateFloorSession(
@@ -2241,6 +2292,23 @@ private actor CountingInterviewerRuntime: InterviewerRuntime {
             displayMarkdown: "What trade-off comes next?",
             spokenText: "What trade-off comes next?"
         )
+    }
+
+    func invocationCount() -> Int { calls }
+}
+
+private enum CueOnlyInterviewerRuntimeError: Error {
+    case unavailable
+}
+
+private actor FailingCueOnlyInterviewerRuntime: InterviewerRuntime {
+    private var calls = 0
+
+    func respond(
+        to request: InterviewerRequest
+    ) throws -> CanonicalInterviewerResponse {
+        calls += 1
+        throw CueOnlyInterviewerRuntimeError.unavailable
     }
 
     func invocationCount() -> Int { calls }

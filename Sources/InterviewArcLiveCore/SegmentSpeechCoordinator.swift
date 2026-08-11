@@ -720,28 +720,31 @@ public final class SegmentSpeechCoordinator {
             return snapshot
         }
 
-        return try await applyAndPublish(
-            .handOffSegmentsWithBoard(
-                commandID: InterviewRoomSession.derivedCommandID(
-                    source: sourceCommandID,
-                    operation: "cue-only-hand-off"
-                ),
-                boardAttachment: boardAttachment
-            )
-        ).snapshot
+        do {
+            return try await applyAndPublish(
+                .handOffSegmentsWithBoard(
+                    commandID: InterviewRoomSession.derivedCommandID(
+                        source: sourceCommandID,
+                        operation: "cue-only-hand-off"
+                    ),
+                    boardAttachment: boardAttachment
+                )
+            ).snapshot
+        } catch {
+            // Hand off persists the Candidate Turn before invoking Codex. If
+            // that provider work fails, the transcript succeeded and the
+            // durable room is now explicitly recoverable through Retry.
+            guard snapshot.phase == .interviewerProcessing else {
+                throw error
+            }
+            return snapshot
+        }
     }
 
     private static func cueOnlyBoardAttachment(
         in workspace: BoardWorkspace
     ) -> CandidateTurnBoardAttachment? {
-        if workspace.draft.elements.isEmpty {
-            return .noBoard
-        }
-        guard let latest = workspace.revisions.last,
-              latest.document == workspace.draft else {
-            return nil
-        }
-        return .revision(latest.id)
+        BoardHandoffAttachmentPolicy.currentDraftAttachment(in: workspace)
     }
 
     /// Patient Auto is intentionally a Shadow policy in this slice. It stores

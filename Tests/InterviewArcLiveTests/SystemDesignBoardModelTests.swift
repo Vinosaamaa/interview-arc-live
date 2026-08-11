@@ -113,6 +113,10 @@ final class SystemDesignBoardModelTests: XCTestCase {
         XCTAssertEqual(model.boardRevisionStatus, "Viewing revision 1 · read-only")
         XCTAssertNil(model.boardSelectedElementIDForPresentation)
         XCTAssertEqual(model.boardAttachmentForHandOff, .revision(revision.id))
+        XCTAssertEqual(
+            model.currentBoardDraftAttachmentForHandOff,
+            .revision(latest.id)
+        )
 
         await model.returnToBoardDraft()
         XCTAssertFalse(model.isInspectingBoardRevision)
@@ -123,6 +127,10 @@ final class SystemDesignBoardModelTests: XCTestCase {
         model.applyBoardAction(.updateLabel(id: boxID, text: "Dirty gateway"))
         await model.waitForBoardPersistence()
         XCTAssertNil(model.boardAttachmentForHandOff)
+
+        await model.inspectBoardRevision(revision.id)
+        XCTAssertEqual(model.boardAttachmentForHandOff, .revision(revision.id))
+        XCTAssertNil(model.currentBoardDraftAttachmentForHandOff)
     }
 
     func testExplicitExportRecordsOnlyACompletePrivateBundle() async throws {

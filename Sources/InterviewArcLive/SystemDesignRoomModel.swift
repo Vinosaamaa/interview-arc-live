@@ -414,22 +414,22 @@ final class SystemDesignRoomModel: ObservableObject {
     }
 
     var boardAttachmentForHandOff: CandidateTurnBoardAttachment? {
+        guard let board = snapshot?.board else { return nil }
         if let inspectedBoardRevisionID {
-            guard snapshot?.board.revisions.contains(where: {
-                $0.id == inspectedBoardRevisionID
-            }) == true else {
-                return nil
-            }
-            return .revision(inspectedBoardRevisionID)
+            return BoardHandoffAttachmentPolicy.explicitAttachment(
+                in: board,
+                inspectedRevisionID: inspectedBoardRevisionID
+            )
         }
-        if boardEditor.document.elements.isEmpty {
-            return .noBoard
-        }
-        guard let latestBoardRevision,
-              latestBoardRevision.document == boardEditor.document else {
-            return nil
-        }
-        return .revision(latestBoardRevision.id)
+        return currentBoardDraftAttachmentForHandOff
+    }
+
+    var currentBoardDraftAttachmentForHandOff: CandidateTurnBoardAttachment? {
+        guard let board = snapshot?.board else { return nil }
+        return BoardHandoffAttachmentPolicy.currentDraftAttachment(
+            draft: boardEditor.document,
+            revisions: board.revisions
+        )
     }
 
     var canSaveBoardRevision: Bool {
@@ -1093,7 +1093,7 @@ final class SystemDesignRoomModel: ObservableObject {
               CueOnlyHandoffPolicy.reason(in: body) != nil else {
             return
         }
-        if boardAttachmentForHandOff == nil {
+        if currentBoardDraftAttachmentForHandOff == nil {
             boardErrorMessage = "Cue detected. Save the displayed Board as a revision, then choose Hand off."
         } else {
             statusMessage = "Cue detected · resolve the remaining segment before Hand off"
