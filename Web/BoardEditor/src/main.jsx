@@ -101,15 +101,15 @@ const SemanticNodeOverlay = ({ elements, appState }) => {
   const offsetLeft = Number(appState?.offsetLeft ?? 0);
   const offsetTop = Number(appState?.offsetTop ?? 0);
   const live = getNonDeletedElements(elements);
-  const boxes = live.filter(
-    (element) => element.customData?.iaElementType === "box",
-  );
-  const connectors = live.filter(
-    (element) => element.type === "arrow" && element.customData?.iaLabel,
-  );
-  const labels = live.filter(
-    (element) => element.customData?.iaElementType === "label",
-  );
+  const boxes = [];
+  const connectors = [];
+  for (const element of live) {
+    if (element.customData?.iaElementType === "box") {
+      boxes.push(element);
+    } else if (element.type === "arrow" && element.customData?.iaLabel) {
+      connectors.push(element);
+    }
+  }
   const screenPoint = (x, y) => ({
     left: (Number(x ?? 0) + scrollX) * zoom + offsetLeft,
     top: (Number(y ?? 0) + scrollY) * zoom + offsetTop,
@@ -175,37 +175,19 @@ const SemanticNodeOverlay = ({ elements, appState }) => {
           </div>
         );
       })}
-      {labels.map((element) => {
-        const origin = screenPoint(element.x, element.y);
-        return (
-          <div
-            className="semantic-free-label"
-            key={`${element.id}--text`}
-            style={{
-              color: normalizedHex(element.customData?.iaColor, "#1f2937"),
-              fontSize: Math.max(11, Math.min(16, 15 * zoom)),
-              height: Math.max(20, Number(element.height ?? 32) * zoom),
-              left: origin.left,
-              top: origin.top,
-              width: Math.max(40, Number(element.width ?? 240) * zoom),
-            }}
-          >
-            {String(element.customData?.iaText ?? "")}
-          </div>
-        );
-      })}
     </div>
   );
 };
 
 const normalizeScene = (elements, appState, files, currentBoxKind) => {
   const live = getNonDeletedElements(elements);
-  const textByContainer = new Map(live.flatMap((element) => {
-    if (element.type !== "text") return [];
+  const textByContainer = new Map();
+  for (const element of live) {
+    if (element.type !== "text") continue;
     const containerID = element.containerId
       ?? element.customData?.iaContainerID;
-    return containerID ? [[containerID, element]] : [];
-  }));
+    if (containerID) textByContainer.set(containerID, element);
+  }
   const supported = [];
   let unsupportedElementCount = Object.keys(files ?? {}).length;
 
@@ -223,7 +205,7 @@ const normalizeScene = (elements, appState, files, currentBoxKind) => {
         boardID,
         x: Number(element.x),
         y: Number(element.y),
-        text: String(customData.iaText ?? ""),
+        text: String(element.text ?? customData.iaText ?? ""),
         color: normalizedHex(customData.iaColor, "#1f2937"),
       });
       continue;
@@ -428,18 +410,26 @@ const excalidrawSkeleton = (element) => {
 
     if (element.type === "label") {
       return {
-        type: "rectangle",
+        type: "text",
         id: element.boardID,
         x: element.x,
         y: element.y,
         width: 240,
         height: 32,
+        text: element.text,
+        originalText: element.text,
+        fontSize: 15,
+        fontFamily: 2,
+        textAlign: "left",
+        verticalAlign: "top",
+        lineHeight: 1.25,
+        containerId: null,
         strokeColor: element.color,
         backgroundColor: "transparent",
         fillStyle: "solid",
         strokeWidth: 1,
         roughness: 0,
-        opacity: 0,
+        opacity: 100,
         customData: {
           iaElementID: element.boardID,
           iaElementType: "label",
@@ -503,14 +493,7 @@ function BoardEditor() {
           ...itemStyleForTool(scene.tool),
         },
       });
-      window.setTimeout(() => {
-        setOverlayScene({
-          elements,
-          appState: {
-            ...api.getAppState(),
-            zoom: { value: Number(scene.zoom ?? 1) },
-          },
-        });
+      window.requestAnimationFrame(() => {
         if (!scene.readOnly) {
           api.setActiveTool({ type: toolType(scene.tool) });
         }
@@ -520,8 +503,14 @@ function BoardEditor() {
             animate: false,
           });
         }
-        loadingRef.current = false;
-      }, 50);
+        window.requestAnimationFrame(() => {
+          setOverlayScene({
+            elements: api.getSceneElements(),
+            appState: api.getAppState(),
+          });
+          loadingRef.current = false;
+        });
+      });
       return elements.length;
     };
 

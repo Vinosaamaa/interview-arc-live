@@ -203,6 +203,7 @@ struct ExcalidrawBoardEditorView: NSViewRepresentable {
         private var isReady = false
         private var didStartLoading = false
         private var readyDeadlineTask: Task<Void, Never>?
+        private var pendingReloadTask: Task<Void, Never>?
         private weak var bridgeController: ExcalidrawBoardBridgeController?
         private var onSceneChange: @MainActor (ExcalidrawBoardDecodeResult) -> Bool
         private var onCommand: @MainActor (ExcalidrawBoardCommand) -> Void
@@ -253,6 +254,8 @@ struct ExcalidrawBoardEditorView: NSViewRepresentable {
         func detach() {
             readyDeadlineTask?.cancel()
             readyDeadlineTask = nil
+            pendingReloadTask?.cancel()
+            pendingReloadTask = nil
             bridgeController?.detach(self)
             webView = nil
             assetHandler = nil
@@ -280,9 +283,13 @@ struct ExcalidrawBoardEditorView: NSViewRepresentable {
             snapshot = next
             guard isReady else { return }
             if lastLoadedDocument != document {
-                load(next)
+                scheduleLoad(next)
             } else if previous != next {
-                sendState(next)
+                if pendingReloadTask != nil {
+                    scheduleLoad(next)
+                } else {
+                    sendState(next)
+                }
             }
         }
 
@@ -473,12 +480,16 @@ struct ExcalidrawBoardEditorView: NSViewRepresentable {
         }
 
         private func scheduleLoad(_ snapshot: Snapshot) {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
+            pendingReloadTask?.cancel()
+            pendingReloadTask = Task { @MainActor [weak self] in
                 // WKScriptMessageHandler and evaluateJavaScript callbacks must
                 // return before native code calls back into the same WKWebView.
-                // Deferring past the message callback prevents a re-entrant
-                // deadlock that otherwise leaves the canvas stuck on startup.
-                self?.load(snapshot)
+                // One executor yield provides that boundary without a timing
+                // guess, while cancellation makes the latest snapshot win.
+                await Task.yield()
+                guard !Task.isCancelled, let self else { return }
+                self.pendingReloadTask = nil
+                self.load(snapshot)
             }
         }
 

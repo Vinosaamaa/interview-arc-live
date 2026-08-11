@@ -54,11 +54,17 @@ grep -Fq 'SemanticNodeOverlay' "$editor_root/src/main.jsx" \
   || fail "Board editor does not render the canonical semantic pictograms"
 grep -Fq 'iaElementType: "label"' \
   "$editor_root/src/main.jsx" \
-  || fail "Board editor labels do not retain stable canonical proxy elements"
-grep -Fq 'semantic-node-label' "$editor_root/src/main.jsx" \
-  || fail "Board editor does not render stable labels outside the WebKit text path"
+  || fail "Board editor labels do not retain stable canonical identity"
+grep -Fq 'text: element.text' "$editor_root/src/main.jsx" \
+  || fail "Board editor labels are not loaded as editable Excalidraw text"
+grep -Fq 'text: String(element.text ?? customData.iaText ?? "")' \
+  "$editor_root/src/main.jsx" \
+  || fail "Board editor label edits are not normalized into canonical text"
 if grep -Fq 'detachedContainerLabel' "$editor_root/src/main.jsx"; then
   fail "Board editor still loads the multi-label WebKit text path that freezes the canvas"
+fi
+if grep -Fq 'setTimeout(() =>' "$editor_root/src/main.jsx"; then
+  fail "Board editor load sequencing still depends on an arbitrary timer"
 fi
 grep -Fq 'radial-gradient(circle' "$editor_root/src/style.css" \
   || fail "Board editor does not retain the approved subtle dot field"
@@ -69,6 +75,8 @@ if grep -Fq 'api.history.clear()' "$editor_root/src/main.jsx"; then
 fi
 grep -Fq 'scheduleLoad(snapshot)' "$board_bridge" \
   || fail "Board bridge still reloads WebKit re-entrantly from its ready callback"
+grep -Fq 'pendingReloadTask?.cancel()' "$board_bridge" \
+  || fail "Board bridge does not coalesce stale pending reloads"
 grep -Fq 'Excalidraw · Local' "$board_view" \
   || fail "Board does not identify when the real local Excalidraw editor is active"
 grep -Fq 'Retry Excalidraw' "$board_view" \
