@@ -12,6 +12,8 @@ struct SystemDesignBoardView: View {
     @State private var editingText = ""
     @State private var interactionFeedback: String?
     @State private var isRevisionHistoryPresented = false
+    @State private var enhancedEditorIsReady = false
+    @State private var enhancedEditorFailure: String?
     @FocusState private var isCanvasFocused: Bool
     @FocusState private var isLabelEditorFocused: Bool
     @AccessibilityFocusState private var accessibilityFocusedElementID: BoardElementID?
@@ -474,7 +476,7 @@ struct SystemDesignBoardView: View {
                     newBoxKind = kind
                     connectorSourceID = nil
                     model.applyBoardAction(.setTool(.box))
-                    interactionFeedback = "\(kind.displayName) box tool active · click the canvas to place"
+                    interactionFeedback = "\(kind.displayName) box tool active · draw on the canvas"
                     isCanvasFocused = true
                 } label: {
                     boxKindMenuLabel(kind)
@@ -512,7 +514,7 @@ struct SystemDesignBoardView: View {
         } primaryAction: {
             connectorSourceID = nil
             model.applyBoardAction(.setTool(.box))
-            interactionFeedback = "\(newBoxKind.displayName) box tool active · click the canvas to place"
+            interactionFeedback = "\(newBoxKind.displayName) box tool active · draw on the canvas"
             isCanvasFocused = true
         }
         .menuStyle(.borderlessButton)
@@ -528,7 +530,7 @@ struct SystemDesignBoardView: View {
         .accessibilityValue(
             "\(newBoxKind.displayName)\(model.boardEditor.tool == .box ? ", selected" : "")"
         )
-        .accessibilityHint("Choose the architecture node kind, then click the canvas")
+        .accessibilityHint("Choose the architecture node kind, then draw it on the canvas")
         .help("Box · \(newBoxKind.displayName)")
     }
 
@@ -670,7 +672,98 @@ struct SystemDesignBoardView: View {
         .accessibilityValue("\(Int((model.boardEditor.zoom * 100).rounded())) percent")
     }
 
+    @ViewBuilder
     private var canvas: some View {
+        if enhancedEditorFailure == nil {
+            ZStack {
+                enhancedCanvas
+                nativeCanvas
+                    .opacity(0.001)
+                    .allowsHitTesting(false)
+            }
+        } else {
+            nativeCanvas
+        }
+    }
+
+    private var enhancedCanvas: some View {
+        ZStack(alignment: .topLeading) {
+            ExcalidrawBoardEditorView(
+                document: model.boardDocumentForPresentation,
+                selectedElementID: model.boardSelectedElementIDForPresentation,
+                zoom: model.boardEditor.zoom,
+                tool: model.boardEditor.tool,
+                boxKind: newBoxKind,
+                isReadOnly: model.isInspectingBoardRevision,
+                onSceneChange: { decoded in
+                    let previousIDs = Set(
+                        model.boardEditor.document.elements.map(\.id)
+                    )
+                    let activeTool = model.boardEditor.tool
+                    _ = model.applyBoardAction(
+                        .replaceDocument(
+                            decoded.document,
+                            selectedElementID: decoded.selectedElementID
+                        )
+                    )
+                    let accepted = model.boardEditor.document == decoded.document
+                    guard accepted else { return false }
+                    if let zoom = decoded.zoom,
+                       abs(zoom - model.boardEditor.zoom) > 0.000_1 {
+                        model.applyBoardAction(.setZoom(zoom))
+                    }
+                    let addedElements = decoded.document.elements.filter {
+                        !previousIDs.contains($0.id)
+                    }
+                    if ExcalidrawBoardToolPolicy.returnsToSelect(
+                        afterAdding: addedElements,
+                        with: activeTool
+                    ) {
+                        model.applyBoardAction(.setTool(.select))
+                        interactionFeedback = "Canvas element added and selected"
+                    }
+                    return true
+                },
+                onCommand: handleEnhancedEditorCommand,
+                onReady: {
+                    enhancedEditorIsReady = true
+                    interactionFeedback = "Enhanced canvas ready · edits stay local"
+                },
+                onIssue: { message in
+                    interactionFeedback = message
+                },
+                onFailure: { message in
+                    enhancedEditorFailure = message
+                    enhancedEditorIsReady = false
+                    interactionFeedback = "\(message) Using the native canvas."
+                }
+            )
+
+            if !enhancedEditorIsReady {
+                HStack(spacing: 8) {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text("Loading the local canvas…")
+                }
+                .font(.system(.caption, design: .rounded, weight: .medium))
+                .foregroundStyle(BoardPalette.muted)
+                .padding(12)
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel("Loading the local Board canvas")
+            } else if model.boardDocumentForPresentation.elements.isEmpty {
+                emptyState
+                    .padding(.leading, 28)
+                    .padding(.top, 26)
+            }
+        }
+        .background(BoardPalette.canvas)
+        .overlay(alignment: .bottomLeading) {
+            boardFooter
+                .padding(12)
+        }
+    }
+
+    private var nativeCanvas: some View {
         GeometryReader { proxy in
             ScrollView([.horizontal, .vertical]) {
                 let document = model.boardDocumentForPresentation
@@ -745,6 +838,31 @@ struct SystemDesignBoardView: View {
                 boardFooter
                     .padding(12)
             }
+        }
+    }
+
+    private func handleEnhancedEditorCommand(
+        _ command: ExcalidrawBoardCommand
+    ) {
+        switch command {
+        case .undo:
+            model.applyBoardAction(.undo)
+        case .redo:
+            model.applyBoardAction(.redo)
+        case .saveRevision:
+            Task { await model.saveBoardRevision() }
+        case .zoomIn:
+            model.applyBoardAction(
+                .setZoom(model.boardEditor.zoom * 1.25)
+            )
+        case .zoomOut:
+            model.applyBoardAction(
+                .setZoom(model.boardEditor.zoom / 1.25)
+            )
+        case .zoomReset:
+            model.applyBoardAction(.resetZoom)
+        case .tool(let tool):
+            model.applyBoardAction(.setTool(tool))
         }
     }
 
@@ -1605,7 +1723,7 @@ struct SystemDesignBoardView: View {
         switch tool {
         case .select: "Select, move, relabel, or delete board elements"
         case .connector: "Choose a source box, then a target box"
-        case .box: "Click the canvas to add an architecture box"
+        case .box: "Draw on the canvas to add an architecture box"
         case .label: "Click the canvas to add editable text"
         case .pen: "Drag on the canvas to draw a freehand annotation"
         case .eraser: "Drag across a freehand annotation to erase it"

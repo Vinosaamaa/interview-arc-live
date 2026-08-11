@@ -1,0 +1,38 @@
+:root,
+body,
+#root,
+.board-shell {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+}
+
+body {
+  background: #fbfaf7;
+}
+
+.board-shell .excalidraw {
+  --color-primary: #4b3abf;
+  --color-primary-darker: #3e2fa7;
+  --color-primary-light: #eeeafd;
+  --color-primary-light-darker: #ddd5fa;
+  font-family: "Assistant", sans-serif;
+}
+
+/* Interview Arc owns the durable controls and tool rail. */
+.board-shell .App-toolbar-container,
+.board-shell .main-menu-trigger,
+.board-shell .default-sidebar-trigger,
+.board-shell .sidebar-trigger,
+.board-shell .layer-ui__wrapper__footer {
+  display: none !important;
+}
+
+.board-shell .excalidraw__canvas {
+  outline: none;
+}
+
+.board-shell .App-menu_left {
+  margin-top: 12px;
+}

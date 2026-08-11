@@ -8,6 +8,8 @@
     <string>InterviewArcLive</string>
     <key>CFBundleIdentifier</key>
     <string>app.interviewarc.live</string>
+    <key>CFBundleIconFile</key>
+    <string>InterviewArcLive.icns</string>
     <key>CFBundleInfoDictionaryVersion</key>
     <string>6.0</string>
     <key>CFBundleName</key>
