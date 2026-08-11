@@ -24,6 +24,7 @@ make_bundle() {
   local endpoint_helper="$bundle/Contents/Helpers/InterviewArcLiveEndpointSmoke"
   local speech_helper="$bundle/Contents/Helpers/InterviewArcLiveSpeechSmoke"
   local mlx_metallib="$bundle/Contents/Resources/mlx-swift_Cmlx.bundle/default.metallib"
+  local app_icon="$bundle/Contents/Resources/InterviewArcLive.icns"
 
   mkdir -p "$bundle/Contents/Helpers" "${mlx_metallib:h}"
   /usr/bin/plutil -create xml1 "$bundle/Contents/Info.plist"
@@ -33,12 +34,15 @@ make_bundle() {
     "$bundle/Contents/Info.plist"
   /usr/libexec/PlistBuddy -c 'Add :CFBundlePackageType string APPL' \
     "$bundle/Contents/Info.plist"
+  /usr/libexec/PlistBuddy -c 'Add :CFBundleIconFile string InterviewArcLive.icns' \
+    "$bundle/Contents/Info.plist"
   mkdir -p "$bundle/Contents/MacOS"
   print -r -- $'#!/bin/zsh\nexit 0' > "$bundle/Contents/MacOS/InterviewArcLive"
   print -r -- $'#!/bin/zsh\n[[ "${INTERVIEW_ARC_LIVE_RUN_CODEX_SMOKE:-0}" == "1" ]] || exit 64\nprint -r -- "$PWD" > "${INTERVIEW_ARC_LIVE_TEST_OBSERVED_CWD:?}"' > "$helper"
   print -r -- $'#!/bin/zsh\nexit 0' > "$endpoint_helper"
   print -r -- $'#!/bin/zsh\nexit 0' > "$speech_helper"
   print -rn -- 'fixture-metallib' > "$mlx_metallib"
+  print -rn -- 'fixture-icon' > "$app_icon"
   chmod 0755 "$bundle/Contents/MacOS/InterviewArcLive" "$helper" \
     "$endpoint_helper" "$speech_helper"
   /usr/bin/codesign --force --sign - --timestamp=none "$helper" >/dev/null

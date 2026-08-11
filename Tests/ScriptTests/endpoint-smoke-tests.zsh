@@ -24,6 +24,7 @@ endpoint_helper="$installed_app/Contents/Helpers/InterviewArcLiveEndpointSmoke"
 speech_helper="$installed_app/Contents/Helpers/InterviewArcLiveSpeechSmoke"
 info_plist="$installed_app/Contents/Info.plist"
 mlx_metallib="$installed_app/Contents/Resources/mlx-swift_Cmlx.bundle/default.metallib"
+app_icon="$installed_app/Contents/Resources/InterviewArcLive.icns"
 observed_cwd="$test_root/observed-cwd"
 
 mkdir -p "$installed_app/Contents/MacOS" "$installed_app/Contents/Helpers" \
@@ -32,11 +33,13 @@ mkdir -p "$installed_app/Contents/MacOS" "$installed_app/Contents/Helpers" \
 /usr/libexec/PlistBuddy -c 'Add :CFBundleIdentifier string app.interviewarc.live' "$info_plist"
 /usr/libexec/PlistBuddy -c 'Add :CFBundleExecutable string InterviewArcLive' "$info_plist"
 /usr/libexec/PlistBuddy -c 'Add :CFBundlePackageType string APPL' "$info_plist"
+/usr/libexec/PlistBuddy -c 'Add :CFBundleIconFile string InterviewArcLive.icns' "$info_plist"
 print -r -- $'#!/bin/zsh\nexit 0' > "$app_executable"
 print -r -- $'#!/bin/zsh\nexit 0' > "$codex_helper"
 print -r -- $'#!/bin/zsh\n[[ "${INTERVIEW_ARC_LIVE_RUN_ENDPOINT_SMOKE:-0}" == "1" ]] || exit 64\nprint -r -- "$PWD" > "${INTERVIEW_ARC_LIVE_TEST_OBSERVED_CWD:?}"' > "$endpoint_helper"
 print -r -- $'#!/bin/zsh\nexit 0' > "$speech_helper"
 print -rn -- 'fixture-metallib' > "$mlx_metallib"
+print -rn -- 'fixture-icon' > "$app_icon"
 chmod 0755 "$app_executable" "$codex_helper" "$endpoint_helper" "$speech_helper"
 /usr/bin/codesign --force --sign - --timestamp=none "$codex_helper" >/dev/null
 /usr/bin/codesign --force --sign - --timestamp=none "$endpoint_helper" >/dev/null

@@ -9,6 +9,10 @@ final class CompactRoomPresentationTests: XCTestCase {
         XCTAssertEqual(restoring.statusKind, .restoring)
         XCTAssertEqual(restoring.floorTitle, "Preparing room")
         XCTAssertEqual(restoring.controls.map(\.action), [.expand])
+        XCTAssertEqual(
+            restoring.expandControl.systemImage,
+            "rectangle.expand.vertical"
+        )
 
         let completed = CompactRoomPresentation.make(
             input: .init(
@@ -155,6 +159,10 @@ final class CompactRoomPresentationTests: XCTestCase {
             ]
         )
         XCTAssertEqual(generating.speechControls.last?.accessibilityValue, "Unmuted")
+        XCTAssertEqual(
+            generating.speechControls.last?.systemImage,
+            "speaker.slash.fill"
+        )
 
         let playing = CompactRoomPresentation.make(
             input: .init(
@@ -172,6 +180,10 @@ final class CompactRoomPresentationTests: XCTestCase {
         XCTAssertEqual(playing.statusValue, "Mara is speaking")
         XCTAssertEqual(playing.speechControls.last?.title, "Unmute Mara")
         XCTAssertEqual(playing.speechControls.last?.accessibilityValue, "Muted")
+        XCTAssertEqual(
+            playing.speechControls.last?.systemImage,
+            "speaker.wave.2.fill"
+        )
 
         let recordingWhileSpeechStops = CompactRoomPresentation.make(
             input: .init(
