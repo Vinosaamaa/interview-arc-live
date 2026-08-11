@@ -40,6 +40,13 @@ apply to these bundled production dependencies:
 - regenerator-runtime code retained inside the Excalidraw distribution:
   Copyright (c) 2014-present, Facebook, Inc.
 
+The original minified-distribution notices retained by Excalidraw's upstream
+build are shipped unchanged in `BoardEditor/licenses/` alongside this summary.
+Those files remain the authoritative attribution for code incorporated into
+the upstream production bundles, including DOMPurify, js-yaml, pica,
+object-assign, Promises/A+ thenable code, and attributed Bezier/Framer-derived
+implementations.
+
 ## Bundled fonts
 
 - Assistant: Copyright 2020 The Assistant Project Authors and Copyright 2010

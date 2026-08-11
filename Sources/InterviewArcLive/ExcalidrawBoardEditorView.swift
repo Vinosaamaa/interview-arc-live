@@ -32,6 +32,42 @@ enum ExcalidrawBoardWebSecurity {
     }
 }
 
+enum ExcalidrawBoardStartupPolicy {
+    static let readyTimeout: Duration = .seconds(8)
+}
+
+@MainActor
+private protocol ExcalidrawBoardSceneFlushing: AnyObject {
+    func flushPendingScene(
+        completion: @escaping @MainActor (Bool) -> Void
+    )
+}
+
+@MainActor
+final class ExcalidrawBoardBridgeController: ObservableObject {
+    private weak var flusher: (any ExcalidrawBoardSceneFlushing)?
+
+    fileprivate func attach(_ flusher: any ExcalidrawBoardSceneFlushing) {
+        self.flusher = flusher
+    }
+
+    fileprivate func detach(_ flusher: any ExcalidrawBoardSceneFlushing) {
+        guard self.flusher === flusher else { return }
+        self.flusher = nil
+    }
+
+    func performAfterFlushing(_ operation: @escaping @MainActor () -> Void) {
+        guard let flusher else {
+            operation()
+            return
+        }
+        flusher.flushPendingScene { accepted in
+            guard accepted else { return }
+            operation()
+        }
+    }
+}
+
 struct ExcalidrawBoardEditorView: NSViewRepresentable {
     private static var assetBundle: Bundle {
         #if SWIFT_PACKAGE
@@ -47,6 +83,7 @@ struct ExcalidrawBoardEditorView: NSViewRepresentable {
     let tool: BoardEditorTool
     let boxKind: BoardNodeKind
     let isReadOnly: Bool
+    let bridgeController: ExcalidrawBoardBridgeController
     let onSceneChange: @MainActor (ExcalidrawBoardDecodeResult) -> Bool
     let onCommand: @MainActor (ExcalidrawBoardCommand) -> Void
     let onReady: @MainActor () -> Void
@@ -59,7 +96,8 @@ struct ExcalidrawBoardEditorView: NSViewRepresentable {
             onCommand: onCommand,
             onReady: onReady,
             onIssue: onIssue,
-            onFailure: onFailure
+            onFailure: onFailure,
+            bridgeController: bridgeController
         )
     }
 
@@ -137,7 +175,8 @@ struct ExcalidrawBoardEditorView: NSViewRepresentable {
     final class Coordinator: NSObject,
         WKNavigationDelegate,
         WKScriptMessageHandler,
-        WKUIDelegate
+        WKUIDelegate,
+        ExcalidrawBoardSceneFlushing
     {
         private struct Snapshot: Equatable {
             let document: BoardDocument
@@ -154,6 +193,8 @@ struct ExcalidrawBoardEditorView: NSViewRepresentable {
         private var lastLoadedDocument: BoardDocument?
         private var isReady = false
         private var didStartLoading = false
+        private var readyDeadlineTask: Task<Void, Never>?
+        private weak var bridgeController: ExcalidrawBoardBridgeController?
         private var onSceneChange: @MainActor (ExcalidrawBoardDecodeResult) -> Bool
         private var onCommand: @MainActor (ExcalidrawBoardCommand) -> Void
         private var onReady: @MainActor () -> Void
@@ -165,13 +206,17 @@ struct ExcalidrawBoardEditorView: NSViewRepresentable {
             onCommand: @escaping @MainActor (ExcalidrawBoardCommand) -> Void,
             onReady: @escaping @MainActor () -> Void,
             onIssue: @escaping @MainActor (String) -> Void,
-            onFailure: @escaping @MainActor (String) -> Void
+            onFailure: @escaping @MainActor (String) -> Void,
+            bridgeController: ExcalidrawBoardBridgeController
         ) {
             self.onSceneChange = onSceneChange
             self.onCommand = onCommand
             self.onReady = onReady
             self.onIssue = onIssue
             self.onFailure = onFailure
+            self.bridgeController = bridgeController
+            super.init()
+            bridgeController.attach(self)
         }
 
         func updateCallbacks(
@@ -197,6 +242,9 @@ struct ExcalidrawBoardEditorView: NSViewRepresentable {
         }
 
         func detach() {
+            readyDeadlineTask?.cancel()
+            readyDeadlineTask = nil
+            bridgeController?.detach(self)
             webView = nil
             assetHandler = nil
             snapshot = nil
@@ -237,6 +285,19 @@ struct ExcalidrawBoardEditorView: NSViewRepresentable {
                 return
             }
 
+            readyDeadlineTask?.cancel()
+            readyDeadlineTask = Task { @MainActor [weak self] in
+                try? await Task.sleep(
+                    for: ExcalidrawBoardStartupPolicy.readyTimeout
+                )
+                guard !Task.isCancelled,
+                      let self,
+                      !self.isReady else { return }
+                self.onFailure(
+                    "The enhanced canvas did not become ready. Using the native canvas."
+                )
+            }
+
             WKContentRuleListStore.default().compileContentRuleList(
                 forIdentifier: ExcalidrawBoardWebSecurity.contentRuleIdentifier,
                 encodedContentRuleList: ExcalidrawBoardWebSecurity.contentRuleJSON
@@ -273,11 +334,22 @@ struct ExcalidrawBoardEditorView: NSViewRepresentable {
             switch event {
             case "ready":
                 isReady = true
+                readyDeadlineTask?.cancel()
+                readyDeadlineTask = nil
                 if let snapshot { load(snapshot) }
                 onReady()
 
             case "scene":
-                receiveScene(object)
+                _ = receiveScene(object)
+
+            case ExcalidrawBoardBridgePolicy.flushedCommandEvent:
+                var sceneObject = object
+                sceneObject["event"] = "scene"
+                let accepted = receiveScene(sceneObject)
+                guard ExcalidrawBoardBridgePolicy.permitsCommand(
+                    afterSceneAccepted: accepted
+                ) else { return }
+                receiveCommand(object)
 
             case "command":
                 receiveCommand(object)
@@ -329,8 +401,33 @@ struct ExcalidrawBoardEditorView: NSViewRepresentable {
             onFailure("The enhanced canvas could not start: \(error.localizedDescription).")
         }
 
-        private func receiveScene(_ object: [String: Any]) {
-            guard let snapshot else { return }
+        func flushPendingScene(
+            completion: @escaping @MainActor (Bool) -> Void
+        ) {
+            guard isReady, let webView else {
+                completion(true)
+                return
+            }
+            webView.evaluateJavaScript("window.interviewArcFlush()") {
+                [weak self] result, error in
+                Task { @MainActor in
+                    guard let self else { return }
+                    guard error == nil,
+                          let object = result as? [String: Any] else {
+                        self.onIssue(
+                            "The canvas could not confirm its latest edit. Save and history were not changed."
+                        )
+                        completion(false)
+                        return
+                    }
+                    completion(self.receiveScene(object))
+                }
+            }
+        }
+
+        @discardableResult
+        private func receiveScene(_ object: [String: Any]) -> Bool {
+            guard let snapshot else { return false }
             do {
                 let decoded = try ExcalidrawBoardCodec.decodeChange(
                     from: object,
@@ -339,7 +436,7 @@ struct ExcalidrawBoardEditorView: NSViewRepresentable {
                 guard onSceneChange(decoded) else {
                     onIssue("That canvas change could not be saved. The last valid Board remains available.")
                     load(snapshot)
-                    return
+                    return false
                 }
                 lastLoadedDocument = decoded.document
                 if decoded.requiresReload {
@@ -354,12 +451,15 @@ struct ExcalidrawBoardEditorView: NSViewRepresentable {
                         )
                     )
                 }
+                return true
             } catch ExcalidrawBoardCodecError.unsupportedElements {
                 onIssue("That shape is not part of the Interview Arc Board. Use Box, Connector, Text, Pen, or Eraser.")
                 load(snapshot)
+                return false
             } catch {
                 onIssue("That canvas change is outside the supported Board bounds. The last valid Board remains available.")
                 load(snapshot)
+                return false
             }
         }
 

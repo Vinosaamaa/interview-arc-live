@@ -9,6 +9,14 @@ enum ExcalidrawBoardCodecError: Error, Equatable, Sendable {
     case invalidConnector
 }
 
+enum ExcalidrawBoardBridgePolicy {
+    static let flushedCommandEvent = "flushedCommand"
+
+    static func permitsCommand(afterSceneAccepted accepted: Bool) -> Bool {
+        accepted
+    }
+}
+
 struct ExcalidrawBoardSceneChange: Decodable, Sendable {
     let event: String
     let elements: [ExcalidrawBoardElement]
@@ -40,7 +48,9 @@ struct ExcalidrawBoardScene: Encodable, Sendable {
         tool: BoardEditorTool,
         boxKind: BoardNodeKind
     ) {
-        elements = document.elements.map(ExcalidrawBoardElement.init)
+        elements = BoardRenderOrder.elements(in: document).map(
+            ExcalidrawBoardElement.init
+        )
         selectedID = selectedElementID?.rawValue
         self.zoom = zoom
         self.readOnly = readOnly
@@ -129,7 +139,10 @@ struct ExcalidrawBoardElement: Codable, Equatable, Sendable {
             endAnchorPolicy = connector.end.anchorPolicy.rawValue
             text = nil
             color = nil
-            points = nil
+            points = BoardOrthogonalConnectorRoute(
+                start: connector.start.point,
+                end: connector.end.point
+            ).points
 
         case .label(let boardLabel):
             type = "label"
@@ -312,6 +325,16 @@ enum ExcalidrawBoardCodec {
             canvas: currentDocument.canvas,
             elements: elements
         )
+        if !requiresReload {
+            requiresReload = zip(change.elements, document.elements).contains {
+                source, canonical in
+                requiresCanonicalReload(
+                    source,
+                    canonical: canonical,
+                    webIDToBoardID: webIDToBoardID
+                )
+            }
+        }
         let selectedElementID = change.selectedWebIDs.lazy.compactMap {
             webIDToBoardID[$0]
         }.first
@@ -463,6 +486,59 @@ enum ExcalidrawBoardCodec {
     ) -> BoardConnectorAnchorPolicy {
         guard hasBinding else { return .preserved }
         return BoardConnectorAnchorPolicy(rawValue: rawValue ?? "") ?? .automatic
+    }
+
+    private static func requiresCanonicalReload(
+        _ source: ExcalidrawBoardElement,
+        canonical: BoardElement,
+        webIDToBoardID: [String: BoardElementID]
+    ) -> Bool {
+        let encoded = ExcalidrawBoardElement(canonical)
+        switch canonical {
+        case .box:
+            return source.x != encoded.x
+                || source.y != encoded.y
+                || source.width != encoded.width
+                || source.height != encoded.height
+                || source.label != encoded.label
+                || source.nodeKind != encoded.nodeKind
+                || normalizedColor(source.fill) != encoded.fill
+                || normalizedColor(source.stroke) != encoded.stroke
+
+        case .connector:
+            return source.startX != encoded.startX
+                || source.startY != encoded.startY
+                || source.endX != encoded.endX
+                || source.endY != encoded.endY
+                || source.label != encoded.label
+                || normalizedColor(source.stroke) != encoded.stroke
+                || source.startAnchorPolicy != encoded.startAnchorPolicy
+                || source.endAnchorPolicy != encoded.endAnchorPolicy
+                || source.sourceWebID.flatMap { webIDToBoardID[$0] }?.rawValue
+                    != encoded.sourceID
+                || source.targetWebID.flatMap { webIDToBoardID[$0] }?.rawValue
+                    != encoded.targetID
+
+        case .label:
+            return source.x != encoded.x
+                || source.y != encoded.y
+                || source.text != encoded.text
+                || normalizedColor(source.color) != encoded.color
+
+        case .stroke:
+            return source.points != encoded.points
+                || source.width != encoded.width
+                || normalizedColor(source.color) != encoded.color
+        }
+    }
+
+    private static func normalizedColor(_ value: String?) -> String? {
+        value.map { rawValue in
+            let value = rawValue.hasPrefix("#")
+                ? rawValue
+                : "#\(rawValue)"
+            return value.lowercased()
+        }
     }
 
     private static func boundedPoint(

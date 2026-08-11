@@ -9,6 +9,12 @@ const sourceRoot = join(
   "excalidraw-assets",
 );
 const destinationRoot = join("dist", "assets", "excalidraw-assets");
+const packageDistributionRoot = join(
+  "node_modules",
+  "@excalidraw",
+  "excalidraw",
+  "dist",
+);
 const fonts = [
   "Assistant-Bold.woff2",
   "Assistant-Medium.woff2",
@@ -21,6 +27,20 @@ const fonts = [
 await mkdir(destinationRoot, { recursive: true });
 for (const font of fonts) {
   await copyFile(join(sourceRoot, font), join(destinationRoot, font));
+}
+
+const licenseRoot = join("dist", "licenses");
+await mkdir(licenseRoot, { recursive: true });
+for (const entry of await readdir(packageDistributionRoot)) {
+  if (!entry.endsWith(".LICENSE.txt")) continue;
+  await copyFile(
+    join(packageDistributionRoot, entry),
+    join(licenseRoot, entry),
+  );
+}
+for (const entry of await readdir(sourceRoot)) {
+  if (!entry.endsWith(".LICENSE.txt")) continue;
+  await copyFile(join(sourceRoot, entry), join(licenseRoot, entry));
 }
 
 for (const entry of await readdir(join("dist", "assets"))) {

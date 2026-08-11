@@ -35,9 +35,35 @@ grep -Fq "connect-src 'none'" "$resource_root/index.html" \
 grep -Fq 'window.EXCALIDRAW_ASSET_PATH = "./assets/"' \
   "$resource_root/asset-path.js" \
   || fail "Board editor asset path is not local"
+grep -Fq 'const semanticBoxPresentation' "$editor_root/src/main.jsx" \
+  || fail "Board editor does not retain semantic node presentations"
+grep -Fq 'window.interviewArcFlush' "$editor_root/src/main.jsx" \
+  || fail "Board editor does not expose the durable-command flush seam"
+grep -Fq 'event: "flushedCommand"' "$editor_root/src/main.jsx" \
+  || fail "Board editor commands are not gated by native scene acceptance"
+grep -Fq 'if (!pointerDownRef.current) publish();' "$editor_root/src/main.jsx" \
+  || fail "Board editor text changes are not posted immediately"
+if grep -Fq 'setTimeout(publish, 300)' "$editor_root/src/main.jsx"; then
+  fail "Board editor can lose a visible edit inside a debounce window"
+fi
+grep -Fq 'hexagon.fanout' "$editor_root/src/main.jsx" \
+  || fail "Board editor lost the canonical service visual vocabulary"
+grep -Fq 'SemanticNodeOverlay' "$editor_root/src/main.jsx" \
+  || fail "Board editor does not render the canonical semantic pictograms"
+grep -Fq 'radial-gradient(circle' "$editor_root/src/style.css" \
+  || fail "Board editor does not retain the approved subtle dot field"
+grep -Fq 'fitToContent: false' "$editor_root/src/main.jsx" \
+  || fail "Board editor can overwrite the native zoom during reload"
+grep -Fq 'gridModeEnabled={false}' "$editor_root/src/main.jsx" \
+  || fail "Board editor re-enabled the mismatched major-line grid"
 if find "$resource_root" -type f -size +8388608c | grep -q .; then
   fail "a Board editor asset exceeds the bounded local resource size"
 fi
+upstream_notice_count="$(/usr/bin/find "$resource_root/licenses" \
+  -maxdepth 1 -type f -name '*.LICENSE.txt' | /usr/bin/wc -l \
+  | /usr/bin/tr -d ' ')"
+[[ "$upstream_notice_count" == "3" ]] \
+  || fail "Board editor does not retain all upstream distribution notices"
 
 icon_name="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIconFile' "$info_plist")"
 [[ "$icon_name" == "InterviewArcLive.icns" ]] \

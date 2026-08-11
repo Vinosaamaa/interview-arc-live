@@ -65,11 +65,21 @@ final class ExcalidrawBoardCodecTests: XCTestCase {
         XCTAssertEqual(object["tool"] as? String, BoardEditorTool.connector.rawValue)
         let encoded = try XCTUnwrap(object["elements"] as? [[String: Any]])
         XCTAssertEqual(encoded.count, 3)
-        XCTAssertEqual(encoded[0]["nodeKind"] as? String, "service")
-        XCTAssertEqual(encoded[2]["sourceID"] as? String, service.id.rawValue)
-        XCTAssertEqual(encoded[2]["targetID"] as? String, queue.id.rawValue)
-        XCTAssertEqual(encoded[2]["startAnchorPolicy"] as? String, "automatic")
-        XCTAssertEqual(encoded[2]["endAnchorPolicy"] as? String, "preserved")
+        XCTAssertEqual(encoded.map { $0["type"] as? String }, [
+            "connector", "box", "box",
+        ])
+        XCTAssertEqual(encoded[0]["sourceID"] as? String, service.id.rawValue)
+        XCTAssertEqual(encoded[0]["targetID"] as? String, queue.id.rawValue)
+        XCTAssertEqual(encoded[0]["startAnchorPolicy"] as? String, "automatic")
+        XCTAssertEqual(encoded[0]["endAnchorPolicy"] as? String, "preserved")
+        let route = try XCTUnwrap(encoded[0]["points"] as? [[String: Any]])
+        XCTAssertEqual(route.count, 4)
+        XCTAssertEqual(route[1]["x"] as? Double, 300)
+        XCTAssertEqual(route[1]["y"] as? Double, 291)
+        XCTAssertEqual(route[2]["x"] as? Double, 480)
+        XCTAssertEqual(route[2]["y"] as? Double, 291)
+        XCTAssertEqual(encoded[1]["nodeKind"] as? String, "service")
+        XCTAssertEqual(encoded[2]["nodeKind"] as? String, "queue")
     }
 
     func testNewWebElementsReceiveStableBoardIDsBindingsAndBounds() throws {
@@ -262,6 +272,48 @@ final class ExcalidrawBoardCodecTests: XCTestCase {
         }
     }
 
+    func testExistingGeometryNormalizationRequiresVisibleReload() throws {
+        let original = BoardBox(
+            id: BoardElementID("box-owned"),
+            frame: BoardRect(
+                origin: BoardPoint(x: 80, y: 80),
+                size: BoardSize(width: 160, height: 100)
+            ),
+            label: "Owned",
+            kind: .service
+        )
+        let current = try BoardDocument(
+            canvas: BoardDocument.empty.canvas,
+            elements: [.box(original)]
+        )
+        let change: [String: Any] = [
+            "event": "scene",
+            "unsupportedElementCount": 0,
+            "selectedWebIDs": ["box-owned"],
+            "elements": [
+                box(
+                    webID: "box-owned",
+                    boardID: "box-owned",
+                    x: 1_190,
+                    y: 790,
+                    label: "Owned",
+                    kind: "service"
+                ),
+            ],
+        ]
+
+        let result = try ExcalidrawBoardCodec.decodeChange(
+            from: change,
+            currentDocument: current
+        )
+        XCTAssertTrue(result.requiresReload)
+        guard case .box(let normalized) = result.document.elements.first else {
+            return XCTFail("Expected normalized existing box")
+        }
+        XCTAssertEqual(normalized.id, original.id)
+        XCTAssertEqual(normalized.frame.origin, BoardPoint(x: 1_104, y: 736))
+    }
+
     func testOneShotCreationToolsReturnToNativeSelectAfterAcceptedCreation() {
         let box = BoardElement.box(
             BoardBox(
@@ -296,6 +348,10 @@ final class ExcalidrawBoardCodecTests: XCTestCase {
 
     @MainActor
     func testEmbeddedEditorSecurityRejectsRemoteAndFileNavigation() {
+        XCTAssertEqual(
+            ExcalidrawBoardStartupPolicy.readyTimeout,
+            .seconds(8)
+        )
         XCTAssertTrue(
             ExcalidrawBoardWebSecurity.permitsNavigation(
                 to: URL(string: "interviewarc-board://editor/index.html")
@@ -323,6 +379,20 @@ final class ExcalidrawBoardCodecTests: XCTestCase {
         XCTAssertEqual(
             ExcalidrawBoardAssetHandler.mimeType(for: "woff2"),
             "font/woff2"
+        )
+        XCTAssertEqual(
+            ExcalidrawBoardBridgePolicy.flushedCommandEvent,
+            "flushedCommand"
+        )
+        XCTAssertFalse(
+            ExcalidrawBoardBridgePolicy.permitsCommand(
+                afterSceneAccepted: false
+            )
+        )
+        XCTAssertTrue(
+            ExcalidrawBoardBridgePolicy.permitsCommand(
+                afterSceneAccepted: true
+            )
         )
     }
 
