@@ -6,23 +6,30 @@ import XCTest
 
 @MainActor
 final class InterviewRoomPresentationCoordinatorTests: XCTestCase {
-    func testApplicationTerminationReplyWaitsForDurabilityPreparation() async {
+    func testApplicationTerminationReplyWaitsForLocalDurability() async {
         let preparation = TerminationPreparationFixture()
         let gate = InterviewArcLiveTerminationGate {
             await preparation.run()
         }
-        var reply: Bool?
+        var firstReply: Bool?
+        var secondReply: Bool?
 
         XCTAssertEqual(
-            gate.requestTermination { reply = $0 },
+            gate.requestTermination { firstReply = $0 },
+            .terminateLater
+        )
+        XCTAssertEqual(
+            gate.requestTermination { secondReply = $0 },
             .terminateLater
         )
         await preparation.waitUntilStarted()
-        XCTAssertNil(reply)
+        XCTAssertNil(firstReply)
+        XCTAssertNil(secondReply)
 
         await preparation.release(result: true)
-        while reply == nil { await Task.yield() }
-        XCTAssertEqual(reply, true)
+        while firstReply == nil || secondReply == nil { await Task.yield() }
+        XCTAssertEqual(firstReply, true)
+        XCTAssertEqual(secondReply, true)
     }
 
     func testCompactPanelUsesToolPaletteScale() {

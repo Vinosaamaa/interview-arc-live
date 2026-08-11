@@ -155,6 +155,45 @@ public struct ActivityPrompt: Codable, Sendable, Equatable {
     }
 }
 
+public enum CandidateNotesValidationError: Error, Sendable, Equatable {
+    case bodyTooLong(maximumUTF8Bytes: Int)
+}
+
+/// Private candidate scratch text. It is durable room state, not transcript,
+/// prompt, spoken output, Board evidence, or hosted mutation data.
+public struct CandidateNotes: Codable, Sendable, Equatable {
+    public static let maximumBodyUTF8Bytes = 16 * 1_024
+
+    public let body: String
+
+    public init(body: String) throws {
+        guard body.utf8.count <= Self.maximumBodyUTF8Bytes else {
+            throw CandidateNotesValidationError.bodyTooLong(
+                maximumUTF8Bytes: Self.maximumBodyUTF8Bytes
+            )
+        }
+        self.body = body
+    }
+
+    public static var empty: CandidateNotes {
+        CandidateNotes(validatedBody: "")
+    }
+
+    private init(validatedBody: String) {
+        body = validatedBody
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        try self.init(body: container.decode(String.self))
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(body)
+    }
+}
+
 public enum InterviewRoomPhase: String, Codable, Sendable, Equatable {
     case ready
     case candidateFloor
@@ -308,6 +347,7 @@ public struct SessionManifest: Codable, Sendable, Equatable {
     public let endpointEvaluations: [EndpointEvaluation]
     public let interviewerUtterances: [InterviewerUtterance]
     public let board: BoardWorkspace
+    public let candidateNotes: CandidateNotes
     public let revision: Int
 
     let appliedCommands: [AppliedCommandRecord]
@@ -323,6 +363,7 @@ public struct SessionManifest: Codable, Sendable, Equatable {
         endpointEvaluations: [EndpointEvaluation] = [],
         interviewerUtterances: [InterviewerUtterance] = [],
         board: BoardWorkspace = .empty,
+        candidateNotes: CandidateNotes = .empty,
         revision: Int,
         appliedCommands: [AppliedCommandRecord]
     ) {
@@ -336,6 +377,7 @@ public struct SessionManifest: Codable, Sendable, Equatable {
         self.endpointEvaluations = endpointEvaluations
         self.interviewerUtterances = interviewerUtterances
         self.board = board
+        self.candidateNotes = candidateNotes
         self.revision = revision
         self.appliedCommands = appliedCommands
     }
@@ -351,6 +393,7 @@ public struct SessionManifest: Codable, Sendable, Equatable {
         case endpointEvaluations
         case interviewerUtterances
         case board
+        case candidateNotes
         case revision
         case appliedCommands
     }
@@ -373,6 +416,10 @@ public struct SessionManifest: Codable, Sendable, Equatable {
             forKey: .interviewerUtterances
         ) ?? []
         board = try container.decodeIfPresent(BoardWorkspace.self, forKey: .board) ?? .empty
+        candidateNotes = try container.decodeIfPresent(
+            CandidateNotes.self,
+            forKey: .candidateNotes
+        ) ?? .empty
         revision = try container.decode(Int.self, forKey: .revision)
         appliedCommands = try container.decode(
             [AppliedCommandRecord].self,
@@ -392,6 +439,7 @@ public struct SessionManifest: Codable, Sendable, Equatable {
         try container.encode(endpointEvaluations, forKey: .endpointEvaluations)
         try container.encode(interviewerUtterances, forKey: .interviewerUtterances)
         try container.encode(board, forKey: .board)
+        try container.encode(candidateNotes, forKey: .candidateNotes)
         try container.encode(revision, forKey: .revision)
         try container.encode(appliedCommands, forKey: .appliedCommands)
     }
@@ -409,6 +457,7 @@ public struct InterviewRoomSnapshot: Sendable, Equatable {
     public let endpointEvaluations: [EndpointEvaluation]
     public let interviewerUtterances: [InterviewerUtterance]
     public let board: BoardWorkspace
+    public let candidateNotes: CandidateNotes
     public let revision: Int
 
     init(manifest: SessionManifest) {
@@ -422,6 +471,7 @@ public struct InterviewRoomSnapshot: Sendable, Equatable {
         endpointEvaluations = manifest.endpointEvaluations
         interviewerUtterances = manifest.interviewerUtterances
         board = manifest.board
+        candidateNotes = manifest.candidateNotes
         revision = manifest.revision
     }
 }

@@ -22,7 +22,7 @@ final class SystemDesignBoardModelTests: XCTestCase {
         model.enhancedBoardBridgeController.attach(flusher)
 
         let preparation = Task { @MainActor in
-            await model.prepareBoardForTermination()
+            await model.prepareLocalPersistenceForTermination()
         }
         await store.waitUntilBoardRevisionSaveStarts()
 
@@ -43,7 +43,7 @@ final class SystemDesignBoardModelTests: XCTestCase {
         }
         model.enhancedBoardBridgeController.attach(flusher)
 
-        let shouldTerminate = await model.prepareBoardForTermination()
+        let shouldTerminate = await model.prepareLocalPersistenceForTermination()
         XCTAssertFalse(shouldTerminate)
         XCTAssertEqual(model.snapshot?.phase, .ready)
         XCTAssertTrue(model.boardErrorMessage?.contains("Quit was cancelled") == true)

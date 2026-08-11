@@ -3,23 +3,28 @@ import AppKit
 @MainActor
 final class InterviewArcLiveTerminationGate {
     typealias Preparation = @MainActor () async -> Bool
+    typealias Reply = @MainActor (Bool) -> Void
 
     private let preparation: Preparation
     private var preparationTask: Task<Void, Never>?
+    private var pendingReplies: [Reply] = []
 
     init(preparation: @escaping Preparation) {
         self.preparation = preparation
     }
 
     func requestTermination(
-        reply: @escaping @MainActor (Bool) -> Void
+        reply: @escaping Reply
     ) -> NSApplication.TerminateReply {
+        pendingReplies.append(reply)
         guard preparationTask == nil else { return .terminateLater }
         preparationTask = Task { @MainActor [weak self] in
             guard let self else { return }
             let shouldTerminate = await preparation()
             preparationTask = nil
-            reply(shouldTerminate)
+            let replies = pendingReplies
+            pendingReplies.removeAll()
+            replies.forEach { $0(shouldTerminate) }
         }
         return .terminateLater
     }
@@ -47,7 +52,7 @@ final class InterviewArcLiveApp: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         installMainMenu()
         terminationGate = InterviewArcLiveTerminationGate { [weak model] in
-            await model?.prepareBoardForTermination() ?? true
+            await model?.prepareLocalPersistenceForTermination() ?? true
         }
         let coordinator = InterviewRoomPresentationCoordinator(model: model)
         presentationCoordinator = coordinator

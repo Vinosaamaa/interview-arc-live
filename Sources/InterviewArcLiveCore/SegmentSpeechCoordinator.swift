@@ -146,6 +146,16 @@ public final class SegmentSpeechCoordinator {
     }
 
     @discardableResult
+    public func updateCandidateNotes(
+        _ notes: CandidateNotes,
+        commandID: CommandID
+    ) async throws -> InterviewRoomSnapshot {
+        try await applyAndPublish(
+            .updateCandidateNotes(commandID: commandID, notes: notes)
+        ).snapshot
+    }
+
+    @discardableResult
     public func retryInterviewerResponse(
         commandID: CommandID
     ) async throws -> InterviewRoomSnapshot {
