@@ -3,6 +3,7 @@ import json
 import re
 import subprocess
 import sys
+from io import BytesIO
 from pathlib import Path
 
 CLASSIFICATIONS = {
@@ -61,31 +62,51 @@ def git(*args):
     return subprocess.check_output(["git", *args], text=True).strip()
 
 
+def git_blobs(revision: str, paths: list[str]):
+    if not paths:
+        return {}
+    result = subprocess.run(
+        ["git", "cat-file", "--batch"],
+        input="".join(f"{revision}:{path}\n" for path in paths).encode(),
+        capture_output=True,
+        check=True,
+    )
+    stream = BytesIO(result.stdout)
+    blobs: dict[str, str | None] = {}
+    for path in paths:
+        header = stream.readline().decode("utf-8", errors="strict").rstrip("\n")
+        if header.endswith(" missing"):
+            blobs[path] = None
+            continue
+        parts = header.split()
+        if len(parts) != 3 or parts[1] != "blob":
+            raise ValueError("Unable to read a canonical Engineering record Git object.")
+        content = stream.read(int(parts[2]))
+        if stream.read(1) != b"\n":
+            raise ValueError("Unable to read a canonical Engineering record Git object.")
+        blobs[path] = content.decode("utf-8", errors="strict")
+    return blobs
+
+
+def record_type_from_markdown(markdown: str, path: str):
+    frontmatter = re.match(r"\A---\r?\n(.*?)\r?\n---(?:\r?\n|\Z)", markdown, re.DOTALL)
+    matches = re.findall(r"^type:\s*([a-z][a-z-]*)\s*$", frontmatter.group(1), re.MULTILINE) if frontmatter else []
+    if len(matches) != 1:
+        raise ValueError(f"Changed canonical Engineering record has no single valid type in leading front matter: {path}.")
+    return matches[0]
+
+
 def record_types(paths: list[str], head: str, base: str):
-    found: dict[str, str] = {}
-    for revision in (head, base):
-        pending = [path for path in paths if path not in found]
-        if not pending:
-            break
-        result = subprocess.run(
-            ["git", "grep", "-E", r"^type:[[:space:]]*[^[:space:]]+", revision, "--", *pending],
-            text=True,
-            capture_output=True,
-            check=False,
-        )
-        if result.returncode not in (0, 1):
-            raise subprocess.CalledProcessError(result.returncode, result.args, result.stdout, result.stderr)
-        prefix = f"{revision}:"
-        for line in result.stdout.splitlines():
-            if not line.startswith(prefix) or ":type:" not in line:
-                continue
-            path, value = line[len(prefix):].rsplit(":type:", 1)
-            if path in pending and path not in found:
-                found[path] = value.strip()
-    missing = [path for path in paths if path not in found]
-    if missing:
-        raise ValueError(f"Changed canonical Engineering record has no type: {missing[0]}.")
-    return [found[path] for path in paths]
+    head_blobs = git_blobs(head, paths)
+    deleted = [path for path in paths if head_blobs[path] is None]
+    base_blobs = git_blobs(base, deleted)
+    types = []
+    for path in paths:
+        markdown = head_blobs[path] if head_blobs[path] is not None else base_blobs.get(path)
+        if markdown is None:
+            raise ValueError(f"Changed canonical Engineering record is missing from both revisions: {path}.")
+        types.append(record_type_from_markdown(markdown, path))
+    return types
 
 
 def main():
