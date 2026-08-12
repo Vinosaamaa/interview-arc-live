@@ -1160,7 +1160,9 @@ struct SystemDesignBoardView: View {
         case .attachRevision:
             Task { await model.attachSelectedBoardRevision() }
         case .exportRevision:
-            Task { await model.exportSelectedBoardRevision() }
+            enhancedEditorBridgeController.performAfterFlushing {
+                Task { await model.exportSelectedBoardRevision() }
+            }
         case .tool(let tool):
             model.applyBoardAction(.setTool(tool))
         }
@@ -1648,7 +1650,12 @@ struct SystemDesignBoardView: View {
                     y: value.location.y
                 )
                 switch model.boardEditor.tool {
-                case .line, .pen:
+                case .line:
+                    activePenPoints = BoardGestureSampling.straightLinePoints(
+                        from: activePenPoints.first,
+                        to: point
+                    )
+                case .pen:
                     if activePenPoints.count < BoardDocument.maximumStrokePoints,
                        activePenPoints.isEmpty
                         || distance(activePenPoints.last!, point) >= 2 {
@@ -2325,6 +2332,14 @@ enum BoardStrokePointerInteraction {
 
 enum BoardGestureSampling {
     static let minimumEraserDistance = 6.0
+
+    static func straightLinePoints(
+        from start: BoardPoint?,
+        to current: BoardPoint
+    ) -> [BoardPoint] {
+        guard let start else { return [current] }
+        return [start, current]
+    }
 
     static func shouldAcceptEraserPoint(
         _ point: BoardPoint,

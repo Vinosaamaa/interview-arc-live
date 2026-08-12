@@ -175,6 +175,22 @@ final class BoardEditorTests: XCTestCase {
         )
     }
 
+    func testStraightLineSamplingKeepsOnlyTheGestureEndpoints() {
+        let start = BoardPoint(x: 20, y: 30)
+
+        XCTAssertEqual(
+            BoardGestureSampling.straightLinePoints(from: nil, to: start),
+            [start]
+        )
+        XCTAssertEqual(
+            BoardGestureSampling.straightLinePoints(
+                from: start,
+                to: BoardPoint(x: 180, y: 140)
+            ),
+            [start, BoardPoint(x: 180, y: 140)]
+        )
+    }
+
     func testSelectToolStrokePointerContractMovesDeletesAndUndoesWithinCanvas() throws {
         XCTAssertGreaterThanOrEqual(
             BoardStrokePointerInteraction.minimumHitWidth,

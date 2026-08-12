@@ -26,6 +26,12 @@ export const createScenePublicationController = (publish) => {
       return publishPendingScene();
     },
 
+    cancelPointerInteraction() {
+      if (!isPointerInteractionActive) return false;
+      isPointerInteractionActive = false;
+      return publishPendingScene();
+    },
+
     flush() {
       return publishPendingScene();
     },

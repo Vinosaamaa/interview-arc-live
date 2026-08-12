@@ -159,6 +159,36 @@ private final class RuntimeProbe: NSObject,
                 "nodeKind": "service",
                 "fill": "#ffffff",
                 "stroke": "#4b3abf",
+            ], [
+                "type": "box",
+                "boardID": "runtime-probe-queue",
+                "x": 420.0,
+                "y": 340.0,
+                "width": 180.0,
+                "height": 112.0,
+                "label": "Delivery queue",
+                "nodeKind": "queue",
+                "fill": "#ffffff",
+                "stroke": "#4b3abf",
+            ], [
+                "type": "connector",
+                "boardID": "runtime-probe-connector",
+                "startX": 300.0,
+                "startY": 196.0,
+                "endX": 420.0,
+                "endY": 396.0,
+                "points": [
+                    ["x": 300.0, "y": 196.0],
+                    ["x": 360.0, "y": 196.0],
+                    ["x": 360.0, "y": 396.0],
+                    ["x": 420.0, "y": 396.0],
+                ],
+                "sourceID": "runtime-probe-box",
+                "targetID": "runtime-probe-queue",
+                "startAnchorPolicy": "automatic",
+                "endAnchorPolicy": "automatic",
+                "label": "publishes",
+                "stroke": "#1f2937",
             ]],
             "selectedID": "runtime-probe-box",
             "zoom": 1.0,
@@ -303,8 +333,9 @@ private final class RuntimeProbe: NSObject,
                 && object["hasAttach"] as? Bool == true
                 && object["hasExport"] as? Bool == true
                 && object["chromeFitsWithoutOverlap"] as? Bool == true
-                && loadedElementCount == 1
+                && loadedElementCount == 3
                 && containsRuntimeProbeBox(object["snapshot"])
+                && containsBoundRuntimeProbeConnector(object["snapshot"])
                 && containsActiveHandTool(object["runtime"])
                 && flushedCommands.contains("saveRevision")
                 && directCommands.contains("exportRevision")
@@ -334,6 +365,19 @@ private final class RuntimeProbe: NSObject,
             element["type"] as? String == "box"
                 && element["boardID"] as? String == "runtime-probe-box"
                 && element["label"] as? String == "API service"
+        }
+    }
+
+    private func containsBoundRuntimeProbeConnector(_ rawSnapshot: Any?) -> Bool {
+        guard let snapshot = rawSnapshot as? [String: Any],
+              let elements = snapshot["elements"] as? [[String: Any]] else {
+            return false
+        }
+        return elements.contains { element in
+            element["type"] as? String == "connector"
+                && element["boardID"] as? String == "runtime-probe-connector"
+                && element["sourceWebID"] as? String == "runtime-probe-box"
+                && element["targetWebID"] as? String == "runtime-probe-queue"
         }
     }
 

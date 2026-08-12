@@ -862,11 +862,19 @@ function BoardEditor() {
         post({ event: "command", command: "tool", tool });
       }
     };
+    const cancelPointerInteraction = () => {
+      publicationRef.current.cancelPointerInteraction();
+    };
     window.addEventListener("keydown", handleKeyDown, true);
+    window.addEventListener("pointercancel", cancelPointerInteraction, true);
+    window.addEventListener("blur", cancelPointerInteraction);
     return () => {
       window.removeEventListener("keydown", handleKeyDown, true);
+      window.removeEventListener("pointercancel", cancelPointerInteraction, true);
+      window.removeEventListener("blur", cancelPointerInteraction);
       for (const unsubscribe of pointerSubscriptionsRef.current) unsubscribe();
       pointerSubscriptionsRef.current = [];
+      publicationRef.current.reset();
     };
   }, [flushThenPost]);
 

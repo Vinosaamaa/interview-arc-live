@@ -38,6 +38,25 @@ test("keyboard and text changes publish immediately outside pointer work", () =>
   ]);
 });
 
+test("pointer cancellation publishes the last scene and unlocks future updates", () => {
+  const published = [];
+  const controller = createScenePublicationController((scene) => {
+    published.push(scene);
+  });
+
+  controller.beginPointerInteraction();
+  controller.acceptScene({ elementIDs: ["generic-1"] });
+  assert.equal(controller.cancelPointerInteraction(), true);
+  assert.deepEqual(published, [{ elementIDs: ["generic-1"] }]);
+
+  controller.acceptScene({ elementIDs: ["generic-1", "service-1"] });
+  assert.deepEqual(published, [
+    { elementIDs: ["generic-1"] },
+    { elementIDs: ["generic-1", "service-1"] },
+  ]);
+  assert.equal(controller.cancelPointerInteraction(), false);
+});
+
 test("programmatic loads clear stale pending pointer state", () => {
   const published = [];
   const controller = createScenePublicationController((scene) => {
