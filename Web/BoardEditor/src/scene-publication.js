@@ -1,20 +1,26 @@
 export const createScenePublicationController = (
   publish,
   prepare = (scene) => scene,
+  identify = (scene) => scene,
 ) => {
   let isPointerInteractionActive = false;
   let pendingScene = null;
-  let adoptedFingerprint = null;
-
-  const fingerprint = (scene) => JSON.stringify(scene);
+  let adoptedRevision = null;
 
   const publishPendingScene = () => {
     if (pendingScene === null) return false;
+    // Excalidraw emits its default empty scene while React mounts. Native is
+    // the durable owner, so nothing may cross the bridge until the first
+    // native document has been applied and adopted as our baseline.
+    if (adoptedRevision === null) return false;
+    const revision = identify(pendingScene);
+    if (revision === adoptedRevision) {
+      pendingScene = null;
+      return false;
+    }
     const scene = prepare(pendingScene);
     pendingScene = null;
-    const nextFingerprint = fingerprint(scene);
-    if (nextFingerprint === adoptedFingerprint) return false;
-    adoptedFingerprint = nextFingerprint;
+    adoptedRevision = revision;
     publish(scene);
     return true;
   };
@@ -48,20 +54,20 @@ export const createScenePublicationController = (
     adoptScene(scene) {
       isPointerInteractionActive = false;
       pendingScene = null;
-      adoptedFingerprint = fingerprint(scene);
+      adoptedRevision = identify(scene);
     },
 
     reset() {
       isPointerInteractionActive = false;
       pendingScene = null;
-      adoptedFingerprint = null;
+      adoptedRevision = null;
     },
 
     snapshot() {
       return {
         isPointerInteractionActive,
         hasPendingScene: pendingScene !== null,
-        hasAdoptedScene: adoptedFingerprint !== null,
+        hasAdoptedScene: adoptedRevision !== null,
       };
     },
   };

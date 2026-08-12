@@ -84,11 +84,6 @@ body {
   background: transparent !important;
 }
 
-/* Center the combined Excalidraw + Interview Arc action group as one row. */
-.board-shell .App-toolbar-container {
-  margin-left: -132px;
-}
-
 /* Keep hosted/cloud surfaces unavailable; Excalidraw owns canvas tools. */
 .board-shell .main-menu-trigger,
 .board-shell .default-sidebar-trigger,
@@ -97,13 +92,10 @@ body {
 }
 
 .interview-arc-board-controls {
-  position: fixed;
-  top: 16px;
-  right: 8px;
-  z-index: 5;
   display: flex;
   align-items: center;
   gap: 0;
+  transform: translateX(-22px);
   min-height: 40px;
   padding: 4px;
   border-radius: 12px;
@@ -126,16 +118,6 @@ body {
   cursor: pointer;
   transition: background-color 120ms ease, color 120ms ease,
     transform 120ms ease;
-}
-
-@media (max-width: 640px) {
-  .board-shell .App-toolbar-container {
-    margin-left: 0;
-  }
-
-  .interview-arc-board-controls {
-    top: 72px;
-  }
 }
 
 .interview-arc-board-action__icon {

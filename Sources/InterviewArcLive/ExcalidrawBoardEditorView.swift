@@ -458,7 +458,10 @@ struct ExcalidrawBoardEditorView: NSViewRepresentable {
 
         @discardableResult
         private func receiveScene(_ object: [String: Any]) -> Bool {
-            guard let snapshot else { return false }
+            guard let snapshot,
+                  ExcalidrawBoardBridgePolicy.permitsScene(
+                    afterNativeBaselineWasSent: lastLoadedDocument != nil
+                  ) else { return false }
             do {
                 let decoded = try ExcalidrawBoardCodec.decodeChange(
                     from: object,
@@ -477,15 +480,19 @@ struct ExcalidrawBoardEditorView: NSViewRepresentable {
                     return false
                 }
                 if decoded.requiresReload {
+                    // `onSceneChange` can synchronously re-enter `update`.
+                    // Pair the canonical document with the newest SwiftUI
+                    // metadata rather than the stale pre-callback snapshot.
+                    let current = self.snapshot ?? snapshot
                     scheduleReconcile(
                         Snapshot(
                             document: decoded.document,
                             selectedElementID: decoded.selectedElementID,
-                            zoom: snapshot.zoom,
-                            tool: snapshot.tool,
-                            boxKind: snapshot.boxKind,
-                            controls: snapshot.controls,
-                            isReadOnly: snapshot.isReadOnly
+                            zoom: current.zoom,
+                            tool: current.tool,
+                            boxKind: current.boxKind,
+                            controls: current.controls,
+                            isReadOnly: current.isReadOnly
                         )
                     )
                 }

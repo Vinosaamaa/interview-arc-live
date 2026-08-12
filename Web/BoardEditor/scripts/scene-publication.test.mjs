@@ -8,6 +8,7 @@ test("pointer-up publishes the last scene exactly once", () => {
   const controller = createScenePublicationController((scene) => {
     published.push(scene);
   });
+  controller.adoptScene({ elementIDs: [] });
 
   controller.beginPointerInteraction();
   controller.acceptScene({ elementIDs: ["generic-1"] });
@@ -28,6 +29,7 @@ test("keyboard and text changes publish immediately outside pointer work", () =>
   const controller = createScenePublicationController((scene) => {
     published.push(scene);
   });
+  controller.adoptScene({ label: "" });
 
   controller.acceptScene({ label: "Delivery" });
   controller.acceptScene({ label: "Delivery queue" });
@@ -40,10 +42,15 @@ test("keyboard and text changes publish immediately outside pointer work", () =>
 
 test("a native scene baseline never republishes as a user edit", () => {
   const published = [];
+  let preparationCount = 0;
   const controller = createScenePublicationController((scene) => {
     published.push(scene);
-  });
+  }, (scene) => {
+    preparationCount += 1;
+    return scene;
+  }, (scene) => scene.revision);
   const nativeScene = {
+    revision: 7,
     elements: [{ id: "connector-1", points: [[0, 0], [0.13, 0.3]] }],
     zoom: 1,
   };
@@ -53,6 +60,7 @@ test("a native scene baseline never republishes as a user edit", () => {
   controller.acceptScene(structuredClone(nativeScene));
 
   assert.deepEqual(published, []);
+  assert.equal(preparationCount, 0);
   assert.deepEqual(controller.snapshot(), {
     isPointerInteractionActive: false,
     hasPendingScene: false,
@@ -64,13 +72,13 @@ test("a real change after a native baseline publishes once", () => {
   const published = [];
   const controller = createScenePublicationController((scene) => {
     published.push(scene);
-  });
+  }, (scene) => scene, (scene) => scene.revision);
 
-  controller.adoptScene({ label: "Delivery" });
-  controller.acceptScene({ label: "Delivery queue" });
-  controller.acceptScene({ label: "Delivery queue" });
+  controller.adoptScene({ label: "Delivery", revision: 1 });
+  controller.acceptScene({ label: "Delivery queue", revision: 2 });
+  controller.acceptScene({ label: "Delivery queue", revision: 2 });
 
-  assert.deepEqual(published, [{ label: "Delivery queue" }]);
+  assert.deepEqual(published, [{ label: "Delivery queue", revision: 2 }]);
 });
 
 test("pointer cancellation publishes the last scene and unlocks future updates", () => {
@@ -78,6 +86,7 @@ test("pointer cancellation publishes the last scene and unlocks future updates",
   const controller = createScenePublicationController((scene) => {
     published.push(scene);
   });
+  controller.adoptScene({ elementIDs: [] });
 
   controller.beginPointerInteraction();
   controller.acceptScene({ elementIDs: ["generic-1"] });
@@ -97,6 +106,7 @@ test("programmatic loads clear stale pending pointer state", () => {
   const controller = createScenePublicationController((scene) => {
     published.push(scene);
   });
+  controller.adoptScene({ elementIDs: [] });
 
   controller.beginPointerInteraction();
   controller.acceptScene({ elementIDs: ["orphan"] });
@@ -109,4 +119,33 @@ test("programmatic loads clear stale pending pointer state", () => {
     hasPendingScene: false,
     hasAdoptedScene: false,
   });
+});
+
+test("bootstrap empty scene cannot overwrite the native document", () => {
+  const published = [];
+  const controller = createScenePublicationController((scene) => {
+    published.push(scene);
+  }, (scene) => scene, (scene) => scene.revision);
+
+  controller.acceptScene({ revision: 0, elements: [] });
+  controller.flush();
+  assert.deepEqual(published, []);
+  assert.deepEqual(controller.snapshot(), {
+    isPointerInteractionActive: false,
+    hasPendingScene: true,
+    hasAdoptedScene: false,
+  });
+
+  controller.adoptScene({ revision: 12, elements: [{ id: "service-1" }] });
+  assert.deepEqual(published, []);
+  assert.deepEqual(controller.snapshot(), {
+    isPointerInteractionActive: false,
+    hasPendingScene: false,
+    hasAdoptedScene: true,
+  });
+
+  controller.acceptScene({ revision: 13, elements: [{ id: "service-1" }] });
+  assert.deepEqual(published, [
+    { revision: 13, elements: [{ id: "service-1" }] },
+  ]);
 });

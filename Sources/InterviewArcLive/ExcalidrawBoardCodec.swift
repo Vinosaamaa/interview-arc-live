@@ -12,6 +12,10 @@ enum ExcalidrawBoardCodecError: Error, Equatable, Sendable {
 enum ExcalidrawBoardBridgePolicy {
     static let flushedCommandEvent = "flushedCommand"
 
+    static func permitsScene(afterNativeBaselineWasSent wasSent: Bool) -> Bool {
+        wasSent
+    }
+
     static func permitsCommand(afterSceneAccepted accepted: Bool) -> Bool {
         accepted
     }

@@ -485,6 +485,26 @@ let configuration = WKWebViewConfiguration()
 configuration.websiteDataStore = .nonPersistent()
 configuration.preferences.javaScriptCanOpenWindowsAutomatically = false
 configuration.userContentController.add(probe, name: "boardBridge")
+configuration.userContentController.addUserScript(
+    WKUserScript(
+        source: #"""
+        window.addEventListener("error", (event) => {
+          window.webkit?.messageHandlers?.boardBridge?.postMessage({
+            event: "failure",
+            message: `bootstrap error: ${event.message ?? "unknown"}`
+          });
+        }, true);
+        window.addEventListener("unhandledrejection", (event) => {
+          window.webkit?.messageHandlers?.boardBridge?.postMessage({
+            event: "failure",
+            message: `bootstrap rejection: ${String(event.reason ?? "unknown")}`
+          });
+        }, true);
+        """#,
+        injectionTime: .atDocumentStart,
+        forMainFrameOnly: true
+    )
+)
 private let assetHandler = LocalAssetHandler(
     root: resourceRoot,
     onFailure: probe.recordFailure

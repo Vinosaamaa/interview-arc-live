@@ -9,6 +9,7 @@ import {
   Excalidraw,
   convertToExcalidrawElements,
   getNonDeletedElements,
+  getSceneVersion,
 } from "@excalidraw/excalidraw";
 import {
   hasCanonicalBoardAngle,
@@ -344,6 +345,26 @@ const normalizeScene = (elements, appState, files, currentBoxKind) => {
   };
 };
 
+// Excalidraw increments an element's version for every semantic mutation.
+// Combine that monotonic scene version with the small set of persisted app
+// state instead of serializing every coordinate and connector point merely to
+// suppress duplicate callbacks.
+const sceneRevision = (elements, appState, files, currentBoxKind) => {
+  const selectedIDs = Object.keys(appState?.selectedElementIds ?? {})
+    .filter((id) => appState.selectedElementIds[id])
+    .sort()
+    .join(",");
+  return [
+    getSceneVersion(elements),
+    elements.length,
+    Number(appState?.zoom?.value ?? 1),
+    appState?.activeTool?.type ?? "selection",
+    selectedIDs,
+    currentBoxKind,
+    Object.keys(files ?? {}).length,
+  ].join("|");
+};
+
 const strokeSkeleton = (element) => {
   const points = element.points ?? [];
   const origin = points[0] ?? { x: 0, y: 0 };
@@ -516,103 +537,123 @@ const installNativeWindowBridge = ({
     nativeControlsRef.current = controls ?? defaultNativeControls;
     setNativeControls(nativeControlsRef.current);
   };
-  const refreshOverlay = () => {
-    updateSemanticOverlay(api.getSceneElements(), api.getAppState());
-  };
-  const snapshot = () => normalizeScene(
-    api.getSceneElements(),
-    api.getAppState(),
-    api.getFiles(),
+  const readScene = () => ({
+    elements: api.getSceneElements(),
+    appState: api.getAppState(),
+    files: api.getFiles(),
+  });
+  const snapshot = (scene = readScene()) => normalizeScene(
+    scene.elements,
+    scene.appState,
+    scene.files,
     currentBoxKindRef.current,
   );
   let nativeUpdateGeneration = 0;
   let hasLoadedScene = false;
+  let deferredNativeUpdate = null;
+  let deferredChange = null;
+  let receivedUserInputDuringNativeUpdate = false;
+
+  const runOrDeferNativeUpdate = (update) => {
+    if (publication.snapshot().isPointerInteractionActive) {
+      deferredNativeUpdate = update;
+      return false;
+    }
+    update();
+    return true;
+  };
   const beginNativeUpdate = () => {
     nativeUpdateGeneration += 1;
+    if (!loadingRef.current) {
+      deferredChange = null;
+      receivedUserInputDuringNativeUpdate = false;
+    }
     loadingRef.current = true;
-    publication.reset();
     return nativeUpdateGeneration;
   };
   const finishNativeUpdate = (generation) => {
     window.requestAnimationFrame(() => {
       window.requestAnimationFrame(() => {
         if (generation !== nativeUpdateGeneration) return;
-        refreshOverlay();
-        publication.adoptScene(snapshot());
+        const scene = readScene();
+        updateSemanticOverlay(scene.elements, scene.appState);
         loadingRef.current = false;
+        if (receivedUserInputDuringNativeUpdate) {
+          publication.acceptScene(deferredChange ?? scene);
+        } else {
+          publication.adoptScene(scene);
+        }
+        deferredChange = null;
+        receivedUserInputDuringNativeUpdate = false;
       });
     });
+  };
+
+  const nativeAppState = (
+    scene,
+    { appliesTool = false, appliesZoom = false, transparent = false } = {},
+  ) => {
+    setReadOnly(Boolean(scene.readOnly));
+    synchronizeControls(scene.controls);
+    currentBoxKindRef.current = scene.boxKind ?? currentBoxKindRef.current;
+    if (appliesTool && !scene.readOnly) {
+      const activeTool = excalTypeForNativeTool(scene.tool, scene.boxKind);
+      previousActiveToolRef.current = activeTool;
+      api.setActiveTool({ type: activeTool });
+    }
+    const zoom = Number(scene.zoom);
+    return {
+      selectedElementIds: scene.selectedID
+        ? { [scene.selectedID]: true }
+        : {},
+      ...(appliesZoom && Number.isFinite(zoom)
+        ? { zoom: { value: zoom } }
+        : {}),
+      ...(transparent ? { viewBackgroundColor: "transparent" } : {}),
+      ...itemStyleForTool(scene.tool),
+    };
   };
 
   window.interviewArcLoad = (serializedScene) => {
     const scene = JSON.parse(serializedScene);
     const elements = toExcalidrawElements(scene);
-    const shouldRevealInitialContent = !hasLoadedScene;
-    hasLoadedScene = true;
-    const generation = beginNativeUpdate();
-    setReadOnly(Boolean(scene.readOnly));
-    synchronizeControls(scene.controls);
-    currentBoxKindRef.current = scene.boxKind ?? "generic";
-    previousActiveToolRef.current = excalTypeForNativeTool(
-      scene.tool,
-      scene.boxKind,
-    );
-    api.updateScene({
-      elements,
-      appState: {
-        selectedElementIds: scene.selectedID
-          ? { [scene.selectedID]: true }
-          : {},
-        ...(shouldRevealInitialContent
-          ? { zoom: { value: Number(scene.zoom ?? 1) } }
-          : {}),
-        viewBackgroundColor: "transparent",
-        ...itemStyleForTool(scene.tool),
-      },
-    });
-    window.requestAnimationFrame(() => {
-      if (!scene.readOnly && shouldRevealInitialContent) {
-        api.setActiveTool({
-          type: excalTypeForNativeTool(scene.tool, scene.boxKind),
-        });
-      }
-      if (elements.length > 0 && shouldRevealInitialContent) {
-        api.scrollToContent(elements, {
-          fitToContent: false,
-          animate: false,
-        });
-      }
-      finishNativeUpdate(generation);
+    runOrDeferNativeUpdate(() => {
+      const shouldRevealInitialContent = !hasLoadedScene;
+      hasLoadedScene = true;
+      const generation = beginNativeUpdate();
+      api.updateScene({
+        elements,
+        appState: nativeAppState(scene, {
+          appliesTool: shouldRevealInitialContent,
+          appliesZoom: shouldRevealInitialContent,
+          transparent: true,
+        }),
+      });
+      window.requestAnimationFrame(() => {
+        if (elements.length > 0 && shouldRevealInitialContent) {
+          api.scrollToContent(elements, {
+            fitToContent: false,
+            animate: false,
+          });
+        }
+        finishNativeUpdate(generation);
+      });
     });
     return elements.length;
   };
 
   window.interviewArcSetState = (serializedState) => {
     const state = JSON.parse(serializedState);
-    const generation = beginNativeUpdate();
-    currentBoxKindRef.current = state.boxKind ?? currentBoxKindRef.current;
-    setReadOnly(Boolean(state.readOnly));
-    synchronizeControls(state.controls);
-    if (!state.readOnly) {
-      previousActiveToolRef.current = excalTypeForNativeTool(
-        state.tool,
-        state.boxKind,
-      );
-      api.setActiveTool({
-        type: excalTypeForNativeTool(state.tool, state.boxKind),
+    runOrDeferNativeUpdate(() => {
+      const generation = beginNativeUpdate();
+      api.updateScene({
+        appState: nativeAppState(state, {
+          appliesTool: true,
+          appliesZoom: true,
+        }),
       });
-    }
-    const zoom = Number(state.zoom);
-    api.updateScene({
-      appState: {
-        selectedElementIds: state.selectedID
-          ? { [state.selectedID]: true }
-          : {},
-        ...(Number.isFinite(zoom) ? { zoom: { value: zoom } } : {}),
-        ...itemStyleForTool(state.tool),
-      },
+      finishNativeUpdate(generation);
     });
-    finishNativeUpdate(generation);
   };
 
   // Apply native canonicalization without treating an accepted user edit as
@@ -621,27 +662,23 @@ const installNativeWindowBridge = ({
   window.interviewArcReconcile = (serializedScene) => {
     const scene = JSON.parse(serializedScene);
     const elements = toExcalidrawElements(scene);
-    const generation = beginNativeUpdate();
-    setReadOnly(Boolean(scene.readOnly));
-    synchronizeControls(scene.controls);
-    currentBoxKindRef.current = scene.boxKind ?? currentBoxKindRef.current;
-    api.updateScene({
-      elements,
-      appState: {
-        selectedElementIds: scene.selectedID
-          ? { [scene.selectedID]: true }
-          : {},
-        ...itemStyleForTool(scene.tool),
-      },
+    runOrDeferNativeUpdate(() => {
+      const generation = beginNativeUpdate();
+      api.updateScene({
+        elements,
+        // Canonicalization may replace IDs/bounds/routes, but it must never
+        // reset the viewport or tool that the person is actively using.
+        appState: nativeAppState(scene),
+      });
+      finishNativeUpdate(generation);
     });
-    finishNativeUpdate(generation);
     return elements.length;
   };
 
   window.interviewArcFlush = () => {
-    const scene = snapshot();
+    const scene = readScene();
     publication.adoptScene(scene);
-    return scene;
+    return snapshot(scene);
   };
   window.interviewArcSnapshot = snapshot;
   window.interviewArcRuntimeState = () => ({
@@ -649,6 +686,25 @@ const installNativeWindowBridge = ({
     zoom: Number(api.getAppState().zoom?.value ?? 1),
     nativeControls: nativeControlsRef.current,
   });
+
+  return {
+    captureChange(scene) {
+      if (!loadingRef.current) return false;
+      deferredChange = scene;
+      return true;
+    },
+    noteUserInput() {
+      if (loadingRef.current) receivedUserInputDuringNativeUpdate = true;
+    },
+    completePointerInteraction(didPublish) {
+      const update = deferredNativeUpdate;
+      deferredNativeUpdate = null;
+      // A published pointer scene will synchronously drive SwiftUI with the
+      // newest document. Drop an older deferred native snapshot and let that
+      // fresh model update return through the bridge instead.
+      if (!didPublish) update?.();
+    },
+  };
 };
 
 const BoardActionIcon = ({ name }) => {
@@ -707,7 +763,11 @@ function BoardEditor() {
     appState: null,
   });
   const apiRef = useRef(null);
-  const loadingRef = useRef(false);
+  // Start closed: Excalidraw publishes an empty scene during bootstrap, before
+  // Swift has supplied the durable Board document. The native load adopts the
+  // first safe baseline and opens normal publication from that point onward.
+  const loadingRef = useRef(true);
+  const nativeBridgeRef = useRef(null);
   const nativeControlsRef = useRef(defaultNativeControls);
   const overlayFingerprintRef = useRef("");
   const pointerSubscriptionsRef = useRef([]);
@@ -718,6 +778,12 @@ function BoardEditor() {
     publicationRef.current = createScenePublicationController(
       post,
       ({ elements, appState, files }) => normalizeScene(
+        elements,
+        appState,
+        files,
+        currentBoxKindRef.current,
+      ),
+      ({ elements, appState, files }) => sceneRevision(
         elements,
         appState,
         files,
@@ -735,7 +801,6 @@ function BoardEditor() {
   }, []);
 
   const handleChange = useCallback((elements, appState, files) => {
-    if (loadingRef.current) return;
     const activeTool = appState?.activeTool?.type ?? "selection";
     if (activeTool !== previousActiveToolRef.current) {
       currentBoxKindRef.current = boxKindForExcalType(
@@ -744,8 +809,10 @@ function BoardEditor() {
       );
       previousActiveToolRef.current = activeTool;
     }
+    const scene = { elements, appState, files };
+    if (nativeBridgeRef.current?.captureChange(scene)) return;
     updateSemanticOverlay(elements, appState);
-    publicationRef.current.acceptScene({ elements, appState, files });
+    publicationRef.current.acceptScene(scene);
   }, [updateSemanticOverlay]);
 
   const installAPI = useCallback((api) => {
@@ -760,17 +827,7 @@ function BoardEditor() {
       });
       return;
     }
-    for (const unsubscribe of pointerSubscriptionsRef.current) unsubscribe();
-    pointerSubscriptionsRef.current = [
-      api.onPointerDown(() => {
-        publicationRef.current.beginPointerInteraction();
-      }),
-      api.onPointerUp(() => {
-        publicationRef.current.endPointerInteraction();
-      }),
-    ];
-
-    installNativeWindowBridge({
+    const nativeBridge = installNativeWindowBridge({
       api,
       currentBoxKindRef,
       loadingRef,
@@ -781,6 +838,20 @@ function BoardEditor() {
       setReadOnly,
       updateSemanticOverlay,
     });
+    nativeBridgeRef.current = nativeBridge;
+
+    for (const unsubscribe of pointerSubscriptionsRef.current) unsubscribe();
+    pointerSubscriptionsRef.current = [
+      api.onPointerDown(() => {
+        nativeBridge.noteUserInput();
+        publicationRef.current.beginPointerInteraction();
+      }),
+      api.onPointerUp(() => {
+        nativeBridge.completePointerInteraction(
+          publicationRef.current.endPointerInteraction(),
+        );
+      }),
+    ];
 
     document.documentElement.dataset.interviewArcBoardReady = "true";
     post({ event: "ready" });
@@ -801,6 +872,7 @@ function BoardEditor() {
 
   useEffect(() => {
     const handleKeyDown = (event) => {
+      nativeBridgeRef.current?.noteUserInput();
       const key = event.key.toLowerCase();
       const command = event.metaKey || event.ctrlKey;
       if (command && key === "z") {
@@ -832,18 +904,24 @@ function BoardEditor() {
         post({ event: "command", command: "tool", tool });
       }
     };
+    const noteTextInput = () => nativeBridgeRef.current?.noteUserInput();
     const cancelPointerInteraction = () => {
-      publicationRef.current.cancelPointerInteraction();
+      nativeBridgeRef.current?.completePointerInteraction(
+        publicationRef.current.cancelPointerInteraction(),
+      );
     };
     window.addEventListener("keydown", handleKeyDown, true);
+    window.addEventListener("beforeinput", noteTextInput, true);
     window.addEventListener("pointercancel", cancelPointerInteraction, true);
     window.addEventListener("blur", cancelPointerInteraction);
     return () => {
       window.removeEventListener("keydown", handleKeyDown, true);
+      window.removeEventListener("beforeinput", noteTextInput, true);
       window.removeEventListener("pointercancel", cancelPointerInteraction, true);
       window.removeEventListener("blur", cancelPointerInteraction);
       for (const unsubscribe of pointerSubscriptionsRef.current) unsubscribe();
       pointerSubscriptionsRef.current = [];
+      nativeBridgeRef.current = null;
       publicationRef.current.reset();
     };
   }, [flushThenPost]);
