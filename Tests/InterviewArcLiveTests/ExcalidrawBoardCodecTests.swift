@@ -446,6 +446,16 @@ final class ExcalidrawBoardCodecTests: XCTestCase {
             "flushedCommand"
         )
         XCTAssertFalse(
+            ExcalidrawBoardBridgePolicy.permitsScene(
+                afterNativeBaselineWasSent: false
+            )
+        )
+        XCTAssertTrue(
+            ExcalidrawBoardBridgePolicy.permitsScene(
+                afterNativeBaselineWasSent: true
+            )
+        )
+        XCTAssertFalse(
             ExcalidrawBoardBridgePolicy.permitsCommand(
                 afterSceneAccepted: false
             )

@@ -1,17 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  BOARD_CHROME_FALLBACK_PLACEMENT,
   boardChromeActionConfigurations,
-  resolveBoardChromePlacement,
 } from "../src/board-chrome.js";
-
-test("Board chrome has a visible fallback below the native toolbar", () => {
-  assert.deepEqual(BOARD_CHROME_FALLBACK_PLACEMENT, {
-    right: 8,
-    top: 72,
-  });
-});
 
 test("Board product actions derive from one configuration", () => {
   const actions = boardChromeActionConfigurations({
@@ -33,29 +24,22 @@ test("Board product actions derive from one configuration", () => {
   );
 });
 
-test("Board chrome flows below the toolbar when the row is occupied", () => {
-  const placement = resolveBoardChromePlacement({
-    container: { left: 0, right: 780 },
-    toolbar: { top: 16, right: 606, bottom: 64 },
-    currentControlsWidth: 520,
-    fullControlsWidth: 520,
-    viewportWidth: 780,
+test("Board actions keep complete accessible labels in icon-only chrome", () => {
+  const actions = boardChromeActionConfigurations({
+    canAttach: false,
+    canExport: true,
+    canSave: false,
+    hasRevisions: true,
+    isExporting: true,
+    isInspecting: true,
   });
-  assert.equal(placement.compact, false);
-  assert.equal(placement.sharesToolbarRow, false);
-  assert.equal(placement.top, 72);
-  assert.equal(placement.right, 8);
-});
-
-test("Board chrome compacts only when its full controls cannot fit", () => {
-  const placement = resolveBoardChromePlacement({
-    container: { left: 0, right: 420 },
-    toolbar: { top: 16, right: 380, bottom: 64 },
-    currentControlsWidth: 186,
-    fullControlsWidth: 520,
-    viewportWidth: 420,
-  });
-  assert.equal(placement.compact, true);
-  assert.equal(placement.right, 8);
-  assert.equal(placement.top, 72);
+  assert.deepEqual(
+    actions.map(({ command, label, title }) => [command, label, title]),
+    [
+      ["returnToDraft", "Return to draft", undefined],
+      ["showRevisions", "Revisions", "Browse revisions"],
+      ["attachRevision", "Attach", "Attach revision"],
+      ["exportRevision", "Exporting", "Export Draw.io, SVG, and PNG"],
+    ],
+  );
 });

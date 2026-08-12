@@ -204,6 +204,12 @@ final class SystemDesignRoomLayoutTests: XCTestCase {
         XCTAssertEqual(FullRoomLayout.floorRailHeight, 55)
         XCTAssertEqual(FullRoomLayout.floorContentHorizontalPadding, 24)
         XCTAssertEqual(FullRoomLayout.floorOutlineHorizontalInset, 16)
+        XCTAssertEqual(FullRoomLayout.floorOutlineVerticalInset, 4)
+        XCTAssertLessThanOrEqual(
+            FullRoomLayout.minimumActionHitTarget,
+            FullRoomLayout.floorRailHeight
+                - FullRoomLayout.floorOutlineVerticalInset * 2
+        )
     }
 
     func testCandidateTextMeetsWCAGBodyContrastAcrossRoomSurfaces() {

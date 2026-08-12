@@ -1,7 +1,6 @@
 import React, {
   useCallback,
   useEffect,
-  useLayoutEffect,
   useRef,
   useState,
 } from "react";
@@ -10,6 +9,7 @@ import {
   Excalidraw,
   convertToExcalidrawElements,
   getNonDeletedElements,
+  getSceneVersion,
 } from "@excalidraw/excalidraw";
 import {
   hasCanonicalBoardAngle,
@@ -22,9 +22,7 @@ import {
   nativeToolForExcalType,
 } from "./tool-mapping.js";
 import {
-  BOARD_CHROME_FALLBACK_PLACEMENT,
   boardChromeActionConfigurations,
-  resolveBoardChromePlacement,
 } from "./board-chrome.js";
 import "./style.css";
 
@@ -347,6 +345,26 @@ const normalizeScene = (elements, appState, files, currentBoxKind) => {
   };
 };
 
+// Excalidraw increments an element's version for every semantic mutation.
+// Combine that monotonic scene version with the small set of persisted app
+// state instead of serializing every coordinate and connector point merely to
+// suppress duplicate callbacks.
+const sceneRevision = (elements, appState, files, currentBoxKind) => {
+  const selectedIDs = Object.keys(appState?.selectedElementIds ?? {})
+    .filter((id) => appState.selectedElementIds[id])
+    .sort()
+    .join(",");
+  return [
+    getSceneVersion(elements),
+    elements.length,
+    Number(appState?.zoom?.value ?? 1),
+    appState?.activeTool?.type ?? "selection",
+    selectedIDs,
+    currentBoxKind,
+    Object.keys(files ?? {}).length,
+  ].join("|");
+};
+
 const strokeSkeleton = (element) => {
   const points = element.points ?? [];
   const origin = points[0] ?? { x: 0, y: 0 };
@@ -519,48 +537,106 @@ const installNativeWindowBridge = ({
     nativeControlsRef.current = controls ?? defaultNativeControls;
     setNativeControls(nativeControlsRef.current);
   };
-  const refreshOverlay = () => {
-    updateSemanticOverlay(api.getSceneElements(), api.getAppState());
+  const readScene = () => ({
+    elements: api.getSceneElements(),
+    appState: api.getAppState(),
+    files: api.getFiles(),
+  });
+  const snapshot = (scene = readScene()) => normalizeScene(
+    scene.elements,
+    scene.appState,
+    scene.files,
+    currentBoxKindRef.current,
+  );
+  let nativeUpdateGeneration = 0;
+  let hasLoadedScene = false;
+  let deferredNativeUpdate = null;
+  let deferredChange = null;
+  let receivedUserInputDuringNativeUpdate = false;
+
+  const runOrDeferNativeUpdate = (update) => {
+    if (publication.snapshot().isPointerInteractionActive) {
+      deferredNativeUpdate = update;
+      return false;
+    }
+    update();
+    return true;
+  };
+  const beginNativeUpdate = () => {
+    nativeUpdateGeneration += 1;
+    if (!loadingRef.current) {
+      deferredChange = null;
+      receivedUserInputDuringNativeUpdate = false;
+    }
+    loadingRef.current = true;
+    return nativeUpdateGeneration;
+  };
+  const finishNativeUpdate = (generation) => {
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => {
+        if (generation !== nativeUpdateGeneration) return;
+        const scene = readScene();
+        updateSemanticOverlay(scene.elements, scene.appState);
+        loadingRef.current = false;
+        if (receivedUserInputDuringNativeUpdate) {
+          publication.acceptScene(deferredChange ?? scene);
+        } else {
+          publication.adoptScene(scene);
+        }
+        deferredChange = null;
+        receivedUserInputDuringNativeUpdate = false;
+      });
+    });
+  };
+
+  const nativeAppState = (
+    scene,
+    { appliesTool = false, appliesZoom = false, transparent = false } = {},
+  ) => {
+    setReadOnly(Boolean(scene.readOnly));
+    synchronizeControls(scene.controls);
+    currentBoxKindRef.current = scene.boxKind ?? currentBoxKindRef.current;
+    if (appliesTool && !scene.readOnly) {
+      const activeTool = excalTypeForNativeTool(scene.tool, scene.boxKind);
+      previousActiveToolRef.current = activeTool;
+      api.setActiveTool({ type: activeTool });
+    }
+    const zoom = Number(scene.zoom);
+    return {
+      selectedElementIds: scene.selectedID
+        ? { [scene.selectedID]: true }
+        : {},
+      ...(appliesZoom && Number.isFinite(zoom)
+        ? { zoom: { value: zoom } }
+        : {}),
+      ...(transparent ? { viewBackgroundColor: "transparent" } : {}),
+      ...itemStyleForTool(scene.tool),
+    };
   };
 
   window.interviewArcLoad = (serializedScene) => {
     const scene = JSON.parse(serializedScene);
     const elements = toExcalidrawElements(scene);
-    loadingRef.current = true;
-    publication.reset();
-    setReadOnly(Boolean(scene.readOnly));
-    synchronizeControls(scene.controls);
-    currentBoxKindRef.current = scene.boxKind ?? "generic";
-    previousActiveToolRef.current = excalTypeForNativeTool(
-      scene.tool,
-      scene.boxKind,
-    );
-    api.updateScene({
-      elements,
-      appState: {
-        selectedElementIds: scene.selectedID
-          ? { [scene.selectedID]: true }
-          : {},
-        zoom: { value: Number(scene.zoom ?? 1) },
-        viewBackgroundColor: "transparent",
-        ...itemStyleForTool(scene.tool),
-      },
-    });
-    window.requestAnimationFrame(() => {
-      if (!scene.readOnly) {
-        api.setActiveTool({
-          type: excalTypeForNativeTool(scene.tool, scene.boxKind),
-        });
-      }
-      if (elements.length > 0) {
-        api.scrollToContent(elements, {
-          fitToContent: false,
-          animate: false,
-        });
-      }
+    runOrDeferNativeUpdate(() => {
+      const shouldRevealInitialContent = !hasLoadedScene;
+      hasLoadedScene = true;
+      const generation = beginNativeUpdate();
+      api.updateScene({
+        elements,
+        appState: nativeAppState(scene, {
+          appliesTool: shouldRevealInitialContent,
+          appliesZoom: shouldRevealInitialContent,
+          transparent: true,
+        }),
+      });
       window.requestAnimationFrame(() => {
-        refreshOverlay();
-        loadingRef.current = false;
+        if (elements.length > 0 && shouldRevealInitialContent) {
+          api.scrollToContent(elements, {
+            fitToContent: false,
+            animate: false,
+          });
+        }
+        finishNativeUpdate(generation);
       });
     });
     return elements.length;
@@ -568,103 +644,67 @@ const installNativeWindowBridge = ({
 
   window.interviewArcSetState = (serializedState) => {
     const state = JSON.parse(serializedState);
-    currentBoxKindRef.current = state.boxKind ?? currentBoxKindRef.current;
-    setReadOnly(Boolean(state.readOnly));
-    synchronizeControls(state.controls);
-    if (!state.readOnly) {
-      previousActiveToolRef.current = excalTypeForNativeTool(
-        state.tool,
-        state.boxKind,
-      );
-      api.setActiveTool({
-        type: excalTypeForNativeTool(state.tool, state.boxKind),
+    runOrDeferNativeUpdate(() => {
+      const generation = beginNativeUpdate();
+      api.updateScene({
+        appState: nativeAppState(state, {
+          appliesTool: true,
+          appliesZoom: true,
+        }),
       });
-    }
-    const zoom = Number(state.zoom);
-    api.updateScene({
-      appState: {
-        selectedElementIds: state.selectedID
-          ? { [state.selectedID]: true }
-          : {},
-        ...(Number.isFinite(zoom) ? { zoom: { value: zoom } } : {}),
-        ...itemStyleForTool(state.tool),
-      },
+      finishNativeUpdate(generation);
     });
-    window.requestAnimationFrame(refreshOverlay);
   };
 
-  const snapshot = () => normalizeScene(
-    api.getSceneElements(),
-    api.getAppState(),
-    api.getFiles(),
-    currentBoxKindRef.current,
-  );
+  // Apply native canonicalization without treating an accepted user edit as
+  // a new document load. In particular, preserve the current viewport and
+  // active tool so ID/bounds/connector corrections never flash or jump.
+  window.interviewArcReconcile = (serializedScene) => {
+    const scene = JSON.parse(serializedScene);
+    const elements = toExcalidrawElements(scene);
+    runOrDeferNativeUpdate(() => {
+      const generation = beginNativeUpdate();
+      api.updateScene({
+        elements,
+        // Canonicalization may replace IDs/bounds/routes, but it must never
+        // reset the viewport or tool that the person is actively using.
+        appState: nativeAppState(scene),
+      });
+      finishNativeUpdate(generation);
+    });
+    return elements.length;
+  };
+
   window.interviewArcFlush = () => {
-    publication.reset();
-    return snapshot();
+    const scene = readScene();
+    publication.adoptScene(scene);
+    return snapshot(scene);
   };
   window.interviewArcSnapshot = snapshot;
   window.interviewArcRuntimeState = () => ({
     activeTool: api.getAppState().activeTool.type,
+    zoom: Number(api.getAppState().zoom?.value ?? 1),
     nativeControls: nativeControlsRef.current,
   });
-};
 
-const useBoardChromePlacement = () => {
-  const controlsRef = useRef(null);
-  const fullControlsWidthRef = useRef(null);
-  const [compact, setCompact] = useState(false);
-  const [placement, setPlacement] = useState(
-    BOARD_CHROME_FALLBACK_PLACEMENT,
-  );
-
-  useLayoutEffect(() => {
-    let animationFrame = null;
-    const measure = () => {
-      const controls = controlsRef.current;
-      const container = document.querySelector(".board-shell");
-      const toolbar = document.querySelector(".App-toolbar-container");
-      if (!controls || !container || !toolbar) return;
-      const controlsRect = controls.getBoundingClientRect();
-      const containerRect = container.getBoundingClientRect();
-      const toolbarRect = toolbar.getBoundingClientRect();
-      if (!compact) fullControlsWidthRef.current = controlsRect.width;
-      const next = resolveBoardChromePlacement({
-        container: containerRect,
-        toolbar: toolbarRect,
-        currentControlsWidth: controlsRect.width,
-        fullControlsWidth: fullControlsWidthRef.current ?? controlsRect.width,
-        viewportWidth: window.innerWidth,
-      });
-      if (next.compact !== compact) {
-        setCompact(next.compact);
-        return;
-      }
-      setPlacement({ right: next.right, top: next.top });
-    };
-    const scheduleMeasure = () => {
-      if (animationFrame !== null) window.cancelAnimationFrame(animationFrame);
-      animationFrame = window.requestAnimationFrame(measure);
-    };
-    const resizeObserver = new ResizeObserver(scheduleMeasure);
-    const mutationObserver = new MutationObserver(scheduleMeasure);
-    if (controlsRef.current) resizeObserver.observe(controlsRef.current);
-    const container = document.querySelector(".board-shell");
-    if (container) resizeObserver.observe(container);
-    const toolbar = document.querySelector(".App-toolbar-container");
-    if (toolbar) resizeObserver.observe(toolbar);
-    mutationObserver.observe(document.body, { childList: true, subtree: true });
-    window.addEventListener("resize", scheduleMeasure);
-    scheduleMeasure();
-    return () => {
-      if (animationFrame !== null) window.cancelAnimationFrame(animationFrame);
-      resizeObserver.disconnect();
-      mutationObserver.disconnect();
-      window.removeEventListener("resize", scheduleMeasure);
-    };
-  }, [compact]);
-
-  return { compact, controlsRef, placement };
+  return {
+    captureChange(scene) {
+      if (!loadingRef.current) return false;
+      deferredChange = scene;
+      return true;
+    },
+    noteUserInput() {
+      if (loadingRef.current) receivedUserInputDuringNativeUpdate = true;
+    },
+    completePointerInteraction(didPublish) {
+      const update = deferredNativeUpdate;
+      deferredNativeUpdate = null;
+      // A published pointer scene will synchronously drive SwiftUI with the
+      // newest document. Drop an older deferred native snapshot and let that
+      // fresh model update return through the bridge instead.
+      if (!didPublish) update?.();
+    },
+  };
 };
 
 const BoardActionIcon = ({ name }) => {
@@ -689,25 +729,13 @@ const BoardActionIcon = ({ name }) => {
 
 const BoardChromeControls = ({ controls, onAction }) => {
   const actions = boardChromeActionConfigurations(controls);
-  const { compact, controlsRef, placement } = useBoardChromePlacement();
-  const status = controls.notice ?? controls.revisionStatus;
 
   return (
     <div
       aria-label="Board revisions and export"
       className="interview-arc-board-controls"
-      data-compact={compact ? "true" : "false"}
-      ref={controlsRef}
       role="toolbar"
-      style={placement}
     >
-      <span
-        className={`interview-arc-board-status${controls.noticeIsError ? " interview-arc-board-status--error" : ""}`}
-        title={status}
-        role={controls.noticeIsError ? "alert" : "status"}
-      >
-        {status}
-      </span>
       {actions.map((action) => (
         <button
           aria-label={action.command === "exportRevision"
@@ -721,9 +749,6 @@ const BoardChromeControls = ({ controls, onAction }) => {
           type="button"
         >
           <BoardActionIcon name={action.icon} />
-          <span className="interview-arc-board-action__label">
-            {action.label}
-          </span>
         </button>
       ))}
     </div>
@@ -738,7 +763,11 @@ function BoardEditor() {
     appState: null,
   });
   const apiRef = useRef(null);
-  const loadingRef = useRef(false);
+  // Start closed: Excalidraw publishes an empty scene during bootstrap, before
+  // Swift has supplied the durable Board document. The native load adopts the
+  // first safe baseline and opens normal publication from that point onward.
+  const loadingRef = useRef(true);
+  const nativeBridgeRef = useRef(null);
   const nativeControlsRef = useRef(defaultNativeControls);
   const overlayFingerprintRef = useRef("");
   const pointerSubscriptionsRef = useRef([]);
@@ -746,16 +775,21 @@ function BoardEditor() {
   const previousActiveToolRef = useRef("selection");
   const publicationRef = useRef(null);
   if (publicationRef.current === null) {
-    publicationRef.current = createScenePublicationController((scene) => {
-      if (loadingRef.current) return;
-      const { elements, appState, files } = scene;
-      post(normalizeScene(
+    publicationRef.current = createScenePublicationController(
+      post,
+      ({ elements, appState, files }) => normalizeScene(
         elements,
         appState,
         files,
         currentBoxKindRef.current,
-      ));
-    });
+      ),
+      ({ elements, appState, files }) => sceneRevision(
+        elements,
+        appState,
+        files,
+        currentBoxKindRef.current,
+      ),
+    );
   }
 
   const updateSemanticOverlay = useCallback((elements, appState) => {
@@ -767,7 +801,6 @@ function BoardEditor() {
   }, []);
 
   const handleChange = useCallback((elements, appState, files) => {
-    if (loadingRef.current) return;
     const activeTool = appState?.activeTool?.type ?? "selection";
     if (activeTool !== previousActiveToolRef.current) {
       currentBoxKindRef.current = boxKindForExcalType(
@@ -776,8 +809,10 @@ function BoardEditor() {
       );
       previousActiveToolRef.current = activeTool;
     }
+    const scene = { elements, appState, files };
+    if (nativeBridgeRef.current?.captureChange(scene)) return;
     updateSemanticOverlay(elements, appState);
-    publicationRef.current.acceptScene({ elements, appState, files });
+    publicationRef.current.acceptScene(scene);
   }, [updateSemanticOverlay]);
 
   const installAPI = useCallback((api) => {
@@ -792,17 +827,7 @@ function BoardEditor() {
       });
       return;
     }
-    for (const unsubscribe of pointerSubscriptionsRef.current) unsubscribe();
-    pointerSubscriptionsRef.current = [
-      api.onPointerDown(() => {
-        publicationRef.current.beginPointerInteraction();
-      }),
-      api.onPointerUp(() => {
-        publicationRef.current.endPointerInteraction();
-      }),
-    ];
-
-    installNativeWindowBridge({
+    const nativeBridge = installNativeWindowBridge({
       api,
       currentBoxKindRef,
       loadingRef,
@@ -813,6 +838,20 @@ function BoardEditor() {
       setReadOnly,
       updateSemanticOverlay,
     });
+    nativeBridgeRef.current = nativeBridge;
+
+    for (const unsubscribe of pointerSubscriptionsRef.current) unsubscribe();
+    pointerSubscriptionsRef.current = [
+      api.onPointerDown(() => {
+        nativeBridge.noteUserInput();
+        publicationRef.current.beginPointerInteraction();
+      }),
+      api.onPointerUp(() => {
+        nativeBridge.completePointerInteraction(
+          publicationRef.current.endPointerInteraction(),
+        );
+      }),
+    ];
 
     document.documentElement.dataset.interviewArcBoardReady = "true";
     post({ event: "ready" });
@@ -833,6 +872,7 @@ function BoardEditor() {
 
   useEffect(() => {
     const handleKeyDown = (event) => {
+      nativeBridgeRef.current?.noteUserInput();
       const key = event.key.toLowerCase();
       const command = event.metaKey || event.ctrlKey;
       if (command && key === "z") {
@@ -864,18 +904,24 @@ function BoardEditor() {
         post({ event: "command", command: "tool", tool });
       }
     };
+    const noteTextInput = () => nativeBridgeRef.current?.noteUserInput();
     const cancelPointerInteraction = () => {
-      publicationRef.current.cancelPointerInteraction();
+      nativeBridgeRef.current?.completePointerInteraction(
+        publicationRef.current.cancelPointerInteraction(),
+      );
     };
     window.addEventListener("keydown", handleKeyDown, true);
+    window.addEventListener("beforeinput", noteTextInput, true);
     window.addEventListener("pointercancel", cancelPointerInteraction, true);
     window.addEventListener("blur", cancelPointerInteraction);
     return () => {
       window.removeEventListener("keydown", handleKeyDown, true);
+      window.removeEventListener("beforeinput", noteTextInput, true);
       window.removeEventListener("pointercancel", cancelPointerInteraction, true);
       window.removeEventListener("blur", cancelPointerInteraction);
       for (const unsubscribe of pointerSubscriptionsRef.current) unsubscribe();
       pointerSubscriptionsRef.current = [];
+      nativeBridgeRef.current = null;
       publicationRef.current.reset();
     };
   }, [flushThenPost]);
