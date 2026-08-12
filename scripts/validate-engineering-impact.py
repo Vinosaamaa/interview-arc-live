@@ -497,11 +497,7 @@ def iter_frontmatters_at(revision: str, paths: list[str]):
         raise subprocess.CalledProcessError(return_code, process.args, stderr=stderr)
 
 
-def record_index_and_changed_types_at(
-    revision: str,
-    changed_paths: list[str],
-    required_refs: list[str] | None = None,
-):
+def validate_changed_record_paths(revision: str, changed_paths: list[str]):
     missing_changed_paths = set(changed_paths) - git_objects_exist(revision, changed_paths)
     if missing_changed_paths:
         path = sorted(missing_changed_paths)[0]
@@ -509,32 +505,44 @@ def record_index_and_changed_types_at(
             f"Canonical Engineering records cannot be deleted; publish a superseding record instead: {path}."
         )
 
-    changed_metadata = list(iter_frontmatters_at(revision, sorted(changed_paths)))
+
+def load_record_metadata(revision: str, paths):
+    return dict(iter_frontmatters_at(revision, sorted(paths)))
+
+
+def validated_record_id(metadata, path):
+    record_id = metadata.get("id")
+    if not isinstance(record_id, str) or not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", record_id):
+        raise ValueError(f"Canonical Engineering record has an invalid id: {path}.")
+    return record_id
+
+
+def discover_referenced_record_metadata(revision: str, changed_metadata, required_refs):
     record_ids = {
         reference.rsplit("@", 1)[0]
         for reference in required_refs or []
     }
-    for path, metadata in changed_metadata:
-        record_id = metadata.get("id")
-        if not isinstance(record_id, str) or not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", record_id):
-            raise ValueError(f"Canonical Engineering record has an invalid id: {path}.")
-        record_ids.add(record_id)
-    paths = set(changed_paths)
-    paths.update(matching_record_paths(revision, record_ids))
+    record_ids.update(
+        validated_record_id(metadata, path)
+        for path, metadata in changed_metadata.items()
+    )
+    candidate_paths = set(matching_record_paths(revision, record_ids)) - set(changed_metadata)
+    candidate_metadata = load_record_metadata(revision, candidate_paths)
+    return {
+        path: metadata
+        for path, metadata in candidate_metadata.items()
+        if metadata.get("id") in record_ids
+    }
 
+
+def build_record_index(metadata_by_path, changed_paths):
     changed_path_set = set(changed_paths)
     index = {}
     changed_types = []
-    metadata_by_path = dict(changed_metadata)
-    for path, metadata in iter_frontmatters_at(revision, sorted(paths - set(metadata_by_path))):
-        if metadata.get("id") in record_ids:
-            metadata_by_path[path] = metadata
     for path, metadata in sorted(metadata_by_path.items()):
-        record_id = metadata.get("id")
+        record_id = validated_record_id(metadata, path)
         record_revision = metadata.get("revision")
         record_type = metadata.get("type")
-        if not isinstance(record_id, str) or not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", record_id):
-            raise ValueError(f"Canonical Engineering record has an invalid id: {path}.")
         if type(record_revision) is not int or record_revision < 1:
             raise ValueError(f"Canonical Engineering record has an invalid revision: {path}.")
         if record_type not in set(CLASSIFICATIONS.values()) - {"none"}:
@@ -546,6 +554,24 @@ def record_index_and_changed_types_at(
         if path in changed_path_set:
             changed_types.append(record_type)
     return index, changed_types
+
+
+def record_index_and_changed_types_at(
+    revision: str,
+    changed_paths: list[str],
+    required_refs: list[str] | None = None,
+):
+    validate_changed_record_paths(revision, changed_paths)
+    changed_metadata = load_record_metadata(revision, changed_paths)
+    referenced_metadata = discover_referenced_record_metadata(
+        revision,
+        changed_metadata,
+        required_refs,
+    )
+    return build_record_index(
+        changed_metadata | referenced_metadata,
+        changed_paths,
+    )
 
 
 def validate_record_history(base: str, changed_paths: list[str]):
