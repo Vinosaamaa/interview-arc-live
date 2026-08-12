@@ -17,6 +17,11 @@ jobs:
     steps:
       - name: Check out source
         uses: actions/checkout@v4
+      - name: Test Engineering impact policy
+        run: python3 Tests/ScriptTests/engineering-impact-policy-tests.py
+      - name: Validate Engineering impact classification
+        if: github.event_name == 'pull_request'
+        run: python3 scripts/validate-engineering-impact.py "$GITHUB_EVENT_PATH"
       - name: Report Swift toolchain
         run: |
           test -d "$DEVELOPER_DIR"
