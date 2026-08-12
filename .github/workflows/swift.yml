@@ -17,6 +17,8 @@ jobs:
     steps:
       - name: Check out source
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - name: Test Engineering impact policy
         run: python3 Tests/ScriptTests/engineering-impact-policy-tests.py
       - name: Validate Engineering impact classification

@@ -4,12 +4,17 @@ import unittest
 from pathlib import Path
 
 SCRIPT = Path(__file__).parents[2] / "scripts" / "validate-engineering-impact.py"
+WORKFLOW = Path(__file__).parents[2] / ".github" / "workflows" / "swift.yml"
 SPEC = importlib.util.spec_from_file_location("engineering_impact", SCRIPT)
 MODULE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(MODULE)
 
 
 class EngineeringImpactPolicyTests(unittest.TestCase):
+    def test_workflow_fetches_history_for_exact_pr_revision_diff(self):
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        self.assertRegex(workflow, r"actions/checkout@v4\s+with:\s+fetch-depth:\s*0")
+
     def test_requires_exactly_one_choice(self):
         with self.assertRaisesRegex(ValueError, "exactly one"):
             MODULE.validate("", [])
