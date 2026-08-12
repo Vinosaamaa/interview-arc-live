@@ -28,7 +28,7 @@ verification: {"state":"not-recorded","evidenceRefs":[]}
 visibility: public-safe
 publicationEligibility: eligible
 issue: 41
-pr: null
+pr: 42
 release: null
 run: null
 ---
