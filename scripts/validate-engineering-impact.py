@@ -50,6 +50,7 @@ MAX_STRING_LENGTH = RECEIPT_DEFINITIONS["stringList"]["items"]["maxLength"]
 MAX_RECORD_REFS = RECEIPT_DEFINITIONS["recordRefs"]["maxItems"]
 MAX_RECORD_REF_LENGTH = RECEIPT_DEFINITIONS["recordRefs"]["items"]["maxLength"]
 MAX_FRONTMATTER_BYTES = 65_536
+MAX_BATCH_RECORDS = 64
 FRONTMATTER_BYTES_PATTERN = re.compile(rb"\A---\r?\n.*?\r?\n---(?:\r?\n|\Z)", re.DOTALL)
 
 
@@ -358,30 +359,35 @@ def iter_frontmatters_at(revision: str, paths: list[str]):
     assert process.stdout is not None
     assert process.stderr is not None
     try:
-        for path in paths:
-            process.stdin.write(f"{revision}:{path}\n".encode())
+        for chunk_start in range(0, len(paths), MAX_BATCH_RECORDS):
+            chunk = paths[chunk_start : chunk_start + MAX_BATCH_RECORDS]
+            process.stdin.write("".join(f"{revision}:{path}\n" for path in chunk).encode())
             process.stdin.flush()
-            header = process.stdout.readline().decode("utf-8", errors="strict").rstrip("\n")
-            if header.endswith(" missing"):
-                raise ValueError(f"Canonical Engineering record is missing at the pull-request head: {path}.")
-            parts = header.split()
-            if len(parts) != 3 or parts[1] != "blob":
-                raise ValueError("Unable to read a canonical Engineering record Git object.")
-            object_size = int(parts[2])
-            prefix = process.stdout.read(min(object_size, MAX_FRONTMATTER_BYTES))
-            remaining = object_size - len(prefix)
-            while remaining:
-                discarded = process.stdout.read(min(remaining, 65_536))
-                if not discarded:
+            for path in chunk:
+                header = process.stdout.readline().decode("utf-8", errors="strict").rstrip("\n")
+                if header.endswith(" missing"):
+                    raise ValueError(f"Canonical Engineering record is missing at the pull-request head: {path}.")
+                parts = header.split()
+                if len(parts) != 3 or parts[1] != "blob":
                     raise ValueError("Unable to read a canonical Engineering record Git object.")
-                remaining -= len(discarded)
-            if process.stdout.read(1) != b"\n":
-                raise ValueError("Unable to read a canonical Engineering record Git object.")
-            frontmatter_match = FRONTMATTER_BYTES_PATTERN.match(prefix)
-            if not frontmatter_match:
-                raise ValueError(f"Canonical Engineering record has invalid or oversized front matter: {path}.")
-            metadata, _ = frontmatter_document(frontmatter_match.group().decode("utf-8", errors="strict"), path)
-            yield path, metadata
+                object_size = int(parts[2])
+                prefix = process.stdout.read(min(object_size, MAX_FRONTMATTER_BYTES))
+                remaining = object_size - len(prefix)
+                while remaining:
+                    discarded = process.stdout.read(min(remaining, 65_536))
+                    if not discarded:
+                        raise ValueError("Unable to read a canonical Engineering record Git object.")
+                    remaining -= len(discarded)
+                if process.stdout.read(1) != b"\n":
+                    raise ValueError("Unable to read a canonical Engineering record Git object.")
+                frontmatter_match = FRONTMATTER_BYTES_PATTERN.match(prefix)
+                if not frontmatter_match:
+                    raise ValueError(f"Canonical Engineering record has invalid or oversized front matter: {path}.")
+                metadata, _ = frontmatter_document(
+                    frontmatter_match.group().decode("utf-8", errors="strict"),
+                    path,
+                )
+                yield path, metadata
     finally:
         process.stdin.close()
         process.stdout.close()

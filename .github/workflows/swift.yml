@@ -33,18 +33,22 @@ jobs:
         if: github.event_name == 'pull_request'
         run: python3 scripts/validate-engineering-impact.py "$GITHUB_EVENT_PATH"
       - name: Report Swift toolchain
+        if: github.event.action != 'edited'
         run: |
           test -d "$DEVELOPER_DIR"
           xcodebuild -version
           swift --version
       - name: Install Metal toolchain
+        if: github.event.action != 'edited'
         run: xcodebuild -downloadComponent MetalToolchain
       - name: Resolve dependency graph
+        if: github.event.action != 'edited'
         run: swift package resolve
       - name: Report package schemes
+        if: github.event.action != 'edited'
         run: xcodebuild -list
       - name: Retain resolved dependency graph
-        if: github.event_name == 'pull_request'
+        if: github.event_name == 'pull_request' && github.event.action != 'edited'
         uses: actions/upload-artifact@v4
         with:
           name: InterviewArcLive-Package.resolved-${{ github.sha }}
@@ -52,6 +56,7 @@ jobs:
           if-no-files-found: error
           retention-days: 2
       - name: Build package and tests with Metal
+        if: github.event.action != 'edited'
         env:
           INTERVIEW_ARC_LIVE_DERIVED_DATA_PATH: ${{ runner.temp }}/InterviewArcLiveDerivedData
         run: |
@@ -61,12 +66,9 @@ jobs:
             -destination 'platform=macOS' \
             -derivedDataPath "$INTERVIEW_ARC_LIVE_DERIVED_DATA_PATH" \
             MACOSX_DEPLOYMENT_TARGET=14.0 \
-            ENABLE_TESTABILITY=YES \
             CODE_SIGNING_ALLOWED=NO
-          printf 'source_commit=%s\nconfiguration=%s\n' \
-            "$GITHUB_SHA" "Release" \
-            > "$INTERVIEW_ARC_LIVE_DERIVED_DATA_PATH/InterviewArcLive.source-commit"
       - name: Test package
+        if: github.event.action != 'edited'
         env:
           INTERVIEW_ARC_LIVE_DERIVED_DATA_PATH: ${{ runner.temp }}/InterviewArcLiveDerivedData
         run: |
@@ -77,19 +79,42 @@ jobs:
             -derivedDataPath "$INTERVIEW_ARC_LIVE_DERIVED_DATA_PATH" \
             -parallel-testing-enabled NO \
             MACOSX_DEPLOYMENT_TARGET=14.0 \
-            ENABLE_TESTABILITY=YES \
             CODE_SIGNING_ALLOWED=NO
+      - name: Prepare release-equivalent package products
+        if: github.event.action != 'edited'
+        env:
+          INTERVIEW_ARC_LIVE_DERIVED_DATA_PATH: ${{ runner.temp }}/InterviewArcLiveDerivedData
+        run: |
+          xcodebuild build \
+            -scheme InterviewArcLive-Package \
+            -configuration Release \
+            -destination 'platform=macOS' \
+            -derivedDataPath "$INTERVIEW_ARC_LIVE_DERIVED_DATA_PATH" \
+            -disableAutomaticPackageResolution \
+            -onlyUsePackageVersionsFromResolvedFile \
+            MACOSX_DEPLOYMENT_TARGET=14.0 \
+            ENABLE_TESTABILITY=NO \
+            CODE_SIGNING_ALLOWED=NO
+          printf 'source_commit=%s\nscheme=%s\nconfiguration=%s\nenable_testability=%s\nmacosx_deployment_target=%s\ncode_signing_allowed=%s\n' \
+            "$GITHUB_SHA" "InterviewArcLive-Package" "Release" "NO" "14.0" "NO" \
+            > "$INTERVIEW_ARC_LIVE_DERIVED_DATA_PATH/InterviewArcLive.source-commit"
       - name: Test installer safety
+        if: github.event.action != 'edited'
         run: Tests/ScriptTests/install-app-tests.zsh
       - name: Test installed Codex smoke safety
+        if: github.event.action != 'edited'
         run: Tests/ScriptTests/codex-smoke-tests.zsh
       - name: Test installed endpoint smoke safety
+        if: github.event.action != 'edited'
         run: Tests/ScriptTests/endpoint-smoke-tests.zsh
       - name: Test installed local-speech smoke safety
+        if: github.event.action != 'edited'
         run: Tests/ScriptTests/speech-smoke-tests.zsh
       - name: Test local Board editor and application icon
+        if: github.event.action != 'edited'
         run: Tests/ScriptTests/board-editor-assets-tests.zsh
       - name: Package exact source from a clean worktree
+        if: github.event.action != 'edited'
         env:
           INTERVIEW_ARC_LIVE_DERIVED_DATA_PATH: ${{ runner.temp }}/InterviewArcLiveDerivedData
           PACKAGE_SOURCE: ${{ runner.temp }}/InterviewArcLivePackageSource

@@ -3,8 +3,9 @@ import hashlib
 import importlib.util
 import json
 import unittest
+from io import BytesIO
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 SCRIPT = Path(__file__).parents[2] / "scripts" / "validate-engineering-impact.py"
 WORKFLOW = Path(__file__).parents[2] / ".github" / "workflows" / "swift.yml"
@@ -77,6 +78,26 @@ Adopted complete pull-request receipts and a curated Engineering record for the 
     def test_workflow_revalidates_after_title_or_body_edits(self):
         workflow = WORKFLOW.read_text(encoding="utf-8")
         self.assertIn("pull_request:\n    types: [opened, synchronize, reopened, edited]", workflow)
+        for step in (
+            "Report Swift toolchain",
+            "Install Metal toolchain",
+            "Resolve dependency graph",
+            "Report package schemes",
+            "Retain resolved dependency graph",
+            "Build package and tests with Metal",
+            "Test package",
+            "Prepare release-equivalent package products",
+            "Test installer safety",
+            "Test installed Codex smoke safety",
+            "Test installed endpoint smoke safety",
+            "Test installed local-speech smoke safety",
+            "Test local Board editor and application icon",
+            "Package exact source from a clean worktree",
+        ):
+            self.assertRegex(
+                workflow,
+                rf"- name: {step}\n        if: .*github\.event\.action != 'edited'",
+            )
 
     def test_packaging_uses_a_clean_exact_tree_after_mutating_tests(self):
         workflow = WORKFLOW.read_text(encoding="utf-8")
@@ -89,11 +110,19 @@ Adopted complete pull-request receipts and a curated Engineering record for the 
         package_script = PACKAGE_SCRIPT.read_text(encoding="utf-8")
         self.assertNotIn("InterviewArcLivePackageDerivedData", workflow)
         self.assertNotIn("INTERVIEW_ARC_LIVE_REUSE_BUILD_PRODUCTS", workflow)
-        self.assertEqual(workflow.count("${{ runner.temp }}/InterviewArcLiveDerivedData"), 3)
-        self.assertIn("'source_commit=%s\\nconfiguration=%s\\n'", workflow)
-        self.assertIn('"$GITHUB_SHA" "Release"', workflow)
+        self.assertNotIn("ENABLE_TESTABILITY=YES", workflow)
+        self.assertEqual(workflow.count("${{ runner.temp }}/InterviewArcLiveDerivedData"), 4)
+        self.assertIn(
+            "'source_commit=%s\\nscheme=%s\\nconfiguration=%s\\nenable_testability=%s\\n"
+            "macosx_deployment_target=%s\\ncode_signing_allowed=%s\\n'",
+            workflow,
+        )
+        self.assertIn('"$GITHUB_SHA" "InterviewArcLive-Package" "Release" "NO" "14.0" "NO"', workflow)
+        self.assertIn("ENABLE_TESTABILITY=NO", workflow)
         self.assertIn('expected_build_receipt="source_commit=$source_commit', package_script)
         self.assertIn('configuration=$xcode_configuration', package_script)
+        self.assertIn('enable_testability=$package_testability', package_script)
+        self.assertIn('ENABLE_TESTABILITY="$package_testability"', package_script)
         self.assertIn('[[ -f "$build_receipt" && "$(<"$build_receipt")" == "$expected_build_receipt" ]]', package_script)
 
     def test_classification_examples_inside_markdown_fences_are_ignored(self):
@@ -289,6 +318,29 @@ Adopted complete pull-request receipts and a curated Engineering record for the 
                 ({"session@1": "capability-dossier"}, ["capability-dossier"]),
             )
         iter_frontmatters_at.assert_called_once_with("head", [path])
+
+    def test_record_frontmatters_are_requested_in_bounded_batches(self):
+        paths = [f"docs/engineering/records/record-{index}.md" for index in range(65)]
+        output = bytearray()
+        for index, path in enumerate(paths):
+            markdown = (
+                f"---\nid: record-{index}\nrevision: 1\ntype: capability-dossier\n---\n"
+            ).encode()
+            output.extend(f"{'0' * 40} blob {len(markdown)}\n".encode())
+            output.extend(markdown)
+            output.extend(b"\n")
+
+        process = Mock()
+        process.args = ["git", "cat-file", "--batch"]
+        process.stdin = Mock()
+        process.stdout = BytesIO(output)
+        process.stderr = BytesIO()
+        process.wait.return_value = 0
+        with patch.object(MODULE.subprocess, "Popen", return_value=process):
+            frontmatters = list(MODULE.iter_frontmatters_at("head", paths))
+
+        self.assertEqual(len(frontmatters), 65)
+        self.assertEqual(process.stdin.flush.call_count, 2)
 
 
 if __name__ == "__main__":

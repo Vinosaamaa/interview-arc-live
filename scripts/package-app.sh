@@ -6,8 +6,14 @@ setopt NULL_GLOB
 repo_root="${0:A:h:h}"
 configuration="${1:-release}"
 case "$configuration" in
-  debug) xcode_configuration="Debug" ;;
-  release) xcode_configuration="Release" ;;
+  debug)
+    xcode_configuration="Debug"
+    package_testability="YES"
+    ;;
+  release)
+    xcode_configuration="Release"
+    package_testability="NO"
+    ;;
   *)
     echo "Usage: $0 [debug|release]" >&2
     exit 64
@@ -27,6 +33,9 @@ manifest_path="$repo_root/dist/InterviewArcLive.package-manifest.txt"
 allow_dirty="${INTERVIEW_ARC_LIVE_ALLOW_DIRTY:-0}"
 derived_data="${INTERVIEW_ARC_LIVE_DERIVED_DATA_PATH:-$repo_root/.build/xcode-derived-data}"
 build_receipt="$derived_data/InterviewArcLive.source-commit"
+package_scheme="InterviewArcLive-Package"
+deployment_target="14.0"
+code_signing_allowed="NO"
 
 if [[ ! -f "$info_plist" ]]; then
   echo "Missing application metadata: Resources/Info.plist" >&2
@@ -59,7 +68,11 @@ if ! command -v xcodebuild >/dev/null 2>&1; then
 fi
 
 expected_build_receipt="source_commit=$source_commit
-configuration=$xcode_configuration"
+scheme=$package_scheme
+configuration=$xcode_configuration
+enable_testability=$package_testability
+macosx_deployment_target=$deployment_target
+code_signing_allowed=$code_signing_allowed"
 if [[ -f "$build_receipt" && "$(<"$build_receipt")" == "$expected_build_receipt" ]]; then
   echo "Reusing verified $xcode_configuration build products from $derived_data."
 else
@@ -67,16 +80,19 @@ else
   # source objects while omitting the runtime metallib, so it is not accepted as
   # release evidence for the TTS-enabled application.
   xcodebuild build \
-    -scheme InterviewArcLive-Package \
+    -scheme "$package_scheme" \
     -configuration "$xcode_configuration" \
     -destination 'platform=macOS' \
     -derivedDataPath "$derived_data" \
     -disableAutomaticPackageResolution \
     -onlyUsePackageVersionsFromResolvedFile \
-    MACOSX_DEPLOYMENT_TARGET=14.0 \
-    CODE_SIGNING_ALLOWED=NO
-  printf 'source_commit=%s\nconfiguration=%s\n' \
-    "$source_commit" "$xcode_configuration" > "$build_receipt"
+    MACOSX_DEPLOYMENT_TARGET="$deployment_target" \
+    ENABLE_TESTABILITY="$package_testability" \
+    CODE_SIGNING_ALLOWED="$code_signing_allowed"
+  printf 'source_commit=%s\nscheme=%s\nconfiguration=%s\nenable_testability=%s\nmacosx_deployment_target=%s\ncode_signing_allowed=%s\n' \
+    "$source_commit" "$package_scheme" "$xcode_configuration" \
+    "$package_testability" "$deployment_target" "$code_signing_allowed" \
+    > "$build_receipt"
 fi
 
 bin_dir="$derived_data/Build/Products/$xcode_configuration"
