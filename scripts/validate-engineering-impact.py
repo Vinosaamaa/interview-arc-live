@@ -22,6 +22,7 @@ PLACEHOLDER_REASONS = {
     "none",
     "replace with a concrete reason",
 }
+PLACEHOLDER_REASON_PREFIXES = ("todo", "n/a", "na", "none", "replace")
 
 CLASSIFICATION_PATTERN = re.compile(
     rf"^\s*-\s*\[[xX]\]\s*({'|'.join(re.escape(label) for label in CLASSIFICATIONS)})(?:\s*[—-]\s*reason:\s*(.*))?\s*$",
@@ -83,7 +84,21 @@ def validate(body: str, record_types: list[str]):
     classification, reason = selected[0]
     if classification == "none":
         normalized_reason = re.sub(r"[.!]+$", "", reason.strip()).lower()
-        if len(reason) < 12 or normalized_reason in PLACEHOLDER_REASONS:
+        starts_with_placeholder = any(
+            normalized_reason.startswith(prefix)
+            and (
+                len(normalized_reason) == len(prefix)
+                or normalized_reason[len(prefix)] in " \t:;,.!?—-_"
+            )
+            for prefix in PLACEHOLDER_REASON_PREFIXES
+        )
+        has_substantive_word = re.search(r"[^\W_]{2,}", reason) is not None
+        if (
+            len(reason) < 12
+            or normalized_reason in PLACEHOLDER_REASONS
+            or starts_with_placeholder
+            or not has_substantive_word
+        ):
             raise ValueError("Engineering impact `None` requires a concrete reason.")
         if record_types:
             raise ValueError("A canonical Engineering record changed, so Engineering impact cannot be `None`.")

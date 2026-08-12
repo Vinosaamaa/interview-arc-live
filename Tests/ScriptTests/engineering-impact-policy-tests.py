@@ -261,6 +261,10 @@ Adopted complete pull-request receipts and a curated Engineering record for the 
             MODULE.validate("- [x] None — reason: TODO", [])
         with self.assertRaisesRegex(ValueError, "concrete reason"):
             MODULE.validate("- [x] None — reason: REPLACE WITH A CONCRETE REASON", [])
+        with self.assertRaisesRegex(ValueError, "concrete reason"):
+            MODULE.validate("- [x] None — reason: TODO pending review of this change", [])
+        with self.assertRaisesRegex(ValueError, "concrete reason"):
+            MODULE.validate("- [x] None — reason: !!!!!!!!!!!!", [])
         self.assertEqual(
             MODULE.validate("- [x] None — reason: This change only corrects non-engineering copy.", []),
             "none",
