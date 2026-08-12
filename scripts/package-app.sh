@@ -37,6 +37,7 @@ build_candidate_receipt="$derived_data/InterviewArcLive.build-candidate"
 package_scheme="InterviewArcLive-Package"
 deployment_target="14.0"
 code_signing_allowed="NO"
+target_architecture="$(uname -m)"
 
 if [[ ! -f "$info_plist" ]]; then
   echo "Missing application metadata: Resources/Info.plist" >&2
@@ -95,11 +96,13 @@ else
     -scheme "$package_scheme" \
     -configuration "$xcode_configuration" \
     -destination 'platform=macOS' \
+    -sdk macosx \
     -derivedDataPath "$derived_data" \
     -disableAutomaticPackageResolution \
     -onlyUsePackageVersionsFromResolvedFile \
     MACOSX_DEPLOYMENT_TARGET="$deployment_target" \
     ENABLE_TESTABILITY="$package_testability" \
+    ARCHS="$target_architecture" \
     CODE_SIGNING_ALLOWED="$code_signing_allowed"
 fi
 

@@ -93,15 +93,18 @@ jobs:
         env:
           INTERVIEW_ARC_LIVE_DERIVED_DATA_PATH: ${{ runner.temp }}/InterviewArcLivePackageDerivedData
         run: |
+          target_architecture="$(uname -m)"
           xcodebuild build \
             -scheme InterviewArcLive-Package \
             -configuration Release \
             -destination 'platform=macOS' \
+            -sdk macosx \
             -derivedDataPath "$INTERVIEW_ARC_LIVE_DERIVED_DATA_PATH" \
             -disableAutomaticPackageResolution \
             -onlyUsePackageVersionsFromResolvedFile \
             MACOSX_DEPLOYMENT_TARGET=14.0 \
             ENABLE_TESTABILITY=NO \
+            ARCHS="$target_architecture" \
             CODE_SIGNING_ALLOWED=NO
           scripts/build-product-receipt.sh "$GITHUB_SHA" "InterviewArcLive-Package" "Release" "NO" "14.0" "NO" \
             > "$INTERVIEW_ARC_LIVE_DERIVED_DATA_PATH/InterviewArcLive.build-candidate"
