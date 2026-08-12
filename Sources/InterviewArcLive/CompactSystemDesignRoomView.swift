@@ -38,15 +38,6 @@ struct CompactSystemDesignRoomView: View {
       maxHeight: CompactPanelLayout.maximumContentHeight,
       alignment: .topLeading
     )
-    .background(
-      CompactMockupPalette.outerShell,
-      in: RoundedRectangle(cornerRadius: 28, style: .continuous)
-    )
-    .overlay {
-      RoundedRectangle(cornerRadius: 28, style: .continuous)
-        .stroke(CompactMockupPalette.outerLine, lineWidth: 1)
-        .accessibilityHidden(true)
-    }
     .foregroundStyle(CompactMockupPalette.ink)
     .accessibilityElement(children: .contain)
     .accessibilityLabel("Interview Arc Live compact interview controls")
@@ -67,7 +58,6 @@ struct CompactSystemDesignRoomView: View {
         }
       }
     }
-    .padding(7)
     .frame(maxWidth: .infinity, alignment: .leading)
     .fixedSize(horizontal: false, vertical: true)
   }
@@ -305,8 +295,6 @@ struct CompactSystemDesignRoomView: View {
 }
 
 private enum CompactMockupPalette {
-  static let outerShell = Color(red: 244 / 255, green: 246 / 255, blue: 253 / 255)
-  static let outerLine = Color(red: 218 / 255, green: 222 / 255, blue: 240 / 255)
   static let innerLine = Color(red: 225 / 255, green: 228 / 255, blue: 241 / 255)
   static let paper = Color(red: 253 / 255, green: 253 / 255, blue: 1)
   static let ink = Color(red: 15 / 255, green: 26 / 255, blue: 67 / 255)

@@ -18,7 +18,7 @@ enum InterviewRoomCloseChoice: Equatable {
 
 enum CompactPanelLayout {
     static let contentWidth: CGFloat = 580
-    static let minimumContentHeight: CGFloat = 82
+    static let minimumContentHeight: CGFloat = 56
     static let maximumContentHeight: CGFloat = 180
 
     static func boundedContentHeight(_ measuredHeight: CGFloat) -> CGFloat {
@@ -366,7 +366,7 @@ final class InterviewRoomPresentationCoordinator: NSObject, NSWindowDelegate {
             hostingController: fullHostingController
         )
 
-        let full = NSWindow(
+        let full = FullInterviewWindow(
             contentRect: NSRect(
                 origin: .zero,
                 size: InterviewRoomWindowLayout.fullDefaultContentSize
@@ -656,6 +656,48 @@ final class InterviewRoomPresentationCoordinator: NSObject, NSWindowDelegate {
 private final class NonactivatingInterviewPanel: NSPanel {
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }
+}
+
+enum FullRoomTitlebarInteraction {
+    static func shouldZoom(
+        clickCount: Int,
+        location: NSPoint,
+        windowHeight: CGFloat,
+        standardButtonFrames: [NSRect]
+    ) -> Bool {
+        guard clickCount == 2,
+              location.y >= windowHeight - FullRoomLayout.headerHeight,
+              location.y <= windowHeight else {
+            return false
+        }
+        return standardButtonFrames.allSatisfy { !$0.contains(location) }
+    }
+}
+
+private final class FullInterviewWindow: NSWindow {
+    override func sendEvent(_ event: NSEvent) {
+        if event.type == .leftMouseDown {
+            let buttonFrames = [
+                NSWindow.ButtonType.closeButton,
+                .miniaturizeButton,
+                .zoomButton,
+            ].compactMap { buttonType -> NSRect? in
+                guard let button = standardWindowButton(buttonType),
+                      let superview = button.superview else { return nil }
+                return superview.convert(button.frame, to: nil)
+            }
+            if FullRoomTitlebarInteraction.shouldZoom(
+                clickCount: event.clickCount,
+                location: event.locationInWindow,
+                windowHeight: frame.height,
+                standardButtonFrames: buttonFrames
+            ) {
+                zoom(nil)
+                return
+            }
+        }
+        super.sendEvent(event)
+    }
 }
 
 private final class CompactRoomHostingController:

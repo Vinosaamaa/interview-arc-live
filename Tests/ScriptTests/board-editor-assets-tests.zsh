@@ -58,6 +58,8 @@ grep -Fq 'const semanticBoxPresentation' "$editor_root/src/main.jsx" \
   || fail "Board editor does not retain semantic node presentations"
 grep -Fq 'window.interviewArcFlush' "$editor_root/src/main.jsx" \
   || fail "Board editor does not expose the durable-command flush seam"
+grep -Fq 'window.interviewArcReconcile' "$editor_root/src/main.jsx" \
+  || fail "Board editor canonicalization still requires a disruptive full reload"
 grep -Fq 'event: "flushedCommand"' "$editor_root/src/main.jsx" \
   || fail "Board editor commands are not gated by native scene acceptance"
 grep -Fq 'api.onPointerUp' "$editor_root/src/main.jsx" \
