@@ -205,6 +205,11 @@ Adopted complete pull-request receipts and a curated Engineering record for the 
             patch.object(MODULE, "git_object_exists", return_value=True),
             patch.object(
                 MODULE,
+                "matching_record_paths",
+                side_effect=AssertionError("invalid changed metadata must fail before catalog lookup"),
+            ),
+            patch.object(
+                MODULE,
                 "iter_frontmatters_at",
                 return_value=iter([(path, {"id": "example", "revision": 1, "title": "Broken"})]),
             ),
