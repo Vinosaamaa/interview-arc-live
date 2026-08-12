@@ -67,6 +67,18 @@ Adopted complete pull-request receipts and a curated Engineering record for the 
         with self.assertRaisesRegex(ValueError, "valid type in leading front matter"):
             MODULE.record_type_from_markdown("---\ntitle: Missing type\n---\n\ntype: capability-dossier\n", "record.md")
 
+    def test_record_type_reuses_the_canonical_frontmatter_parser(self):
+        with patch.object(
+            MODULE,
+            "frontmatter_document",
+            return_value=({"type": "capability-dossier"}, "# Body"),
+        ) as parser:
+            self.assertEqual(
+                MODULE.record_type_from_markdown("ignored", "record.md"),
+                "capability-dossier",
+            )
+        parser.assert_called_once_with("ignored", "record.md")
+
     def test_existing_broken_head_never_falls_back_to_stale_base_metadata(self):
         path = "docs/engineering/records/example.md"
         with patch.object(MODULE, "git_blobs", side_effect=[{path: "---\ntitle: Broken\n---\n"}, {path: "---\ntype: capability-dossier\n---\n"}]):
@@ -228,6 +240,20 @@ Adopted complete pull-request receipts and a curated Engineering record for the 
             record_index={"capability-dossier-deep-interview-room-session@1": "capability-dossier"},
         )
         self.assertEqual(parsed["richRecordRefs"], ["capability-dossier-deep-interview-room-session@1"])
+
+    def test_record_index_reads_only_frontmatter_instead_of_buffering_record_bodies(self):
+        path = "docs/engineering/records/session.md"
+        with (
+            patch.object(MODULE, "git", return_value=path),
+            patch.object(MODULE, "git_blobs", side_effect=AssertionError("must not buffer the record corpus")),
+            patch.object(
+                MODULE,
+                "frontmatter_at",
+                return_value={"id": "session", "revision": 1, "type": "capability-dossier"},
+            ) as frontmatter_at,
+        ):
+            self.assertEqual(MODULE.record_index_at("head"), {"session@1": "capability-dossier"})
+        frontmatter_at.assert_called_once_with("head", path)
 
 
 if __name__ == "__main__":

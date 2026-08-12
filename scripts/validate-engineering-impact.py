@@ -264,11 +264,16 @@ def git_blobs(revision: str, paths: list[str]):
 
 
 def record_type_from_markdown(markdown: str, path: str):
-    frontmatter = re.match(r"\A---\r?\n(.*?)\r?\n---(?:\r?\n|\Z)", markdown, re.DOTALL)
-    matches = re.findall(r"^type:\s*([a-z][a-z-]*)\s*$", frontmatter.group(1), re.MULTILINE) if frontmatter else []
-    if len(matches) != 1:
+    try:
+        metadata, _ = frontmatter_document(markdown, path)
+    except ValueError:
+        raise ValueError(
+            f"Changed canonical Engineering record has no single valid type in leading front matter: {path}."
+        ) from None
+    record_type = metadata.get("type")
+    if not isinstance(record_type, str) or not re.fullmatch(r"[a-z][a-z-]*", record_type):
         raise ValueError(f"Changed canonical Engineering record has no single valid type in leading front matter: {path}.")
-    return matches[0]
+    return record_type
 
 
 def record_types(paths: list[str], head: str, base: str):
@@ -284,6 +289,36 @@ def record_types(paths: list[str], head: str, base: str):
     return types
 
 
+def frontmatter_at(revision: str, path: str):
+    command = ["git", "show", f"{revision}:{path}"]
+    process = subprocess.Popen(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+    )
+    assert process.stdout is not None
+    assert process.stderr is not None
+    lines = []
+    found_closing_fence = False
+    for line in process.stdout:
+        lines.append(line)
+        if len(lines) > 1 and line.rstrip("\r\n") == "---":
+            found_closing_fence = True
+            break
+    process.stdout.close()
+    if process.poll() is None:
+        process.terminate()
+    stderr = process.stderr.read()
+    process.stderr.close()
+    return_code = process.wait()
+    if not found_closing_fence and return_code != 0:
+        raise subprocess.CalledProcessError(return_code, command, stderr=stderr)
+    metadata, _ = frontmatter_document("".join(lines), path)
+    return metadata
+
+
 def record_index_at(revision: str):
     paths = [
         path
@@ -297,13 +332,9 @@ def record_index_at(revision: str):
         ).splitlines()
         if path.endswith(".md")
     ]
-    blobs = git_blobs(revision, paths)
     index = {}
     for path in paths:
-        markdown = blobs[path]
-        if markdown is None:
-            raise ValueError(f"Canonical Engineering record is missing at the pull-request head: {path}.")
-        metadata, _ = frontmatter_document(markdown, path)
+        metadata = frontmatter_at(revision, path)
         record_id = metadata.get("id")
         record_revision = metadata.get("revision")
         record_type = metadata.get("type")
