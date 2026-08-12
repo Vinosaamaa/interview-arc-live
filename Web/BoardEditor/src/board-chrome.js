@@ -1,4 +1,8 @@
 export const BOARD_CHROME_GAP = 8;
+export const BOARD_CHROME_FALLBACK_PLACEMENT = Object.freeze({
+  right: BOARD_CHROME_GAP,
+  top: 72,
+});
 
 export const boardChromeActionConfigurations = (controls) => {
   const inspecting = Boolean(controls.isInspecting);

@@ -1,9 +1,17 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  BOARD_CHROME_FALLBACK_PLACEMENT,
   boardChromeActionConfigurations,
   resolveBoardChromePlacement,
 } from "../src/board-chrome.js";
+
+test("Board chrome has a visible fallback below the native toolbar", () => {
+  assert.deepEqual(BOARD_CHROME_FALLBACK_PLACEMENT, {
+    right: 8,
+    top: 72,
+  });
+});
 
 test("Board product actions derive from one configuration", () => {
   const actions = boardChromeActionConfigurations({
