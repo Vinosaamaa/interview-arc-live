@@ -46,6 +46,18 @@ class EngineeringImpactPolicyTests(unittest.TestCase):
         return line[len(prefix):].strip()
 
     @staticmethod
+    def workflow_step(workflow, name):
+        lines = workflow.splitlines()
+        marker = f"      - name: {name}"
+        start = lines.index(marker)
+        end = len(lines)
+        for index in range(start + 1, len(lines)):
+            if lines[index].startswith("      - name:"):
+                end = index
+                break
+        return "\n".join(lines[start:end])
+
+    @staticmethod
     def receipt_markdown(
         *,
         classification="capability-dossier",
@@ -135,16 +147,21 @@ Adopted complete pull-request receipts and a curated Engineering record for the 
         workflow = WORKFLOW.read_text(encoding="utf-8")
         package_script = PACKAGE_SCRIPT.read_text(encoding="utf-8")
         receipt_script = BUILD_RECEIPT_SCRIPT.read_text(encoding="utf-8")
+        test_build = self.workflow_step(workflow, "Build package and tests with Metal")
+        test_run = self.workflow_step(workflow, "Test package")
+        release_build = self.workflow_step(workflow, "Prepare release-equivalent package products")
         self.assertNotIn("InterviewArcLivePackageDerivedData", workflow)
         self.assertNotIn("INTERVIEW_ARC_LIVE_REUSE_BUILD_PRODUCTS", workflow)
-        self.assertNotIn("ENABLE_TESTABILITY=YES", workflow)
         self.assertGreaterEqual(workflow.count("${{ runner.temp }}/InterviewArcLiveDerivedData"), 4)
         self.assertIn(
             'scripts/build-product-receipt.sh "$GITHUB_SHA" "InterviewArcLive-Package" "Release" "NO" "14.0" "NO"',
             workflow,
         )
         self.assertIn("InterviewArcLive.build-candidate", workflow)
-        self.assertIn("ENABLE_TESTABILITY=NO", workflow)
+        self.assertIn("ENABLE_TESTABILITY=YES", test_build)
+        self.assertIn("ENABLE_TESTABILITY=YES", test_run)
+        self.assertIn("ENABLE_TESTABILITY=NO", release_build)
+        self.assertNotIn("ENABLE_TESTABILITY=YES", release_build)
         self.assertIn('expected_build_receipt="$("$repo_root/scripts/build-product-receipt.sh"', package_script)
         self.assertIn('ENABLE_TESTABILITY="$package_testability"', package_script)
         self.assertIn('xcode_version_sha256=', receipt_script)
