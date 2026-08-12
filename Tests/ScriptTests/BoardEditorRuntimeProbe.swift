@@ -28,7 +28,7 @@ private final class LocalAssetHandler: NSObject, WKURLSchemeHandler {
             return
         }
         do {
-            let data = try Data(contentsOf: requested)
+            let data = try Data(contentsOf: requested, options: .mappedIfSafe)
             let mimeType = Self.mimeType(for: requested.pathExtension)
             task.didReceive(
                 URLResponse(
@@ -161,6 +161,7 @@ private final class RuntimeProbe: NSObject,
                 && object["ready"] as? String == "true"
                 && (object["rootChildren"] as? Int ?? 0) > 0
                 && object["hasLoadBridge"] as? Bool == true
+                && sceneEventCount > 0
                 && sceneEventCount < 10
             complete(
                 success: stable,

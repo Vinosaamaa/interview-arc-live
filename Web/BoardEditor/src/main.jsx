@@ -5,7 +5,10 @@ import {
   convertToExcalidrawElements,
   getNonDeletedElements,
 } from "@excalidraw/excalidraw";
-import { semanticOverlayFingerprint } from "./semantic-overlay.js";
+import {
+  hasCanonicalBoardAngle,
+  semanticOverlayFingerprint,
+} from "./semantic-overlay.js";
 import "./style.css";
 
 const bridge = window.webkit?.messageHandlers?.boardBridge;
@@ -105,9 +108,16 @@ const SemanticNodeOverlay = ({ elements, appState }) => {
   const boxes = [];
   const connectors = [];
   for (const element of live) {
-    if (element.customData?.iaElementType === "box") {
+    if (
+      element.customData?.iaElementType === "box"
+      && hasCanonicalBoardAngle(element)
+    ) {
       boxes.push(element);
-    } else if (element.type === "arrow" && element.customData?.iaLabel) {
+    } else if (
+      element.type === "arrow"
+      && element.customData?.iaLabel
+      && hasCanonicalBoardAngle(element)
+    ) {
       connectors.push(element);
     }
   }
@@ -188,6 +198,10 @@ const normalizeScene = (elements, appState, files, currentBoxKind) => {
   let unsupportedElementCount = Object.keys(files ?? {}).length;
 
   for (const element of live) {
+    if (!hasCanonicalBoardAngle(element)) {
+      unsupportedElementCount += 1;
+      continue;
+    }
     if (element.type === "text") {
       const containerID = element.containerId
         ?? element.customData?.iaContainerID;

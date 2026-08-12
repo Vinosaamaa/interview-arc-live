@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { semanticOverlayFingerprint } from "../src/semantic-overlay.js";
+import {
+  hasCanonicalBoardAngle,
+  semanticOverlayFingerprint,
+} from "../src/semantic-overlay.js";
 
 const box = {
   id: "box-1",
@@ -42,6 +45,10 @@ test("semantic geometry, labels, and viewport changes invalidate the overlay", (
     baseline,
   );
   assert.notEqual(
+    semanticOverlayFingerprint([{ ...box, angle: Math.PI / 4 }], viewport),
+    baseline,
+  );
+  assert.notEqual(
     semanticOverlayFingerprint([{
       ...box,
       customData: { ...box.customData, iaLabel: "Gateway" },
@@ -66,4 +73,9 @@ test("nonsemantic Excalidraw elements do not trigger overlay work", () => {
     }], viewport),
     baseline,
   );
+});
+
+test("the canonical Board rejects rotation instead of rendering stale semantics", () => {
+  assert.equal(hasCanonicalBoardAngle(box), true);
+  assert.equal(hasCanonicalBoardAngle({ ...box, angle: Math.PI / 4 }), false);
 });
