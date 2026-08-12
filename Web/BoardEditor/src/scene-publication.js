@@ -1,11 +1,20 @@
-export const createScenePublicationController = (publish) => {
+export const createScenePublicationController = (
+  publish,
+  prepare = (scene) => scene,
+) => {
   let isPointerInteractionActive = false;
   let pendingScene = null;
+  let adoptedFingerprint = null;
+
+  const fingerprint = (scene) => JSON.stringify(scene);
 
   const publishPendingScene = () => {
     if (pendingScene === null) return false;
-    const scene = pendingScene;
+    const scene = prepare(pendingScene);
     pendingScene = null;
+    const nextFingerprint = fingerprint(scene);
+    if (nextFingerprint === adoptedFingerprint) return false;
+    adoptedFingerprint = nextFingerprint;
     publish(scene);
     return true;
   };
@@ -36,15 +45,23 @@ export const createScenePublicationController = (publish) => {
       return publishPendingScene();
     },
 
+    adoptScene(scene) {
+      isPointerInteractionActive = false;
+      pendingScene = null;
+      adoptedFingerprint = fingerprint(scene);
+    },
+
     reset() {
       isPointerInteractionActive = false;
       pendingScene = null;
+      adoptedFingerprint = null;
     },
 
     snapshot() {
       return {
         isPointerInteractionActive,
         hasPendingScene: pendingScene !== null,
+        hasAdoptedScene: adoptedFingerprint !== null,
       };
     },
   };

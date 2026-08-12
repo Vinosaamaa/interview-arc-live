@@ -151,10 +151,10 @@ private final class RuntimeProbe: NSObject,
             "elements": [[
                 "type": "box",
                 "boardID": "runtime-probe-box",
-                "x": 120.0,
-                "y": 140.0,
-                "width": 180.0,
-                "height": 112.0,
+                "x": 370.14453125,
+                "y": 330.546875,
+                "width": 170.0,
+                "height": 100.0,
                 "label": "API service",
                 "nodeKind": "service",
                 "fill": "#ffffff",
@@ -162,10 +162,10 @@ private final class RuntimeProbe: NSObject,
             ], [
                 "type": "box",
                 "boardID": "runtime-probe-queue",
-                "x": 420.0,
-                "y": 340.0,
-                "width": 180.0,
-                "height": 112.0,
+                "x": 136.2734375,
+                "y": 173.84765625,
+                "width": 160.0,
+                "height": 90.0,
                 "label": "Delivery queue",
                 "nodeKind": "queue",
                 "fill": "#ffffff",
@@ -173,15 +173,15 @@ private final class RuntimeProbe: NSObject,
             ], [
                 "type": "connector",
                 "boardID": "runtime-probe-connector",
-                "startX": 300.0,
-                "startY": 196.0,
-                "endX": 420.0,
-                "endY": 396.0,
+                "startX": 333.14453125,
+                "startY": 299.546875,
+                "endX": 333.2734375,
+                "endY": 299.84765625,
                 "points": [
-                    ["x": 300.0, "y": 196.0],
-                    ["x": 360.0, "y": 196.0],
-                    ["x": 360.0, "y": 396.0],
-                    ["x": 420.0, "y": 396.0],
+                    ["x": 333.14453125, "y": 299.546875],
+                    ["x": 333.208984375, "y": 299.546875],
+                    ["x": 333.208984375, "y": 299.84765625],
+                    ["x": 333.2734375, "y": 299.84765625],
                 ],
                 "sourceID": "runtime-probe-box",
                 "targetID": "runtime-probe-queue",
@@ -217,7 +217,27 @@ private final class RuntimeProbe: NSObject,
             guard let quoted = String(data: quotedData, encoding: .utf8) else {
                 throw CocoaError(.fileReadInapplicableStringEncoding)
             }
-            webView.evaluateJavaScript("window.interviewArcLoad(\(quoted))") {
+            webView.evaluateJavaScript(
+                """
+                (() => {
+                  const serialized = \(quoted);
+                  const scene = JSON.parse(serialized);
+                  const count = window.interviewArcLoad(serialized);
+                  window.setTimeout(() => {
+                    window.interviewArcSetState(JSON.stringify({
+                      selectedID: "runtime-probe-box",
+                      zoom: 1.25,
+                      readOnly: false,
+                      tool: "hand",
+                      boxKind: "service",
+                      controls: scene.controls
+                    }));
+                    window.interviewArcReconcile(serialized);
+                  }, 250);
+                  return count;
+                })()
+                """
+            ) {
                 [weak self] result, error in
                 guard let self else { return }
                 loadedElementCount = (result as? NSNumber)?.intValue
@@ -264,6 +284,7 @@ private final class RuntimeProbe: NSObject,
           ready: document.documentElement.dataset.interviewArcBoardReady ?? null,
           rootChildren: document.getElementById("root")?.children.length ?? 0,
           hasLoadBridge: typeof window.interviewArcLoad === "function",
+          hasReconcileBridge: typeof window.interviewArcReconcile === "function",
           nativeToolbarControlCount: document.querySelectorAll(
             '.App-toolbar-container button, .App-toolbar-container label, .App-toolbar-container input'
           ).length,
@@ -325,6 +346,7 @@ private final class RuntimeProbe: NSObject,
               && toolbar.top < controls.bottom
               && toolbar.bottom > controls.top;
             return !overlaps
+              && Math.abs(toolbar.top - controls.top) <= 1
               && controls.left >= 0
               && controls.right <= document.documentElement.clientWidth
               && controls.top >= 0
@@ -364,6 +386,7 @@ private final class RuntimeProbe: NSObject,
                 && object["ready"] as? String == "true"
                 && (object["rootChildren"] as? Int ?? 0) > 0
                 && object["hasLoadBridge"] as? Bool == true
+                && object["hasReconcileBridge"] as? Bool == true
                 && (object["nativeToolbarControlCount"] as? Int ?? 0) >= 8
                 && object["nativeToolbarVisible"] as? Bool == true
                 && object["nativeFooterVisible"] as? Bool == true
@@ -380,14 +403,14 @@ private final class RuntimeProbe: NSObject,
                 && containsRuntimeProbeBox(object["snapshot"])
                 && containsBoundRuntimeProbeConnector(object["snapshot"])
                 && containsActiveHandTool(object["runtime"])
+                && containsZoom(object["runtime"], expected: 1.25)
                 && flushedCommands.contains("saveRevision")
                 && directCommands.contains("exportRevision")
-                && sceneEventCount > 0
-                && sceneEventCount < 10
+                && sceneEventCount == 0
             complete(
                 success: stable,
                 detail: stable
-                    ? "ready, stable React root, native bridge present, and \(sceneEventCount) initial scene updates"
+                    ? "ready, stable React root, native bridge present, and no unsolicited scene updates"
                     : (failures + [
                         "scene updates: \(sceneEventCount)",
                         "flushed commands: \(flushedCommands)",
@@ -427,6 +450,14 @@ private final class RuntimeProbe: NSObject,
     private func containsActiveHandTool(_ rawRuntime: Any?) -> Bool {
         guard let runtime = rawRuntime as? [String: Any] else { return false }
         return runtime["activeTool"] as? String == "hand"
+    }
+
+    private func containsZoom(_ rawRuntime: Any?, expected: Double) -> Bool {
+        guard let runtime = rawRuntime as? [String: Any],
+              let zoom = (runtime["zoom"] as? NSNumber)?.doubleValue else {
+            return false
+        }
+        return abs(zoom - expected) <= 0.000_1
     }
 
     private func complete(success: Bool, detail: String) {

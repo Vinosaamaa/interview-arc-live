@@ -1,9 +1,3 @@
-export const BOARD_CHROME_GAP = 8;
-export const BOARD_CHROME_FALLBACK_PLACEMENT = Object.freeze({
-  right: BOARD_CHROME_GAP,
-  top: 72,
-});
-
 export const boardChromeActionConfigurations = (controls) => {
   const inspecting = Boolean(controls.isInspecting);
   return [
@@ -37,32 +31,4 @@ export const boardChromeActionConfigurations = (controls) => {
       title: "Export Draw.io, SVG, and PNG",
     },
   ];
-};
-
-export const resolveBoardChromePlacement = ({
-  container,
-  toolbar,
-  currentControlsWidth,
-  fullControlsWidth,
-  viewportWidth,
-  gap = BOARD_CHROME_GAP,
-}) => {
-  const availableWidth = Math.max(
-    0,
-    Number(container.right) - Number(container.left) - gap * 2,
-  );
-  const compact = Number(fullControlsWidth) > availableWidth;
-  const controlsWidth = compact
-    ? Number(currentControlsWidth)
-    : Number(fullControlsWidth);
-  const proposedLeft = Number(container.right) - gap - controlsWidth;
-  const sharesToolbarRow = proposedLeft >= Number(toolbar.right) + gap;
-  return {
-    compact,
-    right: Math.max(gap, Number(viewportWidth) - Number(container.right) + gap),
-    sharesToolbarRow,
-    top: sharesToolbarRow
-      ? Number(toolbar.top)
-      : Number(toolbar.bottom) + gap,
-  };
 };

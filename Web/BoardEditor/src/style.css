@@ -84,6 +84,11 @@ body {
   background: transparent !important;
 }
 
+/* Center the combined Excalidraw + Interview Arc action group as one row. */
+.board-shell .App-toolbar-container {
+  margin-left: -132px;
+}
+
 /* Keep hosted/cloud surfaces unavailable; Excalidraw owns canvas tools. */
 .board-shell .main-menu-trigger,
 .board-shell .default-sidebar-trigger,
@@ -93,12 +98,12 @@ body {
 
 .interview-arc-board-controls {
   position: fixed;
-  top: 72px;
+  top: 16px;
   right: 8px;
   z-index: 5;
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 0;
   min-height: 40px;
   padding: 4px;
   border-radius: 12px;
@@ -106,29 +111,13 @@ body {
   box-shadow: 0 3px 12px rgb(31 41 55 / 10%);
 }
 
-.interview-arc-board-status {
-  max-width: 150px;
-  padding: 0 8px;
-  overflow: hidden;
-  color: #667085;
-  font-size: 12px;
-  font-weight: 600;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.interview-arc-board-status--error {
-  color: #9f2e22;
-}
-
 .interview-arc-board-action {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 6px;
-  min-width: 40px;
+  min-width: 38px;
   min-height: 40px;
-  padding: 0 10px;
+  padding: 0;
   border: 0;
   border-radius: 9px;
   background: transparent;
@@ -137,6 +126,16 @@ body {
   cursor: pointer;
   transition: background-color 120ms ease, color 120ms ease,
     transform 120ms ease;
+}
+
+@media (max-width: 640px) {
+  .board-shell .App-toolbar-container {
+    margin-left: 0;
+  }
+
+  .interview-arc-board-controls {
+    top: 72px;
+  }
 }
 
 .interview-arc-board-action__icon {
@@ -169,20 +168,7 @@ body {
 }
 
 .interview-arc-board-action--primary:not(:disabled) {
-  background: #eeeafd;
   color: #4b3abf;
-}
-
-.interview-arc-board-controls[data-compact="true"]
-  .interview-arc-board-status,
-.interview-arc-board-controls[data-compact="true"]
-  .interview-arc-board-action__label {
-  display: none;
-}
-
-.interview-arc-board-controls[data-compact="true"]
-  .interview-arc-board-action {
-  padding: 0;
 }
 
 @media (prefers-reduced-motion: reduce) {

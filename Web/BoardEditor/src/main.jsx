@@ -1,7 +1,6 @@
 import React, {
   useCallback,
   useEffect,
-  useLayoutEffect,
   useRef,
   useState,
 } from "react";
@@ -22,9 +21,7 @@ import {
   nativeToolForExcalType,
 } from "./tool-mapping.js";
 import {
-  BOARD_CHROME_FALLBACK_PLACEMENT,
   boardChromeActionConfigurations,
-  resolveBoardChromePlacement,
 } from "./board-chrome.js";
 import "./style.css";
 
@@ -522,12 +519,37 @@ const installNativeWindowBridge = ({
   const refreshOverlay = () => {
     updateSemanticOverlay(api.getSceneElements(), api.getAppState());
   };
+  const snapshot = () => normalizeScene(
+    api.getSceneElements(),
+    api.getAppState(),
+    api.getFiles(),
+    currentBoxKindRef.current,
+  );
+  let nativeUpdateGeneration = 0;
+  let hasLoadedScene = false;
+  const beginNativeUpdate = () => {
+    nativeUpdateGeneration += 1;
+    loadingRef.current = true;
+    publication.reset();
+    return nativeUpdateGeneration;
+  };
+  const finishNativeUpdate = (generation) => {
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => {
+        if (generation !== nativeUpdateGeneration) return;
+        refreshOverlay();
+        publication.adoptScene(snapshot());
+        loadingRef.current = false;
+      });
+    });
+  };
 
   window.interviewArcLoad = (serializedScene) => {
     const scene = JSON.parse(serializedScene);
     const elements = toExcalidrawElements(scene);
-    loadingRef.current = true;
-    publication.reset();
+    const shouldRevealInitialContent = !hasLoadedScene;
+    hasLoadedScene = true;
+    const generation = beginNativeUpdate();
     setReadOnly(Boolean(scene.readOnly));
     synchronizeControls(scene.controls);
     currentBoxKindRef.current = scene.boxKind ?? "generic";
@@ -541,33 +563,33 @@ const installNativeWindowBridge = ({
         selectedElementIds: scene.selectedID
           ? { [scene.selectedID]: true }
           : {},
-        zoom: { value: Number(scene.zoom ?? 1) },
+        ...(shouldRevealInitialContent
+          ? { zoom: { value: Number(scene.zoom ?? 1) } }
+          : {}),
         viewBackgroundColor: "transparent",
         ...itemStyleForTool(scene.tool),
       },
     });
     window.requestAnimationFrame(() => {
-      if (!scene.readOnly) {
+      if (!scene.readOnly && shouldRevealInitialContent) {
         api.setActiveTool({
           type: excalTypeForNativeTool(scene.tool, scene.boxKind),
         });
       }
-      if (elements.length > 0) {
+      if (elements.length > 0 && shouldRevealInitialContent) {
         api.scrollToContent(elements, {
           fitToContent: false,
           animate: false,
         });
       }
-      window.requestAnimationFrame(() => {
-        refreshOverlay();
-        loadingRef.current = false;
-      });
+      finishNativeUpdate(generation);
     });
     return elements.length;
   };
 
   window.interviewArcSetState = (serializedState) => {
     const state = JSON.parse(serializedState);
+    const generation = beginNativeUpdate();
     currentBoxKindRef.current = state.boxKind ?? currentBoxKindRef.current;
     setReadOnly(Boolean(state.readOnly));
     synchronizeControls(state.controls);
@@ -590,81 +612,43 @@ const installNativeWindowBridge = ({
         ...itemStyleForTool(state.tool),
       },
     });
-    window.requestAnimationFrame(refreshOverlay);
+    finishNativeUpdate(generation);
   };
 
-  const snapshot = () => normalizeScene(
-    api.getSceneElements(),
-    api.getAppState(),
-    api.getFiles(),
-    currentBoxKindRef.current,
-  );
+  // Apply native canonicalization without treating an accepted user edit as
+  // a new document load. In particular, preserve the current viewport and
+  // active tool so ID/bounds/connector corrections never flash or jump.
+  window.interviewArcReconcile = (serializedScene) => {
+    const scene = JSON.parse(serializedScene);
+    const elements = toExcalidrawElements(scene);
+    const generation = beginNativeUpdate();
+    setReadOnly(Boolean(scene.readOnly));
+    synchronizeControls(scene.controls);
+    currentBoxKindRef.current = scene.boxKind ?? currentBoxKindRef.current;
+    api.updateScene({
+      elements,
+      appState: {
+        selectedElementIds: scene.selectedID
+          ? { [scene.selectedID]: true }
+          : {},
+        ...itemStyleForTool(scene.tool),
+      },
+    });
+    finishNativeUpdate(generation);
+    return elements.length;
+  };
+
   window.interviewArcFlush = () => {
-    publication.reset();
-    return snapshot();
+    const scene = snapshot();
+    publication.adoptScene(scene);
+    return scene;
   };
   window.interviewArcSnapshot = snapshot;
   window.interviewArcRuntimeState = () => ({
     activeTool: api.getAppState().activeTool.type,
+    zoom: Number(api.getAppState().zoom?.value ?? 1),
     nativeControls: nativeControlsRef.current,
   });
-};
-
-const useBoardChromePlacement = () => {
-  const controlsRef = useRef(null);
-  const fullControlsWidthRef = useRef(null);
-  const [compact, setCompact] = useState(false);
-  const [placement, setPlacement] = useState(
-    BOARD_CHROME_FALLBACK_PLACEMENT,
-  );
-
-  useLayoutEffect(() => {
-    let animationFrame = null;
-    const measure = () => {
-      const controls = controlsRef.current;
-      const container = document.querySelector(".board-shell");
-      const toolbar = document.querySelector(".App-toolbar-container");
-      if (!controls || !container || !toolbar) return;
-      const controlsRect = controls.getBoundingClientRect();
-      const containerRect = container.getBoundingClientRect();
-      const toolbarRect = toolbar.getBoundingClientRect();
-      if (!compact) fullControlsWidthRef.current = controlsRect.width;
-      const next = resolveBoardChromePlacement({
-        container: containerRect,
-        toolbar: toolbarRect,
-        currentControlsWidth: controlsRect.width,
-        fullControlsWidth: fullControlsWidthRef.current ?? controlsRect.width,
-        viewportWidth: window.innerWidth,
-      });
-      if (next.compact !== compact) {
-        setCompact(next.compact);
-        return;
-      }
-      setPlacement({ right: next.right, top: next.top });
-    };
-    const scheduleMeasure = () => {
-      if (animationFrame !== null) window.cancelAnimationFrame(animationFrame);
-      animationFrame = window.requestAnimationFrame(measure);
-    };
-    const resizeObserver = new ResizeObserver(scheduleMeasure);
-    const mutationObserver = new MutationObserver(scheduleMeasure);
-    if (controlsRef.current) resizeObserver.observe(controlsRef.current);
-    const container = document.querySelector(".board-shell");
-    if (container) resizeObserver.observe(container);
-    const toolbar = document.querySelector(".App-toolbar-container");
-    if (toolbar) resizeObserver.observe(toolbar);
-    mutationObserver.observe(document.body, { childList: true, subtree: true });
-    window.addEventListener("resize", scheduleMeasure);
-    scheduleMeasure();
-    return () => {
-      if (animationFrame !== null) window.cancelAnimationFrame(animationFrame);
-      resizeObserver.disconnect();
-      mutationObserver.disconnect();
-      window.removeEventListener("resize", scheduleMeasure);
-    };
-  }, [compact]);
-
-  return { compact, controlsRef, placement };
 };
 
 const BoardActionIcon = ({ name }) => {
@@ -689,25 +673,13 @@ const BoardActionIcon = ({ name }) => {
 
 const BoardChromeControls = ({ controls, onAction }) => {
   const actions = boardChromeActionConfigurations(controls);
-  const { compact, controlsRef, placement } = useBoardChromePlacement();
-  const status = controls.notice ?? controls.revisionStatus;
 
   return (
     <div
       aria-label="Board revisions and export"
       className="interview-arc-board-controls"
-      data-compact={compact ? "true" : "false"}
-      ref={controlsRef}
       role="toolbar"
-      style={placement}
     >
-      <span
-        className={`interview-arc-board-status${controls.noticeIsError ? " interview-arc-board-status--error" : ""}`}
-        title={status}
-        role={controls.noticeIsError ? "alert" : "status"}
-      >
-        {status}
-      </span>
       {actions.map((action) => (
         <button
           aria-label={action.command === "exportRevision"
@@ -721,9 +693,6 @@ const BoardChromeControls = ({ controls, onAction }) => {
           type="button"
         >
           <BoardActionIcon name={action.icon} />
-          <span className="interview-arc-board-action__label">
-            {action.label}
-          </span>
         </button>
       ))}
     </div>
@@ -746,16 +715,15 @@ function BoardEditor() {
   const previousActiveToolRef = useRef("selection");
   const publicationRef = useRef(null);
   if (publicationRef.current === null) {
-    publicationRef.current = createScenePublicationController((scene) => {
-      if (loadingRef.current) return;
-      const { elements, appState, files } = scene;
-      post(normalizeScene(
+    publicationRef.current = createScenePublicationController(
+      post,
+      ({ elements, appState, files }) => normalizeScene(
         elements,
         appState,
         files,
         currentBoxKindRef.current,
-      ));
-    });
+      ),
+    );
   }
 
   const updateSemanticOverlay = useCallback((elements, appState) => {

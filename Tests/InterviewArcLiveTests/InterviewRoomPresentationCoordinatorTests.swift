@@ -34,7 +34,7 @@ final class InterviewRoomPresentationCoordinatorTests: XCTestCase {
 
     func testCompactPanelUsesToolPaletteScale() {
         XCTAssertEqual(CompactPanelLayout.contentWidth, 580)
-        XCTAssertEqual(CompactPanelLayout.minimumContentHeight, 82)
+        XCTAssertEqual(CompactPanelLayout.minimumContentHeight, 56)
         XCTAssertEqual(CompactPanelLayout.maximumContentHeight, 180)
     }
 
@@ -65,6 +65,42 @@ final class InterviewRoomPresentationCoordinatorTests: XCTestCase {
                 questionLineCount: FullRoomLayout.questionLineLimit
             ),
             FullRoomLayout.requiredTurnlineHeight
+        )
+    }
+
+    func testTitlebarDoubleClickRequestsWindowZoom() {
+        let height: CGFloat = 700
+        XCTAssertTrue(
+            FullRoomTitlebarInteraction.shouldZoom(
+                clickCount: 2,
+                location: NSPoint(x: 500, y: 675),
+                windowHeight: height,
+                standardButtonFrames: [NSRect(x: 12, y: 664, width: 54, height: 16)]
+            )
+        )
+        XCTAssertFalse(
+            FullRoomTitlebarInteraction.shouldZoom(
+                clickCount: 1,
+                location: NSPoint(x: 500, y: 675),
+                windowHeight: height,
+                standardButtonFrames: []
+            )
+        )
+        XCTAssertFalse(
+            FullRoomTitlebarInteraction.shouldZoom(
+                clickCount: 2,
+                location: NSPoint(x: 500, y: 620),
+                windowHeight: height,
+                standardButtonFrames: []
+            )
+        )
+        XCTAssertFalse(
+            FullRoomTitlebarInteraction.shouldZoom(
+                clickCount: 2,
+                location: NSPoint(x: 24, y: 675),
+                windowHeight: height,
+                standardButtonFrames: [NSRect(x: 12, y: 664, width: 54, height: 16)]
+            )
         )
     }
 
@@ -353,7 +389,7 @@ final class InterviewRoomPresentationCoordinatorTests: XCTestCase {
     }
 
     func testCompactPanelSizingIsBoundedAndPreservesTopEdge() {
-        XCTAssertEqual(CompactPanelLayout.boundedContentHeight(50), 82)
+        XCTAssertEqual(CompactPanelLayout.boundedContentHeight(50), 56)
         XCTAssertEqual(CompactPanelLayout.boundedContentHeight(120), 120)
         XCTAssertEqual(CompactPanelLayout.boundedContentHeight(600), 180)
 

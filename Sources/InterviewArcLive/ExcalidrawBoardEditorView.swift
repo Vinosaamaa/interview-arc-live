@@ -212,6 +212,7 @@ struct ExcalidrawBoardEditorView: NSViewRepresentable {
         private var didStartLoading = false
         private var readyDeadlineTask: Task<Void, Never>?
         private var pendingReloadTask: Task<Void, Never>?
+        private var pendingReconcileTask: Task<Void, Never>?
         private weak var bridgeController: ExcalidrawBoardBridgeController?
         private var onSceneChange: @MainActor (ExcalidrawBoardDecodeResult) -> Bool
         private var onCommand: @MainActor (ExcalidrawBoardCommand) -> Void
@@ -264,6 +265,8 @@ struct ExcalidrawBoardEditorView: NSViewRepresentable {
             readyDeadlineTask = nil
             pendingReloadTask?.cancel()
             pendingReloadTask = nil
+            pendingReconcileTask?.cancel()
+            pendingReconcileTask = nil
             bridgeController?.detach(self)
             webView = nil
             assetHandler = nil
@@ -297,6 +300,8 @@ struct ExcalidrawBoardEditorView: NSViewRepresentable {
             } else if previous != next {
                 if pendingReloadTask != nil {
                     scheduleLoad(next)
+                } else if pendingReconcileTask != nil {
+                    scheduleReconcile(next)
                 } else {
                     sendState(next)
                 }
@@ -459,14 +464,20 @@ struct ExcalidrawBoardEditorView: NSViewRepresentable {
                     from: object,
                     currentDocument: snapshot.document
                 )
+                // Advance the bridge baseline before mutating the observed room
+                // model. SwiftUI may synchronously re-enter `update` from the
+                // callback; leaving the old baseline in place there schedules a
+                // disruptive full scene load for every accepted drag or edit.
+                let previousLoadedDocument = lastLoadedDocument
+                lastLoadedDocument = decoded.document
                 guard onSceneChange(decoded) else {
+                    lastLoadedDocument = previousLoadedDocument
                     onIssue("That canvas change could not be saved. The last valid Board remains available.")
                     scheduleLoad(snapshot)
                     return false
                 }
-                lastLoadedDocument = decoded.document
                 if decoded.requiresReload {
-                    scheduleLoad(
+                    scheduleReconcile(
                         Snapshot(
                             document: decoded.document,
                             selectedElementID: decoded.selectedElementID,
@@ -491,6 +502,8 @@ struct ExcalidrawBoardEditorView: NSViewRepresentable {
         }
 
         private func scheduleLoad(_ snapshot: Snapshot) {
+            pendingReconcileTask?.cancel()
+            pendingReconcileTask = nil
             pendingReloadTask?.cancel()
             pendingReloadTask = Task { @MainActor [weak self] in
                 // WKScriptMessageHandler and evaluateJavaScript callbacks must
@@ -501,6 +514,21 @@ struct ExcalidrawBoardEditorView: NSViewRepresentable {
                 guard !Task.isCancelled, let self else { return }
                 self.pendingReloadTask = nil
                 self.load(snapshot)
+            }
+        }
+
+        private func scheduleReconcile(_ snapshot: Snapshot) {
+            // A canonical reconcile supersedes any full load that may have been
+            // queued by an earlier observation pass. Running both is the source
+            // of the visible white flash and viewport reset.
+            pendingReloadTask?.cancel()
+            pendingReloadTask = nil
+            pendingReconcileTask?.cancel()
+            pendingReconcileTask = Task { @MainActor [weak self] in
+                await Task.yield()
+                guard !Task.isCancelled, let self else { return }
+                self.pendingReconcileTask = nil
+                self.reconcile(snapshot)
             }
         }
 
@@ -543,6 +571,25 @@ struct ExcalidrawBoardEditorView: NSViewRepresentable {
             }
             lastLoadedDocument = snapshot.document
             evaluate(function: "interviewArcLoad", json: json)
+        }
+
+        private func reconcile(_ snapshot: Snapshot) {
+            guard isReady,
+                  let json = try? ExcalidrawBoardCodec.encodeScene(
+                    ExcalidrawBoardScene(
+                        document: snapshot.document,
+                        selectedElementID: snapshot.selectedElementID,
+                        zoom: snapshot.zoom,
+                        readOnly: snapshot.isReadOnly,
+                        tool: snapshot.tool,
+                        boxKind: snapshot.boxKind,
+                        controls: snapshot.controls
+                    )
+                  ) else {
+                return
+            }
+            lastLoadedDocument = snapshot.document
+            evaluate(function: "interviewArcReconcile", json: json)
         }
 
         private func sendState(_ snapshot: Snapshot) {

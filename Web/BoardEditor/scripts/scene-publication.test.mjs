@@ -38,6 +38,41 @@ test("keyboard and text changes publish immediately outside pointer work", () =>
   ]);
 });
 
+test("a native scene baseline never republishes as a user edit", () => {
+  const published = [];
+  const controller = createScenePublicationController((scene) => {
+    published.push(scene);
+  });
+  const nativeScene = {
+    elements: [{ id: "connector-1", points: [[0, 0], [0.13, 0.3]] }],
+    zoom: 1,
+  };
+
+  controller.adoptScene(nativeScene);
+  controller.acceptScene(structuredClone(nativeScene));
+  controller.acceptScene(structuredClone(nativeScene));
+
+  assert.deepEqual(published, []);
+  assert.deepEqual(controller.snapshot(), {
+    isPointerInteractionActive: false,
+    hasPendingScene: false,
+    hasAdoptedScene: true,
+  });
+});
+
+test("a real change after a native baseline publishes once", () => {
+  const published = [];
+  const controller = createScenePublicationController((scene) => {
+    published.push(scene);
+  });
+
+  controller.adoptScene({ label: "Delivery" });
+  controller.acceptScene({ label: "Delivery queue" });
+  controller.acceptScene({ label: "Delivery queue" });
+
+  assert.deepEqual(published, [{ label: "Delivery queue" }]);
+});
+
 test("pointer cancellation publishes the last scene and unlocks future updates", () => {
   const published = [];
   const controller = createScenePublicationController((scene) => {
@@ -72,5 +107,6 @@ test("programmatic loads clear stale pending pointer state", () => {
   assert.deepEqual(controller.snapshot(), {
     isPointerInteractionActive: false,
     hasPendingScene: false,
+    hasAdoptedScene: false,
   });
 });

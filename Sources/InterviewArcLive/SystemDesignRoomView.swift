@@ -828,9 +828,7 @@ struct SystemDesignRoomView: View {
                         minHeight: FullRoomLayout.minimumActionHitTarget
                     )
             }
-            .buttonStyle(.borderedProminent)
-            .buttonBorderShape(.capsule)
-            .tint(LivePalette.violet)
+            .buttonStyle(RoomPrimaryActionButtonStyle())
             .disabled(!model.canAct)
             .keyboardShortcut(.return, modifiers: [.command])
             .accessibilityIdentifier(FullRoomAccessibility.primaryAction)
@@ -892,7 +890,7 @@ struct SystemDesignRoomView: View {
                     .horizontal,
                     FullRoomLayout.floorOutlineHorizontalInset
                 )
-                .padding(.vertical, 4)
+                .padding(.vertical, FullRoomLayout.floorOutlineVerticalInset)
         }
     }
 
@@ -1029,6 +1027,50 @@ private struct RoomChromeButtonStyle: ButtonStyle {
     }
 }
 
+private struct RoomPrimaryActionButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        RoomPrimaryActionButtonBody(configuration: configuration)
+    }
+
+    private struct RoomPrimaryActionButtonBody: View {
+        let configuration: ButtonStyleConfiguration
+        @Environment(\.isEnabled) private var isEnabled
+        @Environment(\.accessibilityReduceMotion) private var reduceMotion
+        @State private var isHovering = false
+
+        var body: some View {
+            configuration.label
+                .frame(height: FullRoomLayout.minimumActionHitTarget)
+                .foregroundStyle(
+                    isEnabled ? Color.white : LivePalette.violet.opacity(0.42)
+                )
+                .background {
+                    Capsule()
+                        .fill(
+                            isEnabled
+                                ? LivePalette.violet.opacity(
+                                    configuration.isPressed
+                                        ? 0.82
+                                        : (isHovering ? 0.92 : 1)
+                                )
+                                : LivePalette.violet.opacity(0.12)
+                        )
+                }
+                .contentShape(Capsule())
+                .scaleEffect(
+                    reduceMotion || !isEnabled
+                        ? 1
+                        : (configuration.isPressed ? 0.98 : 1)
+                )
+                .onHover { isHovering = $0 }
+                .animation(
+                    reduceMotion ? nil : .easeOut(duration: 0.12),
+                    value: isHovering
+                )
+        }
+    }
+}
+
 enum FullRoomLayout {
     static let minimumWindowWidth: CGFloat = 800
     static let defaultWindowWidth: CGFloat = 1_180
@@ -1056,6 +1098,7 @@ enum FullRoomLayout {
     static let floorStatusWidth: CGFloat = 144
     static let floorContentHorizontalPadding: CGFloat = 24
     static let floorOutlineHorizontalInset: CGFloat = 16
+    static let floorOutlineVerticalInset: CGFloat = 4
     static let minimumActionHitTarget: CGFloat = 44
     static let requiredWorkspaceHeight: CGFloat = 320
     static let requiredTurnlineHeight: CGFloat = 200
