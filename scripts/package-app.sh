@@ -37,7 +37,15 @@ build_candidate_receipt="$derived_data/InterviewArcLive.build-candidate"
 package_scheme="InterviewArcLive-Package"
 deployment_target="14.0"
 code_signing_allowed="NO"
-target_architecture="$(uname -m)"
+package_sdk="macosx"
+target_architecture="$(/usr/bin/uname -m)"
+case "$target_architecture" in
+  arm64|x86_64) ;;
+  *)
+    echo "Packaging requires an explicit supported macOS architecture." >&2
+    exit 64
+    ;;
+esac
 
 if [[ ! -f "$info_plist" ]]; then
   echo "Missing application metadata: Resources/Info.plist" >&2
@@ -71,7 +79,8 @@ fi
 
 expected_build_receipt="$("$repo_root/scripts/build-product-receipt.sh" \
   "$source_commit" "$package_scheme" "$xcode_configuration" \
-  "$package_testability" "$deployment_target" "$code_signing_allowed")"
+  "$package_testability" "$deployment_target" "$code_signing_allowed" \
+  "$package_sdk" "$target_architecture")"
 reuse_build_products="false"
 if [[ "$source_tree_clean" == "true" ]]; then
   for receipt in "$verified_build_receipt" "$build_candidate_receipt"; do
@@ -95,14 +104,15 @@ else
   xcodebuild build \
     -scheme "$package_scheme" \
     -configuration "$xcode_configuration" \
-    -destination 'platform=macOS' \
-    -sdk macosx \
+    -destination "platform=macOS,arch=$target_architecture" \
+    -sdk "$package_sdk" \
     -derivedDataPath "$derived_data" \
     -disableAutomaticPackageResolution \
     -onlyUsePackageVersionsFromResolvedFile \
     MACOSX_DEPLOYMENT_TARGET="$deployment_target" \
     ENABLE_TESTABILITY="$package_testability" \
     ARCHS="$target_architecture" \
+    ONLY_ACTIVE_ARCH=YES \
     CODE_SIGNING_ALLOWED="$code_signing_allowed"
 fi
 
