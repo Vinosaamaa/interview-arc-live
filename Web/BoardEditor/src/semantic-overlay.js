@@ -1,0 +1,46 @@
+const number = (value) => Number(value ?? 0);
+
+export const hasCanonicalBoardAngle = (element) =>
+  Math.abs(number(element?.angle)) < 0.000_001;
+
+const relevantElement = (element) =>
+  !element.isDeleted
+  && (
+    element.customData?.iaElementType === "box"
+    || (element.type === "arrow" && element.customData?.iaLabel)
+  );
+
+const append = (fingerprint, value) => {
+  const text = String(value ?? "");
+  return `${fingerprint}${text.length}:${text}`;
+};
+
+export const semanticOverlayFingerprint = (elements, appState) => {
+  let fingerprint = "";
+  fingerprint = append(fingerprint, number(appState?.zoom?.value ?? 1));
+  fingerprint = append(fingerprint, number(appState?.scrollX));
+  fingerprint = append(fingerprint, number(appState?.scrollY));
+  fingerprint = append(fingerprint, number(appState?.offsetLeft));
+  fingerprint = append(fingerprint, number(appState?.offsetTop));
+
+  for (const element of elements ?? []) {
+    if (!relevantElement(element)) continue;
+    fingerprint = append(fingerprint, element.id);
+    fingerprint = append(fingerprint, element.type);
+    fingerprint = append(fingerprint, element.version);
+    fingerprint = append(fingerprint, element.versionNonce);
+    fingerprint = append(fingerprint, number(element.x));
+    fingerprint = append(fingerprint, number(element.y));
+    fingerprint = append(fingerprint, number(element.width));
+    fingerprint = append(fingerprint, number(element.height));
+    fingerprint = append(fingerprint, number(element.angle));
+    fingerprint = append(fingerprint, element.strokeColor);
+    fingerprint = append(fingerprint, element.customData?.iaKind);
+    fingerprint = append(fingerprint, element.customData?.iaLabel);
+    for (const point of element.points ?? []) {
+      fingerprint = append(fingerprint, number(point?.[0]));
+      fingerprint = append(fingerprint, number(point?.[1]));
+    }
+  }
+  return fingerprint;
+};

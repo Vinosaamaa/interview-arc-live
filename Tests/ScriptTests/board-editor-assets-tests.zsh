@@ -22,6 +22,7 @@ fail() {
 
 cd "$editor_root"
 npm ci --ignore-scripts --no-audit --no-fund
+npm test
 npm run build
 
 expected_resources="$test_root/BoardEditor"
@@ -31,6 +32,22 @@ cp "$repo_root/THIRD_PARTY_NOTICES.md" \
   "$expected_resources/THIRD_PARTY_NOTICES.md"
 diff -qr "$expected_resources" "$resource_root" >/dev/null \
   || fail "checked-in Board editor resources do not match the exact web build"
+
+runtime_probe="$test_root/BoardEditorRuntimeProbe"
+runtime_swiftc=(xcrun swiftc)
+if [[ -n "${INTERVIEW_ARC_LIVE_WEBKIT_SDK:-}" ]]; then
+  runtime_swiftc+=(
+    -sdk "$INTERVIEW_ARC_LIVE_WEBKIT_SDK"
+    -target "$(uname -m)-apple-macosx14.0"
+    -module-cache-path "$test_root/module-cache"
+  )
+fi
+"${runtime_swiftc[@]}" \
+  "$repo_root/Tests/ScriptTests/BoardEditorRuntimeProbe.swift" \
+  -framework AppKit \
+  -framework WebKit \
+  -o "$runtime_probe"
+"$runtime_probe" "$resource_root"
 
 grep -Fq "connect-src 'none'" "$resource_root/index.html" \
   || fail "Board editor content security policy permits network connections"
@@ -86,6 +103,8 @@ grep -Fq 'gridModeEnabled={false}' "$editor_root/src/main.jsx" \
 if find "$resource_root" -type f -size +8388608c | grep -q .; then
   fail "a Board editor asset exceeds the bounded local resource size"
 fi
+[[ -f "$resource_root/assets/excalidraw-assets/vendor-677e88ca78c86bddf13d.js" ]] \
+  || fail "Board editor is missing Excalidraw's local runtime chunk"
 upstream_notice_count="$(/usr/bin/find "$resource_root/licenses" \
   -maxdepth 1 -type f -name '*.LICENSE.txt' | /usr/bin/wc -l \
   | /usr/bin/tr -d ' ')"

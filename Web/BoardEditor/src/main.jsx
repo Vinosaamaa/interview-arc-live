@@ -5,6 +5,10 @@ import {
   convertToExcalidrawElements,
   getNonDeletedElements,
 } from "@excalidraw/excalidraw";
+import {
+  hasCanonicalBoardAngle,
+  semanticOverlayFingerprint,
+} from "./semantic-overlay.js";
 import "./style.css";
 
 const bridge = window.webkit?.messageHandlers?.boardBridge;
@@ -104,9 +108,16 @@ const SemanticNodeOverlay = ({ elements, appState }) => {
   const boxes = [];
   const connectors = [];
   for (const element of live) {
-    if (element.customData?.iaElementType === "box") {
+    if (
+      element.customData?.iaElementType === "box"
+      && hasCanonicalBoardAngle(element)
+    ) {
       boxes.push(element);
-    } else if (element.type === "arrow" && element.customData?.iaLabel) {
+    } else if (
+      element.type === "arrow"
+      && element.customData?.iaLabel
+      && hasCanonicalBoardAngle(element)
+    ) {
       connectors.push(element);
     }
   }
@@ -187,6 +198,10 @@ const normalizeScene = (elements, appState, files, currentBoxKind) => {
   let unsupportedElementCount = Object.keys(files ?? {}).length;
 
   for (const element of live) {
+    if (!hasCanonicalBoardAngle(element)) {
+      unsupportedElementCount += 1;
+      continue;
+    }
     if (element.type === "text") {
       const containerID = element.containerId
         ?? element.customData?.iaContainerID;
@@ -466,6 +481,7 @@ function BoardEditor() {
   });
   const apiRef = useRef(null);
   const loadingRef = useRef(false);
+  const overlayFingerprintRef = useRef("");
   const pointerDownRef = useRef(false);
   const pendingRef = useRef(null);
   const currentBoxKindRef = useRef("service");
@@ -477,12 +493,19 @@ function BoardEditor() {
     post(normalizeScene(elements, appState, files, currentBoxKindRef.current));
   }, []);
 
+  const updateSemanticOverlay = useCallback((elements, appState) => {
+    const fingerprint = semanticOverlayFingerprint(elements, appState);
+    if (overlayFingerprintRef.current === fingerprint) return;
+    overlayFingerprintRef.current = fingerprint;
+    setOverlayScene({ elements, appState });
+  }, []);
+
   const handleChange = useCallback((elements, appState, files) => {
     if (loadingRef.current) return;
-    setOverlayScene({ elements, appState });
+    updateSemanticOverlay(elements, appState);
     pendingRef.current = { elements, appState, files };
     if (!pointerDownRef.current) publish();
-  }, [publish]);
+  }, [publish, updateSemanticOverlay]);
 
   const installAPI = useCallback((api) => {
     apiRef.current = api;
@@ -515,10 +538,10 @@ function BoardEditor() {
           });
         }
         window.requestAnimationFrame(() => {
-          setOverlayScene({
-            elements: api.getSceneElements(),
-            appState: api.getAppState(),
-          });
+          updateSemanticOverlay(
+            api.getSceneElements(),
+            api.getAppState(),
+          );
           loadingRef.current = false;
         });
       });
@@ -543,10 +566,10 @@ function BoardEditor() {
         },
       });
       window.requestAnimationFrame(() => {
-        setOverlayScene({
-          elements: api.getSceneElements(),
-          appState: api.getAppState(),
-        });
+        updateSemanticOverlay(
+          api.getSceneElements(),
+          api.getAppState(),
+        );
       });
     };
 
@@ -569,7 +592,7 @@ function BoardEditor() {
 
     document.documentElement.dataset.interviewArcBoardReady = "true";
     post({ event: "ready" });
-  }, []);
+  }, [updateSemanticOverlay]);
 
   useEffect(() => {
     const flushThenPost = (command) => {
