@@ -82,13 +82,22 @@ struct ExcalidrawBoardScene: Encodable, Sendable {
     }
 }
 
-struct ExcalidrawBoardState: Encodable, Sendable {
+struct ExcalidrawBoardState: Encodable, Equatable, Sendable {
     let selectedID: String?
     let zoom: Double
     let readOnly: Bool
     let tool: String
     let boxKind: String
     let controls: ExcalidrawBoardControls
+}
+
+enum ExcalidrawBoardUpdatePolicy {
+    static func requiresStateUpdate(
+        previous: ExcalidrawBoardState?,
+        next: ExcalidrawBoardState
+    ) -> Bool {
+        previous != next
+    }
 }
 
 struct ExcalidrawBoardElement: Codable, Equatable, Sendable {
@@ -317,7 +326,7 @@ enum ExcalidrawBoardCodec {
             switch element.type {
             case "box":
                 elements.append(
-                    .box(try makeBox(element, id: id, canvas: currentDocument.canvas))
+                    .box(try makeBox(element, id: id))
                 )
             case "connector":
                 elements.append(
@@ -325,7 +334,6 @@ enum ExcalidrawBoardCodec {
                         try makeConnector(
                             element,
                             id: id,
-                            canvas: currentDocument.canvas,
                             webIDToBoardID: webIDToBoardID,
                             boxIDs: boxIDs
                         )
@@ -333,11 +341,11 @@ enum ExcalidrawBoardCodec {
                 )
             case "label":
                 elements.append(
-                    .label(try makeLabel(element, id: id, canvas: currentDocument.canvas))
+                    .label(try makeLabel(element, id: id))
                 )
             case "stroke":
                 elements.append(
-                    .stroke(try makeStroke(element, id: id, canvas: currentDocument.canvas))
+                    .stroke(try makeStroke(element, id: id))
                 )
             default:
                 throw ExcalidrawBoardCodecError.invalidElement
@@ -381,8 +389,7 @@ enum ExcalidrawBoardCodec {
 
     private static func makeBox(
         _ element: ExcalidrawBoardElement,
-        id: BoardElementID,
-        canvas: BoardCanvas
+        id: BoardElementID
     ) throws -> BoardBox {
         guard let rawX = element.x,
               let rawY = element.y,
@@ -391,29 +398,21 @@ enum ExcalidrawBoardCodec {
               rawX.isFinite,
               rawY.isFinite,
               rawWidth.isFinite,
-              rawHeight.isFinite else {
+              rawHeight.isFinite,
+              rawWidth > 0,
+              rawHeight > 0,
+              rawWidth <= BoardDocument.maximumCanvasDimension,
+              rawHeight <= BoardDocument.maximumCanvasDimension else {
             throw ExcalidrawBoardCodecError.invalidElement
         }
-        let width = min(
-            canvas.size.width,
-            max(BoardEditorState.minimumBoxWidth, rawWidth)
-        )
-        let height = min(
-            canvas.size.height,
-            max(BoardEditorState.minimumBoxHeight, rawHeight)
-        )
-        let origin = BoardPoint(
-            x: clamp(rawX, minimum: 0, maximum: canvas.size.width - width),
-            y: clamp(rawY, minimum: 0, maximum: canvas.size.height - height)
-        )
         guard let kind = BoardNodeKind(rawValue: element.nodeKind ?? "") else {
             throw ExcalidrawBoardCodecError.invalidElement
         }
         return BoardBox(
             id: id,
             frame: BoardRect(
-                origin: origin,
-                size: BoardSize(width: width, height: height)
+                origin: BoardPoint(x: rawX, y: rawY),
+                size: BoardSize(width: rawWidth, height: rawHeight)
             ),
             label: element.label ?? "",
             kind: kind,
@@ -425,14 +424,14 @@ enum ExcalidrawBoardCodec {
     private static func makeConnector(
         _ element: ExcalidrawBoardElement,
         id: BoardElementID,
-        canvas: BoardCanvas,
         webIDToBoardID: [String: BoardElementID],
         boxIDs: Set<BoardElementID>
     ) throws -> BoardConnector {
         guard let startX = element.startX,
               let startY = element.startY,
               let endX = element.endX,
-              let endY = element.endY else {
+              let endY = element.endY,
+              [startX, startY, endX, endY].allSatisfy(\.isFinite) else {
             throw ExcalidrawBoardCodecError.invalidConnector
         }
         let sourceID = element.sourceWebID.flatMap { webIDToBoardID[$0] }
@@ -445,7 +444,7 @@ enum ExcalidrawBoardCodec {
         return BoardConnector(
             id: id,
             start: BoardConnectorEndpoint(
-                point: boundedPoint(x: startX, y: startY, canvas: canvas),
+                point: BoardPoint(x: startX, y: startY),
                 elementID: sourceID,
                 anchorPolicy: anchorPolicy(
                     element.startAnchorPolicy,
@@ -453,7 +452,7 @@ enum ExcalidrawBoardCodec {
                 )
             ),
             end: BoardConnectorEndpoint(
-                point: boundedPoint(x: endX, y: endY, canvas: canvas),
+                point: BoardPoint(x: endX, y: endY),
                 elementID: targetID,
                 anchorPolicy: anchorPolicy(
                     element.endAnchorPolicy,
@@ -467,18 +466,15 @@ enum ExcalidrawBoardCodec {
 
     private static func makeLabel(
         _ element: ExcalidrawBoardElement,
-        id: BoardElementID,
-        canvas: BoardCanvas
+        id: BoardElementID
     ) throws -> BoardLabel {
-        guard let x = element.x, let y = element.y else {
+        guard let x = element.x, let y = element.y,
+              x.isFinite, y.isFinite else {
             throw ExcalidrawBoardCodecError.invalidElement
         }
         return BoardLabel(
             id: id,
-            origin: BoardElementLayout.clampedLabelOrigin(
-                BoardPoint(x: x, y: y),
-                in: canvas.size
-            ),
+            origin: BoardPoint(x: x, y: y),
             text: element.text ?? "",
             color: try color(element.color, fallback: .ink)
         )
@@ -486,22 +482,21 @@ enum ExcalidrawBoardCodec {
 
     private static func makeStroke(
         _ element: ExcalidrawBoardElement,
-        id: BoardElementID,
-        canvas: BoardCanvas
+        id: BoardElementID
     ) throws -> BoardStroke {
         guard let points = element.points,
               points.count >= 2,
               let width = element.width,
               width.isFinite,
-              width > 0 else {
+              width > 0,
+              width <= BoardDocument.maximumStrokeWidth,
+              points.allSatisfy({ $0.x.isFinite && $0.y.isFinite }) else {
             throw ExcalidrawBoardCodecError.invalidElement
         }
         return BoardStroke(
             id: id,
-            points: points.map {
-                boundedPoint(x: $0.x, y: $0.y, canvas: canvas)
-            },
-            width: min(width, BoardDocument.maximumStrokeWidth),
+            points: points,
+            width: width,
             color: try color(element.color, fallback: BoardColor(hexRGB: "ed4e2f"))
         )
     }
@@ -566,17 +561,6 @@ enum ExcalidrawBoardCodec {
                 : "#\(rawValue)"
             return value.lowercased()
         }
-    }
-
-    private static func boundedPoint(
-        x: Double,
-        y: Double,
-        canvas: BoardCanvas
-    ) -> BoardPoint {
-        BoardPoint(
-            x: clamp(x, minimum: 0, maximum: canvas.size.width),
-            y: clamp(y, minimum: 0, maximum: canvas.size.height)
-        )
     }
 
     private static func color(

@@ -280,4 +280,46 @@ final class DeterministicBoardRendererTests: XCTestCase {
             try renderer.render(.empty, settings: settings)
         )
     }
+
+    func testWorldSpaceContentExpandsSVGAndPNGWithoutClipping() throws {
+        let document = try BoardDocument(
+            canvas: BoardCanvas(size: BoardSize(width: 1_200, height: 800)),
+            elements: [
+                .box(
+                    BoardBox(
+                        id: BoardElementID("above-origin"),
+                        frame: BoardRect(
+                            origin: BoardPoint(x: -140, y: -220),
+                            size: BoardSize(width: 96, height: 64)
+                        ),
+                        label: "Above",
+                        kind: .service
+                    )
+                ),
+                .label(
+                    BoardLabel(
+                        id: BoardElementID("beyond-canvas"),
+                        origin: BoardPoint(x: 1_260, y: 860),
+                        text: "Beyond"
+                    )
+                ),
+            ]
+        )
+        let settings = try BoardExportSettings(
+            viewport: document.canvas.size,
+            scale: 1,
+            background: BoardColor(hexRGB: "ffffff")
+        )
+
+        let artifacts = try DeterministicBoardRenderer().render(
+            document,
+            settings: settings
+        )
+        let svg = try XCTUnwrap(String(data: artifacts.svg, encoding: .utf8))
+
+        XCTAssertTrue(svg.contains("viewBox=\"-140.75 -220.75 1640.75 1112.75\""))
+        XCTAssertEqual(artifacts.pngWidth, 1_641)
+        XCTAssertEqual(artifacts.pngHeight, 1_113)
+        XCTAssertFalse(artifacts.png.isEmpty)
+    }
 }
