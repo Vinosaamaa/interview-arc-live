@@ -23,13 +23,29 @@ struct ExcalidrawBoardSceneChange: Decodable, Sendable {
     let selectedWebIDs: [String]
     let unsupportedElementCount: Int
     let zoom: Double?
+    let tool: String?
+    let boxKind: String?
 }
 
 struct ExcalidrawBoardDecodeResult: Equatable, Sendable {
     let document: BoardDocument
     let selectedElementID: BoardElementID?
     let zoom: Double?
+    let tool: BoardEditorTool?
+    let boxKind: BoardNodeKind?
     let requiresReload: Bool
+}
+
+struct ExcalidrawBoardControls: Encodable, Equatable, Sendable {
+    let revisionStatus: String
+    let notice: String?
+    let noticeIsError: Bool
+    let isInspecting: Bool
+    let canSave: Bool
+    let hasRevisions: Bool
+    let canAttach: Bool
+    let canExport: Bool
+    let isExporting: Bool
 }
 
 struct ExcalidrawBoardScene: Encodable, Sendable {
@@ -39,6 +55,7 @@ struct ExcalidrawBoardScene: Encodable, Sendable {
     let readOnly: Bool
     let tool: String
     let boxKind: String
+    let controls: ExcalidrawBoardControls
 
     init(
         document: BoardDocument,
@@ -46,7 +63,8 @@ struct ExcalidrawBoardScene: Encodable, Sendable {
         zoom: Double,
         readOnly: Bool,
         tool: BoardEditorTool,
-        boxKind: BoardNodeKind
+        boxKind: BoardNodeKind,
+        controls: ExcalidrawBoardControls
     ) {
         elements = BoardRenderOrder.elements(in: document).map(
             ExcalidrawBoardElement.init
@@ -56,6 +74,7 @@ struct ExcalidrawBoardScene: Encodable, Sendable {
         self.readOnly = readOnly
         self.tool = tool.rawValue
         self.boxKind = boxKind.rawValue
+        self.controls = controls
     }
 }
 
@@ -65,6 +84,7 @@ struct ExcalidrawBoardState: Encodable, Sendable {
     let readOnly: Bool
     let tool: String
     let boxKind: String
+    let controls: ExcalidrawBoardControls
 }
 
 struct ExcalidrawBoardElement: Codable, Equatable, Sendable {
@@ -349,6 +369,8 @@ enum ExcalidrawBoardCodec {
                     maximum: BoardEditorState.maximumZoom
                 )
             },
+            tool: change.tool.flatMap(BoardEditorTool.init(rawValue:)),
+            boxKind: change.boxKind.flatMap(BoardNodeKind.init(rawValue:)),
             requiresReload: requiresReload
         )
     }
@@ -510,6 +532,7 @@ enum ExcalidrawBoardCodec {
                 || source.startY != encoded.startY
                 || source.endX != encoded.endX
                 || source.endY != encoded.endY
+                || source.points != encoded.points
                 || source.label != encoded.label
                 || normalizedColor(source.stroke) != encoded.stroke
                 || source.startAnchorPolicy != encoded.startAnchorPolicy
@@ -631,7 +654,7 @@ enum ExcalidrawBoardToolPolicy {
             elements.contains { if case .label = $0 { true } else { false } }
         case .connector:
             elements.contains { if case .connector = $0 { true } else { false } }
-        case .select, .pen, .eraser:
+        case .hand, .select, .line, .pen, .eraser:
             false
         }
     }

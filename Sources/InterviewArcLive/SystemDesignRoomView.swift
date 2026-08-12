@@ -29,8 +29,12 @@ struct SystemDesignRoomView: View {
                 )
                 let widths = FullRoomLayout.workspaceWidths(
                     for: workspace.size.width,
-                    preferredTurnlineWidth: preferredTurnlineWidth,
-                    dragTranslation: splitDragTranslation
+                    preferredTurnlineWidth: preferredTurnlineWidth
+                )
+                let splitPreview = FullRoomLayout.splitDragPreview(
+                    baseWidth: baseTurnlineWidth,
+                    dragTranslation: splitDragTranslation,
+                    workspaceWidth: workspace.size.width
                 )
 
                 HStack(spacing: 0) {
@@ -42,11 +46,12 @@ struct SystemDesignRoomView: View {
                         .overlay(alignment: .trailing) {
                             workspaceDivider(
                                 baseWidth: baseTurnlineWidth,
-                                currentWidth: widths.turnlineWidth,
+                                currentWidth: splitPreview.proposedTurnlineWidth,
                                 totalWidth: widths.totalWidth
                             )
                             .offset(
                                 x: FullRoomLayout.workspaceDividerHitWidth / 2
+                                    + splitPreview.translation
                             )
                         }
                     board
@@ -972,6 +977,11 @@ struct FullRoomWorkspaceWidths: Equatable {
     }
 }
 
+struct FullRoomSplitDragPreview: Equatable {
+    let translation: CGFloat
+    let proposedTurnlineWidth: CGFloat
+}
+
 private struct RoomChromeButtonStyle: ButtonStyle {
     var tint: Color = LivePalette.violet
 
@@ -1074,23 +1084,33 @@ enum FullRoomLayout {
 
     static func workspaceWidths(
         for workspaceWidth: CGFloat,
-        preferredTurnlineWidth: CGFloat? = nil,
-        dragTranslation: CGFloat = 0
+        preferredTurnlineWidth: CGFloat? = nil
     ) -> FullRoomWorkspaceWidths {
         let totalWidth = max(0, workspaceWidth)
-        let desiredWidth = turnlineBaseWidth(
+        let turnlineWidth = turnlineBaseWidth(
             for: totalWidth,
             preferredTurnlineWidth: preferredTurnlineWidth
-        ) + dragTranslation
-        let turnlineWidth = clampedTurnlineWidth(
-            desiredWidth,
-            for: totalWidth
         )
         return FullRoomWorkspaceWidths(
             totalWidth: totalWidth,
             turnlineWidth: turnlineWidth,
             boardWidth: totalWidth - turnlineWidth,
             visualDividerWidth: workspaceVisualDividerWidth
+        )
+    }
+
+    static func splitDragPreview(
+        baseWidth: CGFloat,
+        dragTranslation: CGFloat,
+        workspaceWidth: CGFloat
+    ) -> FullRoomSplitDragPreview {
+        let proposedTurnlineWidth = clampedTurnlineWidth(
+            baseWidth + dragTranslation,
+            for: workspaceWidth
+        )
+        return FullRoomSplitDragPreview(
+            translation: proposedTurnlineWidth - baseWidth,
+            proposedTurnlineWidth: proposedTurnlineWidth
         )
     }
 

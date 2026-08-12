@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "build": "vite build && node scripts/copy-assets.mjs",
-    "test": "node --test scripts/semantic-overlay.test.mjs",
+    "test": "node --test scripts/*.test.mjs",
     "sync": "node scripts/sync-resources.mjs",
     "bundle": "npm run build && npm run sync"
   },

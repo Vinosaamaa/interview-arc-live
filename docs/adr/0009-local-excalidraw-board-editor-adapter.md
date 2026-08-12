@@ -2,6 +2,7 @@
 
 - Status: Accepted
 - Date: 2026-08-10
+- Amended: 2026-08-12
 - Issue: #17
 
 ## Context
@@ -31,7 +32,8 @@ delegate reject HTTP, HTTPS, WebSocket, file, data, embed, link, and new-window
 navigation. Runtime use does not contact an Excalidraw or Interview Arc host.
 
 The native `BoardDocument` remains canonical. A narrow codec projects only
-bounded boxes, connectors, labels, and strokes into Excalidraw and reconstructs
+bounded rectangle, diamond, ellipse, connector, line/freehand, and text
+elements into boxes, connectors, labels, and strokes and reconstructs
 only those supported elements. Existing native identities can be retained;
 pasted or fabricated identities receive deterministic native IDs. Unsupported,
 oversized, invalid, or out-of-bounds input is rejected before persistence.
@@ -57,8 +59,12 @@ verification.
 - Canvas manipulation improves without changing durable Board evidence or
   export contracts.
 - The signed app grows by the local editor JavaScript, CSS, and font resources.
-- Excalidraw-only shapes, files, images, libraries, embeds, and cloud features
-  are intentionally unavailable; adding a new element requires a native domain
+- Excalidraw's own local toolbar is the primary enhanced-canvas interface.
+  Rectangle, diamond, ellipse, connector, line/freehand, and text elements are
+  persisted by the canonical model and covered by deterministic exports.
+  Eraser, selection, and hand/pan are interaction tools and do not create
+  canonical elements. Files, images, libraries, embeds, sharing, and cloud
+  features remain unavailable; adding another element requires a native domain
   decision and deterministic codec/export coverage first.
 - A broken or rejected editor update cannot replace the last valid native
   Board Document.

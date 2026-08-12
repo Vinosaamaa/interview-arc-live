@@ -82,6 +82,8 @@ public struct BoardColor: RawRepresentable, Codable, Hashable, Sendable, CustomS
 
 public enum BoardNodeKind: String, Codable, Sendable, Equatable {
     case generic
+    case decision
+    case ellipse
     case client
     case service
     case database

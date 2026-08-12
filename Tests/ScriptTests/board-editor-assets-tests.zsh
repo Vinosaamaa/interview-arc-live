@@ -60,8 +60,19 @@ grep -Fq 'window.interviewArcFlush' "$editor_root/src/main.jsx" \
   || fail "Board editor does not expose the durable-command flush seam"
 grep -Fq 'event: "flushedCommand"' "$editor_root/src/main.jsx" \
   || fail "Board editor commands are not gated by native scene acceptance"
-grep -Fq 'if (!pointerDownRef.current) publish();' "$editor_root/src/main.jsx" \
-  || fail "Board editor text changes are not posted immediately"
+grep -Fq 'api.onPointerUp' "$editor_root/src/main.jsx" \
+  || fail "Board editor does not subscribe to Excalidraw's pointer-up API"
+if grep -Fq 'onPointerUp={() =>' "$editor_root/src/main.jsx"; then
+  fail "Board editor still passes the unsupported Excalidraw onPointerUp prop"
+fi
+grep -Fq 'renderTopRightUI=' "$editor_root/src/main.jsx" \
+  || fail "Board editor does not embed durable Interview Arc actions in Excalidraw chrome"
+if grep -Fq '.App-toolbar-container,' "$editor_root/src/style.css"; then
+  fail "Board editor still hides Excalidraw's own toolbar"
+fi
+if grep -Fq '.layer-ui__wrapper__footer {' "$editor_root/src/style.css"; then
+  fail "Board editor still hides Excalidraw's zoom and undo controls"
+fi
 if grep -Fq 'setTimeout(publish, 300)' "$editor_root/src/main.jsx"; then
   fail "Board editor can lose a visible edit inside a debounce window"
 fi
@@ -94,8 +105,8 @@ grep -Fq 'scheduleLoad(snapshot)' "$board_bridge" \
   || fail "Board bridge still reloads WebKit re-entrantly from its ready callback"
 grep -Fq 'pendingReloadTask?.cancel()' "$board_bridge" \
   || fail "Board bridge does not coalesce stale pending reloads"
-grep -Fq 'Excalidraw · Local' "$board_view" \
-  || fail "Board does not identify when the real local Excalidraw editor is active"
+grep -Fq 'if enhancedEditorFailure != nil {' "$board_view" \
+  || fail "native Board tools are not limited to the enhanced-editor fallback"
 grep -Fq 'Retry Excalidraw' "$board_view" \
   || fail "Board fallback does not expose an Excalidraw retry action"
 grep -Fq 'gridModeEnabled={false}' "$editor_root/src/main.jsx" \

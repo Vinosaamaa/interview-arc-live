@@ -2,10 +2,12 @@ import Foundation
 import InterviewArcLiveCore
 
 enum BoardEditorTool: String, CaseIterable, Sendable {
+    case hand
     case select
     case box
     case connector
     case label
+    case line
     case pen
     case eraser
 }

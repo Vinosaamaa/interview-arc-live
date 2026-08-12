@@ -72,6 +72,8 @@ private final class RuntimeProbe: NSObject,
     private var failures: [String] = []
     private var isReady = false
     private var sceneEventCount = 0
+    private var flushedCommands: [String] = []
+    private var directCommands: [String] = []
     private var loadedElementCount: Int?
 
     init(application: NSApplication) {
@@ -104,6 +106,14 @@ private final class RuntimeProbe: NSObject,
             )
         case "scene":
             sceneEventCount += 1
+        case "flushedCommand":
+            if let command = object["command"] as? String {
+                flushedCommands.append(command)
+            }
+        case "command":
+            if let command = object["command"] as? String {
+                directCommands.append(command)
+            }
         default:
             break
         }
@@ -149,12 +159,53 @@ private final class RuntimeProbe: NSObject,
                 "nodeKind": "service",
                 "fill": "#ffffff",
                 "stroke": "#4b3abf",
+            ], [
+                "type": "box",
+                "boardID": "runtime-probe-queue",
+                "x": 420.0,
+                "y": 340.0,
+                "width": 180.0,
+                "height": 112.0,
+                "label": "Delivery queue",
+                "nodeKind": "queue",
+                "fill": "#ffffff",
+                "stroke": "#4b3abf",
+            ], [
+                "type": "connector",
+                "boardID": "runtime-probe-connector",
+                "startX": 300.0,
+                "startY": 196.0,
+                "endX": 420.0,
+                "endY": 396.0,
+                "points": [
+                    ["x": 300.0, "y": 196.0],
+                    ["x": 360.0, "y": 196.0],
+                    ["x": 360.0, "y": 396.0],
+                    ["x": 420.0, "y": 396.0],
+                ],
+                "sourceID": "runtime-probe-box",
+                "targetID": "runtime-probe-queue",
+                "startAnchorPolicy": "automatic",
+                "endAnchorPolicy": "automatic",
+                "label": "publishes",
+                "stroke": "#1f2937",
             ]],
             "selectedID": "runtime-probe-box",
             "zoom": 1.0,
             "readOnly": false,
-            "tool": "select",
+            "tool": "hand",
             "boxKind": "service",
+            "controls": [
+                "revisionStatus": "Unsaved changes · revision 1",
+                "notice": NSNull(),
+                "noticeIsError": false,
+                "isInspecting": false,
+                "canSave": true,
+                "hasRevisions": true,
+                "canAttach": true,
+                "canExport": true,
+                "isExporting": false,
+            ],
         ]
         do {
             let data = try JSONSerialization.data(
@@ -175,8 +226,22 @@ private final class RuntimeProbe: NSObject,
                         "non-empty scene failed: \(error.localizedDescription)"
                     )
                 }
-                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
-                    self.finish()
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.75) {
+                    webView.evaluateJavaScript(
+                        """
+                        document.querySelector('button[aria-label="Save revision"]')?.click();
+                        document.querySelector('button[aria-label="Export board"]')?.click();
+                        """
+                    ) { _, actionError in
+                        if let actionError {
+                            self.failures.append(
+                                "Board chrome actions failed: \(actionError.localizedDescription)"
+                            )
+                        }
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.75) {
+                            self.finish()
+                        }
+                    }
                 }
             }
         } catch {
@@ -199,6 +264,49 @@ private final class RuntimeProbe: NSObject,
           ready: document.documentElement.dataset.interviewArcBoardReady ?? null,
           rootChildren: document.getElementById("root")?.children.length ?? 0,
           hasLoadBridge: typeof window.interviewArcLoad === "function",
+          nativeToolbarControlCount: document.querySelectorAll(
+            '.App-toolbar-container button, .App-toolbar-container label, .App-toolbar-container input'
+          ).length,
+          nativeToolbarVisible: (() => {
+            const element = document.querySelector('.App-toolbar-container');
+            return element ? getComputedStyle(element).display !== 'none' : false;
+          })(),
+          nativeFooterVisible: (() => {
+            const element = document.querySelector('.layer-ui__wrapper__footer');
+            return element ? getComputedStyle(element).display !== 'none' : false;
+          })(),
+          hasSave: Boolean(document.querySelector('button[aria-label="Save revision"]')),
+          hasRevisions: Boolean(document.querySelector('button[aria-label="Browse revisions"]')),
+          hasAttach: Boolean(document.querySelector('button[aria-label="Attach revision"]')),
+          hasExport: Boolean(document.querySelector('button[aria-label="Export board"]')),
+          chromeFitsWithoutOverlap: (() => {
+            const toolbar = document.querySelector('.App-toolbar-container')?.getBoundingClientRect();
+            const controls = document.querySelector('.interview-arc-board-controls')?.getBoundingClientRect();
+            if (!toolbar || !controls) return false;
+            const overlaps = toolbar.left < controls.right
+              && toolbar.right > controls.left
+              && toolbar.top < controls.bottom
+              && toolbar.bottom > controls.top;
+            return !overlaps
+              && controls.left >= 0
+              && controls.right <= document.documentElement.clientWidth;
+          })(),
+          chromeMetrics: (() => {
+            const toolbar = document.querySelector('.App-toolbar-container')?.getBoundingClientRect();
+            const controls = document.querySelector('.interview-arc-board-controls')?.getBoundingClientRect();
+            const pack = (rect) => rect ? {
+              left: rect.left,
+              right: rect.right,
+              top: rect.top,
+              bottom: rect.bottom
+            } : null;
+            return {
+              toolbar: pack(toolbar),
+              controls: pack(controls),
+              viewportWidth: document.documentElement.clientWidth
+            };
+          })(),
+          runtime: window.interviewArcRuntimeState?.() ?? null,
           snapshot: window.interviewArcSnapshot?.() ?? null
         })
         """#
@@ -217,15 +325,32 @@ private final class RuntimeProbe: NSObject,
                 && object["ready"] as? String == "true"
                 && (object["rootChildren"] as? Int ?? 0) > 0
                 && object["hasLoadBridge"] as? Bool == true
-                && loadedElementCount == 1
+                && (object["nativeToolbarControlCount"] as? Int ?? 0) >= 8
+                && object["nativeToolbarVisible"] as? Bool == true
+                && object["nativeFooterVisible"] as? Bool == true
+                && object["hasSave"] as? Bool == true
+                && object["hasRevisions"] as? Bool == true
+                && object["hasAttach"] as? Bool == true
+                && object["hasExport"] as? Bool == true
+                && object["chromeFitsWithoutOverlap"] as? Bool == true
+                && loadedElementCount == 3
                 && containsRuntimeProbeBox(object["snapshot"])
+                && containsBoundRuntimeProbeConnector(object["snapshot"])
+                && containsActiveHandTool(object["runtime"])
+                && flushedCommands.contains("saveRevision")
+                && directCommands.contains("exportRevision")
                 && sceneEventCount > 0
                 && sceneEventCount < 10
             complete(
                 success: stable,
                 detail: stable
                     ? "ready, stable React root, native bridge present, and \(sceneEventCount) initial scene updates"
-                    : (failures + ["scene updates: \(sceneEventCount)"])
+                    : (failures + [
+                        "scene updates: \(sceneEventCount)",
+                        "flushed commands: \(flushedCommands)",
+                        "direct commands: \(directCommands)",
+                        "probe: \(object)",
+                    ])
                         .joined(separator: "; ")
             )
         }
@@ -241,6 +366,24 @@ private final class RuntimeProbe: NSObject,
                 && element["boardID"] as? String == "runtime-probe-box"
                 && element["label"] as? String == "API service"
         }
+    }
+
+    private func containsBoundRuntimeProbeConnector(_ rawSnapshot: Any?) -> Bool {
+        guard let snapshot = rawSnapshot as? [String: Any],
+              let elements = snapshot["elements"] as? [[String: Any]] else {
+            return false
+        }
+        return elements.contains { element in
+            element["type"] as? String == "connector"
+                && element["boardID"] as? String == "runtime-probe-connector"
+                && element["sourceWebID"] as? String == "runtime-probe-box"
+                && element["targetWebID"] as? String == "runtime-probe-queue"
+        }
+    }
+
+    private func containsActiveHandTool(_ rawRuntime: Any?) -> Bool {
+        guard let runtime = rawRuntime as? [String: Any] else { return false }
+        return runtime["activeTool"] as? String == "hand"
     }
 
     private func complete(success: Bool, detail: String) {
@@ -275,7 +418,7 @@ private let assetHandler = LocalAssetHandler(
 configuration.setURLSchemeHandler(assetHandler, forURLScheme: "interviewarc-board")
 
 let webView = WKWebView(
-    frame: NSRect(x: 0, y: 0, width: 1200, height: 800),
+    frame: NSRect(x: 0, y: 0, width: 780, height: 600),
     configuration: configuration
 )
 webView.navigationDelegate = probe
