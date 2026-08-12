@@ -72,6 +72,7 @@ private final class RuntimeProbe: NSObject,
     private var failures: [String] = []
     private var isReady = false
     private var sceneEventCount = 0
+    private var loadedElementCount: Int?
 
     init(application: NSApplication) {
         self.application = application
@@ -166,8 +167,9 @@ private final class RuntimeProbe: NSObject,
                 throw CocoaError(.fileReadInapplicableStringEncoding)
             }
             webView.evaluateJavaScript("window.interviewArcLoad(\(quoted))") {
-                [weak self] _, error in
+                [weak self] result, error in
                 guard let self else { return }
+                loadedElementCount = (result as? NSNumber)?.intValue
                 if let error {
                     failures.append(
                         "non-empty scene failed: \(error.localizedDescription)"
@@ -196,7 +198,8 @@ private final class RuntimeProbe: NSObject,
         JSON.stringify({
           ready: document.documentElement.dataset.interviewArcBoardReady ?? null,
           rootChildren: document.getElementById("root")?.children.length ?? 0,
-          hasLoadBridge: typeof window.interviewArcLoad === "function"
+          hasLoadBridge: typeof window.interviewArcLoad === "function",
+          snapshot: window.interviewArcSnapshot?.() ?? null
         })
         """#
         webView.evaluateJavaScript(probe) { [weak self] result, error in
@@ -214,6 +217,8 @@ private final class RuntimeProbe: NSObject,
                 && object["ready"] as? String == "true"
                 && (object["rootChildren"] as? Int ?? 0) > 0
                 && object["hasLoadBridge"] as? Bool == true
+                && loadedElementCount == 1
+                && containsRuntimeProbeBox(object["snapshot"])
                 && sceneEventCount > 0
                 && sceneEventCount < 10
             complete(
@@ -223,6 +228,18 @@ private final class RuntimeProbe: NSObject,
                     : (failures + ["scene updates: \(sceneEventCount)"])
                         .joined(separator: "; ")
             )
+        }
+    }
+
+    private func containsRuntimeProbeBox(_ rawSnapshot: Any?) -> Bool {
+        guard let snapshot = rawSnapshot as? [String: Any],
+              let elements = snapshot["elements"] as? [[String: Any]] else {
+            return false
+        }
+        return elements.contains { element in
+            element["type"] as? String == "box"
+                && element["boardID"] as? String == "runtime-probe-box"
+                && element["label"] as? String == "API service"
         }
     }
 
