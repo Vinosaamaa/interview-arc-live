@@ -150,9 +150,15 @@ Adopted complete pull-request receipts and a curated Engineering record for the 
         test_build = self.workflow_step(workflow, "Build package and tests with Metal")
         test_run = self.workflow_step(workflow, "Test package")
         release_build = self.workflow_step(workflow, "Prepare release-equivalent package products")
-        self.assertNotIn("InterviewArcLivePackageDerivedData", workflow)
+        package = self.workflow_step(workflow, "Package exact source from a clean worktree")
         self.assertNotIn("INTERVIEW_ARC_LIVE_REUSE_BUILD_PRODUCTS", workflow)
-        self.assertGreaterEqual(workflow.count("${{ runner.temp }}/InterviewArcLiveDerivedData"), 4)
+        self.assertIn("${{ runner.temp }}/InterviewArcLiveDerivedData", test_build)
+        self.assertIn("${{ runner.temp }}/InterviewArcLiveDerivedData", test_run)
+        self.assertIn("${{ runner.temp }}/InterviewArcLivePackageDerivedData", release_build)
+        self.assertIn("${{ runner.temp }}/InterviewArcLivePackageDerivedData", package)
+        self.assertNotIn("InterviewArcLivePackageDerivedData", test_build)
+        self.assertNotIn("InterviewArcLivePackageDerivedData", test_run)
+        self.assertNotIn("${{ runner.temp }}/InterviewArcLiveDerivedData", release_build)
         self.assertIn(
             'scripts/build-product-receipt.sh "$GITHUB_SHA" "InterviewArcLive-Package" "Release" "NO" "14.0" "NO"',
             workflow,
