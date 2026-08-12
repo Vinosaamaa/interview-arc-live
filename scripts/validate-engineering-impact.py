@@ -50,6 +50,7 @@ MAX_STRING_LENGTH = RECEIPT_DEFINITIONS["stringList"]["items"]["maxLength"]
 MAX_RECORD_REFS = RECEIPT_DEFINITIONS["recordRefs"]["maxItems"]
 MAX_RECORD_REF_LENGTH = RECEIPT_DEFINITIONS["recordRefs"]["items"]["maxLength"]
 MAX_FRONTMATTER_BYTES = 65_536
+MAX_RECORD_BYTES = MAX_FRONTMATTER_BYTES
 MAX_RECEIPT_BYTES = 131_072
 MAX_BATCH_RECORDS = 64
 FRONTMATTER_BYTES_PATTERN = re.compile(rb"\A---\r?\n.*?\r?\n---(?:\r?\n|\Z)", re.DOTALL)
@@ -393,9 +394,10 @@ def matching_record_paths(revision: str, record_ids: set[str]):
     for record_id in sorted(record_ids):
         if not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", record_id):
             raise ValueError(f"Canonical Engineering record reference has an invalid id: {record_id}.")
-        grep_patterns.extend(
-            ["-e", rf"^[[:space:]]*id[[:space:]]*:[[:space:]]*{record_id}[[:space:]]*$"]
-        )
+        for encoded_id in (record_id, f'"{record_id}"'):
+            grep_patterns.extend(
+                ["-e", rf"^[[:space:]]*id[[:space:]]*:[[:space:]]*{encoded_id}[[:space:]]*$"]
+            )
     result = subprocess.run(
         [
             "git",
@@ -470,7 +472,9 @@ def iter_frontmatters_at(revision: str, paths: list[str]):
                 if len(parts) != 3 or parts[1] != "blob":
                     raise ValueError("Unable to read a canonical Engineering record Git object.")
                 object_size = int(parts[2])
-                prefix = process.stdout.read(min(object_size, MAX_FRONTMATTER_BYTES))
+                if object_size > MAX_RECORD_BYTES:
+                    raise ValueError(f"Canonical Engineering record has invalid or oversized front matter: {path}.")
+                prefix = process.stdout.read(object_size)
                 remaining = object_size - len(prefix)
                 while remaining:
                     discarded = process.stdout.read(min(remaining, 65_536))

@@ -373,6 +373,15 @@ Adopted complete pull-request receipts and a curated Engineering record for the 
             f"head:{present}\nhead:{missing}\n",
         )
 
+    def test_record_discovery_matches_unquoted_and_json_quoted_ids_in_one_scan(self):
+        result = Mock(returncode=1, stdout=b"", stderr=b"")
+        with patch.object(MODULE.subprocess, "run", return_value=result) as run:
+            self.assertEqual(MODULE.matching_record_paths("head", {"shared"}), [])
+        command = run.call_args.args[0]
+        self.assertIn(r"^[[:space:]]*id[[:space:]]*:[[:space:]]*shared[[:space:]]*$", command)
+        self.assertIn(r'^[[:space:]]*id[[:space:]]*:[[:space:]]*"shared"[[:space:]]*$', command)
+        run.assert_called_once()
+
     def test_record_lookup_parses_only_changed_records_and_exact_receipt_references(self):
         validator = SCRIPT.read_text(encoding="utf-8")
         self.assertNotIn('"ls-tree"', validator)
@@ -446,6 +455,23 @@ Adopted complete pull-request receipts and a curated Engineering record for the 
 
         self.assertEqual(len(frontmatters), 65)
         self.assertEqual(process.stdin.flush.call_count, 2)
+
+    def test_oversized_record_is_rejected_before_blob_content_is_read(self):
+        path = "docs/engineering/records/oversized.md"
+        process = Mock()
+        process.args = ["git", "cat-file", "--batch"]
+        process.stdin = Mock()
+        process.stdout = Mock()
+        process.stdout.readline.return_value = (
+            f"{'0' * 40} blob {MODULE.MAX_RECORD_BYTES + 1}\n".encode()
+        )
+        process.stdout.read.side_effect = AssertionError("oversized blob content must not be read")
+        process.stderr = BytesIO()
+        process.wait.return_value = 0
+        with patch.object(MODULE.subprocess, "Popen", return_value=process):
+            with self.assertRaisesRegex(ValueError, "invalid or oversized"):
+                list(MODULE.iter_frontmatters_at("head", [path]))
+        process.stdout.read.assert_not_called()
 
 
 if __name__ == "__main__":

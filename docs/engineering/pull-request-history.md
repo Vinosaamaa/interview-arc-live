@@ -86,6 +86,8 @@ Do not inflate a small receipt into a rich record. Do not compress architecture,
 
 An accepted rich-record file and exact revision are immutable in place and are not deleted. Correct one by adding a reviewed new revision, amendment, or superseding record as a separate document so existing receipt references remain resolvable and historical changes stay explicit.
 
+Each rich-record Markdown file is limited to 65,536 UTF-8 bytes so pull-request policy validation remains bounded.
+
 ## Diagrams
 
 Receipts do not require diagrams. A rich record may include a repository-native, public-safe diagram when verified structure, data flow, control flow, ownership, or before/after architecture is materially clearer visually. The coordinator authors that diagram from evidence and links it from the rich record; CI never invents a diagram from a diff.
