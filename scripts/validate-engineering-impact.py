@@ -88,9 +88,7 @@ def validate(body: str, record_types: list[str]):
             raise ValueError("A canonical Engineering record changed, so Engineering impact cannot be `None`.")
         return classification
     unique_types = sorted(set(record_types))
-    if not unique_types:
-        raise ValueError(f"Engineering impact `{classification}` requires a matching canonical record.")
-    if unique_types != [classification]:
+    if unique_types and unique_types != [classification]:
         raise ValueError(f"Engineering impact `{classification}` does not match record type(s): {', '.join(unique_types)}.")
     return classification
 
@@ -347,22 +345,9 @@ def record_type_from_markdown(markdown: str, path: str):
     return record_type
 
 
-def record_types(paths: list[str], head: str):
-    head_blobs = git_blobs(head, paths)
-    types = []
-    for path in paths:
-        markdown = head_blobs[path]
-        if markdown is None:
-            raise ValueError(
-                f"Canonical Engineering records cannot be deleted; publish a superseding record instead: {path}."
-            )
-        types.append(record_type_from_markdown(markdown, path))
-    return types
-
-
-def frontmatters_at(revision: str, paths: list[str]):
+def iter_frontmatters_at(revision: str, paths: list[str]):
     if not paths:
-        return {}
+        return
     process = subprocess.Popen(
         ["git", "cat-file", "--batch"],
         stdin=subprocess.PIPE,
@@ -372,7 +357,6 @@ def frontmatters_at(revision: str, paths: list[str]):
     assert process.stdin is not None
     assert process.stdout is not None
     assert process.stderr is not None
-    frontmatters = {}
     try:
         for path in paths:
             process.stdin.write(f"{revision}:{path}\n".encode())
@@ -397,7 +381,7 @@ def frontmatters_at(revision: str, paths: list[str]):
             if not frontmatter_match:
                 raise ValueError(f"Canonical Engineering record has invalid or oversized front matter: {path}.")
             metadata, _ = frontmatter_document(frontmatter_match.group().decode("utf-8", errors="strict"), path)
-            frontmatters[path] = metadata
+            yield path, metadata
     finally:
         process.stdin.close()
         process.stdout.close()
@@ -406,10 +390,9 @@ def frontmatters_at(revision: str, paths: list[str]):
         return_code = process.wait()
     if return_code != 0:
         raise subprocess.CalledProcessError(return_code, process.args, stderr=stderr)
-    return frontmatters
 
 
-def record_index_at(revision: str):
+def record_index_and_changed_types_at(revision: str, changed_paths: list[str]):
     paths = [
         path
         for path in git(
@@ -422,10 +405,17 @@ def record_index_at(revision: str):
         ).splitlines()
         if path.endswith(".md")
     ]
-    frontmatters = frontmatters_at(revision, paths)
+    missing_changed_paths = set(changed_paths) - set(paths)
+    if missing_changed_paths:
+        path = sorted(missing_changed_paths)[0]
+        raise ValueError(
+            f"Canonical Engineering records cannot be deleted; publish a superseding record instead: {path}."
+        )
+
+    changed_path_set = set(changed_paths)
     index = {}
-    for path in paths:
-        metadata = frontmatters[path]
+    changed_types = []
+    for path, metadata in iter_frontmatters_at(revision, paths):
         record_id = metadata.get("id")
         record_revision = metadata.get("revision")
         record_type = metadata.get("type")
@@ -439,7 +429,9 @@ def record_index_at(revision: str):
         if reference in index:
             raise ValueError(f"Duplicate canonical Engineering record reference: {reference}.")
         index[reference] = record_type
-    return index
+        if path in changed_path_set:
+            changed_types.append(record_type)
+    return index, changed_types
 
 
 def main():
@@ -458,7 +450,8 @@ def main():
         raise ValueError("Pull request base, head, number, title, repository, and URL are required.")
     changed = git("diff", "--name-only", base, head).splitlines()
     record_paths = [path for path in changed if path.startswith("docs/engineering/records/") and path.endswith(".md")]
-    classification = validate(pull_request.get("body") or "", record_types(record_paths, head))
+    record_index, changed_record_types = record_index_and_changed_types_at(head, record_paths)
+    classification = validate(pull_request.get("body") or "", changed_record_types)
     receipt_path = required_receipt_path(changed, pr_number)
     receipt_markdown = git_blobs(head, [receipt_path])[receipt_path]
     if receipt_markdown is None:
@@ -470,7 +463,7 @@ def main():
         pr_number=pr_number,
         pr_title=pr_title,
         classification=classification,
-        record_index=record_index_at(head),
+        record_index=record_index,
         pr_url=pr_url,
     )
     print(

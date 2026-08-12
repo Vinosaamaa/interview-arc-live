@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import hashlib
 import importlib.util
 import json
 import unittest
@@ -7,6 +8,7 @@ from unittest.mock import patch
 
 SCRIPT = Path(__file__).parents[2] / "scripts" / "validate-engineering-impact.py"
 WORKFLOW = Path(__file__).parents[2] / ".github" / "workflows" / "swift.yml"
+PACKAGE_SCRIPT = Path(__file__).parents[2] / "scripts" / "package-app.sh"
 SCHEMA = Path(__file__).parents[2] / "docs" / "contracts" / "engineering-pull-request-receipt.schema.json"
 CURRENT_RECEIPT = Path(__file__).parents[2] / "docs" / "engineering" / "changes" / "pr-42.md"
 SPEC = importlib.util.spec_from_file_location("engineering_impact", SCRIPT)
@@ -72,11 +74,25 @@ Adopted complete pull-request receipts and a curated Engineering record for the 
         self.assertIn("git fetch --no-tags --depth=1 origin \"$BASE_SHA\"", workflow)
         self.assertIn("git fetch --no-tags --depth=1 \"$HEAD_REPO_URL\" \"$HEAD_SHA\"", workflow)
 
+    def test_workflow_revalidates_after_title_or_body_edits(self):
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        self.assertIn("pull_request:\n    types: [opened, synchronize, reopened, edited]", workflow)
+
     def test_packaging_uses_a_clean_exact_tree_after_mutating_tests(self):
         workflow = WORKFLOW.read_text(encoding="utf-8")
         self.assertIn('git worktree add --detach "$PACKAGE_SOURCE" "$GITHUB_SHA"', workflow)
         self.assertIn('"$PACKAGE_SOURCE/scripts/package-app.sh" release', workflow)
         self.assertNotIn("INTERVIEW_ARC_LIVE_ALLOW_DIRTY", workflow)
+
+    def test_packaging_reuses_the_verified_release_build_products(self):
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        package_script = PACKAGE_SCRIPT.read_text(encoding="utf-8")
+        self.assertNotIn("InterviewArcLivePackageDerivedData", workflow)
+        self.assertIn("INTERVIEW_ARC_LIVE_REUSE_BUILD_PRODUCTS: '1'", workflow)
+        self.assertEqual(workflow.count("${{ runner.temp }}/InterviewArcLiveDerivedData"), 3)
+        self.assertIn('"$GITHUB_SHA" > "$INTERVIEW_ARC_LIVE_DERIVED_DATA_PATH/InterviewArcLive.source-commit"', workflow)
+        self.assertIn('build_source_commit="$(<"$build_receipt")"', package_script)
+        self.assertIn('[[ "$build_source_commit" == "$source_commit" ]]', package_script)
 
     def test_classification_examples_inside_markdown_fences_are_ignored(self):
         body = "- [x] Capability Dossier\n\n```markdown\n- [x] ADR\n```"
@@ -84,6 +100,14 @@ Adopted complete pull-request receipts and a curated Engineering record for the 
 
     def test_validator_fields_match_the_versioned_receipt_schema(self):
         schema = json.loads(SCHEMA.read_text(encoding="utf-8"))
+        self.assertEqual(
+            hashlib.sha256(SCHEMA.read_bytes()).hexdigest(),
+            "3fb0c0d2f080291f0d3ded75d0581c89c564c93ba94acea3fcde05d402fbf9a0",
+        )
+        self.assertEqual(
+            schema["$id"],
+            "urn:interview-arc:contracts:engineering-pull-request-receipt:1",
+        )
         self.assertEqual(set(schema["required"]), MODULE.RECEIPT_FIELDS)
         self.assertEqual(
             set(schema["properties"]["classification"]["enum"]),
@@ -140,15 +164,22 @@ Adopted complete pull-request receipts and a curated Engineering record for the 
 
     def test_existing_broken_head_never_falls_back_to_stale_base_metadata(self):
         path = "docs/engineering/records/example.md"
-        with patch.object(MODULE, "git_blobs", return_value={path: "---\ntitle: Broken\n---\n"}):
-            with self.assertRaisesRegex(ValueError, "valid type in leading front matter"):
-                MODULE.record_types([path], "head")
+        with (
+            patch.object(MODULE, "git", return_value=path),
+            patch.object(
+                MODULE,
+                "iter_frontmatters_at",
+                return_value=iter([(path, {"id": "example", "revision": 1, "title": "Broken"})]),
+            ),
+        ):
+            with self.assertRaisesRegex(ValueError, "invalid type"):
+                MODULE.record_index_and_changed_types_at("head", [path])
 
     def test_canonical_records_must_be_superseded_instead_of_deleted(self):
         path = "docs/engineering/records/example.md"
-        with patch.object(MODULE, "git_blobs", return_value={path: None}):
+        with patch.object(MODULE, "git", return_value=""):
             with self.assertRaisesRegex(ValueError, "cannot be deleted"):
-                MODULE.record_types([path], "head")
+                MODULE.record_index_and_changed_types_at("head", [path])
 
     def test_requires_exactly_one_choice(self):
         with self.assertRaisesRegex(ValueError, "exactly one"):
@@ -172,10 +203,11 @@ Adopted complete pull-request receipts and a curated Engineering record for the 
         with self.assertRaisesRegex(ValueError, "cannot be `None`"):
             MODULE.validate("- [x] None — reason: This change only corrects non-engineering copy.", ["capability-dossier"])
 
-    def test_rich_choice_requires_a_matching_record(self):
+    def test_material_classification_may_reuse_an_existing_matching_record(self):
         self.assertEqual(MODULE.validate("- [x] Capability Dossier", ["capability-dossier"]), "capability-dossier")
-        with self.assertRaisesRegex(ValueError, "matching canonical record"):
-            MODULE.validate("- [x] Capability Dossier", [])
+        self.assertEqual(MODULE.validate("- [x] Capability Dossier", []), "capability-dossier")
+        parsed = self.validate_receipt()
+        self.assertEqual(parsed["richRecordRefs"], ["capability-dossier-deep-interview-room-session@1"])
         with self.assertRaisesRegex(ValueError, "does not match"):
             MODULE.validate("- [x] Capability Dossier", ["postmortem"])
 
@@ -239,19 +271,22 @@ Adopted complete pull-request receipts and a curated Engineering record for the 
         parsed = self.validate_receipt(CURRENT_RECEIPT.read_text(encoding="utf-8"))
         self.assertEqual(parsed["richRecordRefs"], ["capability-dossier-deep-interview-room-session@1"])
 
-    def test_record_index_reads_only_frontmatter_instead_of_buffering_record_bodies(self):
+    def test_record_catalog_indexes_and_classifies_changes_in_one_bounded_scan(self):
         path = "docs/engineering/records/session.md"
         with (
             patch.object(MODULE, "git", return_value=path),
             patch.object(MODULE, "git_blobs", side_effect=AssertionError("must not buffer the record corpus")),
             patch.object(
                 MODULE,
-                "frontmatters_at",
-                return_value={path: {"id": "session", "revision": 1, "type": "capability-dossier"}},
-            ) as frontmatters_at,
+                "iter_frontmatters_at",
+                return_value=iter([(path, {"id": "session", "revision": 1, "type": "capability-dossier"})]),
+            ) as iter_frontmatters_at,
         ):
-            self.assertEqual(MODULE.record_index_at("head"), {"session@1": "capability-dossier"})
-        frontmatters_at.assert_called_once_with("head", [path])
+            self.assertEqual(
+                MODULE.record_index_and_changed_types_at("head", [path]),
+                ({"session@1": "capability-dossier"}, ["capability-dossier"]),
+            )
+        iter_frontmatters_at.assert_called_once_with("head", [path])
 
 
 if __name__ == "__main__":

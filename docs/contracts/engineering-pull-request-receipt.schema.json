@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/Vinosaamaa/interview-arc-live/blob/main/docs/contracts/engineering-pull-request-receipt.schema.json",
+  "$id": "urn:interview-arc:contracts:engineering-pull-request-receipt:1",
   "title": "Engineering Pull Request Receipt canonical frontmatter",
   "description": "A compact factual timeline receipt for one merged pull request. Rich engineering narrative remains in the separate Engineering Journal record contract.",
   "type": "object",
@@ -94,8 +94,8 @@
       "maxItems": 16,
       "items": {
         "type": "string",
-        "maxLength": 180,
-        "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*@[1-9]\\d*$"
+        "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*@[1-9]\\d*$",
+        "maxLength": 180
       },
       "uniqueItems": true
     },

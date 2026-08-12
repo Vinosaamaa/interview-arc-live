@@ -26,6 +26,8 @@ signing_identity="${INTERVIEW_ARC_LIVE_SIGNING_IDENTITY:--}"
 manifest_path="$repo_root/dist/InterviewArcLive.package-manifest.txt"
 allow_dirty="${INTERVIEW_ARC_LIVE_ALLOW_DIRTY:-0}"
 derived_data="${INTERVIEW_ARC_LIVE_DERIVED_DATA_PATH:-$repo_root/.build/xcode-derived-data}"
+reuse_build_products="${INTERVIEW_ARC_LIVE_REUSE_BUILD_PRODUCTS:-0}"
+build_receipt="$derived_data/InterviewArcLive.source-commit"
 
 if [[ ! -f "$info_plist" ]]; then
   echo "Missing application metadata: Resources/Info.plist" >&2
@@ -57,18 +59,36 @@ if ! command -v xcodebuild >/dev/null 2>&1; then
   exit 69
 fi
 
-# MLX compiles Metal shaders through Xcode. A plain `swift build` can produce
-# source objects while omitting the runtime metallib, so it is not accepted as
-# release evidence for the TTS-enabled application.
-xcodebuild build \
-  -scheme InterviewArcLive-Package \
-  -configuration "$xcode_configuration" \
-  -destination 'platform=macOS' \
-  -derivedDataPath "$derived_data" \
-  -disableAutomaticPackageResolution \
-  -onlyUsePackageVersionsFromResolvedFile \
-  MACOSX_DEPLOYMENT_TARGET=14.0 \
-  CODE_SIGNING_ALLOWED=NO
+if [[ "$reuse_build_products" != "0" && "$reuse_build_products" != "1" ]]; then
+  echo "INTERVIEW_ARC_LIVE_REUSE_BUILD_PRODUCTS must be 0 or 1." >&2
+  exit 64
+fi
+
+if [[ "$reuse_build_products" == "0" ]]; then
+  # MLX compiles Metal shaders through Xcode. A plain `swift build` can produce
+  # source objects while omitting the runtime metallib, so it is not accepted as
+  # release evidence for the TTS-enabled application.
+  xcodebuild build \
+    -scheme InterviewArcLive-Package \
+    -configuration "$xcode_configuration" \
+    -destination 'platform=macOS' \
+    -derivedDataPath "$derived_data" \
+    -disableAutomaticPackageResolution \
+    -onlyUsePackageVersionsFromResolvedFile \
+    MACOSX_DEPLOYMENT_TARGET=14.0 \
+    CODE_SIGNING_ALLOWED=NO
+else
+  if [[ ! -f "$build_receipt" ]]; then
+    echo "Reused build products require an exact source-commit receipt." >&2
+    exit 66
+  fi
+  build_source_commit="$(<"$build_receipt")"
+  if ! [[ "$build_source_commit" == "$source_commit" ]]; then
+    echo "Reused build products do not match the source commit." >&2
+    exit 65
+  fi
+  echo "Reusing previously verified $xcode_configuration build products from $derived_data."
+fi
 
 bin_dir="$derived_data/Build/Products/$xcode_configuration"
 executable="$bin_dir/$executable_name"

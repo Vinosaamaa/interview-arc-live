@@ -9,7 +9,16 @@ Engineering history has two deliberately separate layers. The separation keeps t
 
 The receipt contract is versioned by `docs/contracts/engineering-pull-request-receipt.schema.json`. The six rich record types remain Change Note, ADR, Architecture Review, Feature Retrospective, Postmortem, and Capability Dossier. Tooling must not silently reinterpret an accepted v1 document.
 
-Version 1 uses a deliberately restricted frontmatter encoding, not general YAML: one unique `key: value` per line; unquoted strings or JSON double-quoted strings for string scalars; JSON syntax for arrays, objects, booleans, integers, and `null`. Parsing splits on the first colon, so apostrophes and later colons are preserved inside an unquoted string. An unquoted value must be nonempty and must not begin with a single quote, pipe, greater-than sign, ampersand, asterisk, or exclamation mark. YAML block lists, multiline scalars, anchors, aliases, tags, and single-quoted scalars are rejected. This keeps the Python policy gate and Arc's deterministic JavaScript projection on one portable representation without adding a parser dependency or accepting ambiguous implicit YAML types.
+### Version 1 frontmatter encoding
+
+Version 1 uses a deliberately restricted encoding, not general YAML:
+
+- **Grammar:** write one unique, nonempty `key: value` pair per line. Parsing splits on the first colon, so later colons and apostrophes remain part of an unquoted value.
+- **String scalars:** use either an unquoted string or a JSON double-quoted string. An unquoted value must be nonempty and must not begin with a single quote, pipe, greater-than sign, ampersand, asterisk, or exclamation mark.
+- **Structured values:** use JSON syntax for arrays, objects, booleans, integers, and `null`.
+- **Rejected YAML features:** do not use block lists, multiline scalars, anchors, aliases, tags, or single-quoted scalars.
+
+This representation keeps the Python policy gate and Arc's deterministic JavaScript projection aligned without a parser dependency or ambiguous implicit YAML types.
 
 ## Forward authoring protocol
 
@@ -19,7 +28,7 @@ The implementation coordinator owns the receipt as part of the pull request. The
 2. Add exactly one compact receipt at `docs/engineering/changes/pr-<number>.md`.
 3. Record a public-safe title and one factual summary paragraph of at most 280 characters.
 4. Classify a small or non-material pull request as `none` and leave `richRecordRefs` empty.
-5. For a material pull request, add the appropriate rich record and link its exact `id@revision` from `richRecordRefs`.
+5. For a material pull request, link the exact `id@revision` of a suitable existing rich record or add the appropriate rich record. Reusing a reviewed record lets one dossier or retrospective cover an explicit multi-PR cluster without duplicating prose.
 6. Let CI validate the classification, receipt, and rich-record linkage. Arc deterministically projects reviewed Live receipts from an exact trusted commit pin.
 7. Merge and release through Live's normal verification workflow.
 
