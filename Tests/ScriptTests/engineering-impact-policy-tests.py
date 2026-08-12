@@ -72,6 +72,12 @@ Adopted complete pull-request receipts and a curated Engineering record for the 
         self.assertIn("git fetch --no-tags --depth=1 origin \"$BASE_SHA\"", workflow)
         self.assertIn("git fetch --no-tags --depth=1 \"$HEAD_REPO_URL\" \"$HEAD_SHA\"", workflow)
 
+    def test_packaging_uses_a_clean_exact_tree_after_mutating_tests(self):
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+        self.assertIn('git worktree add --detach "$PACKAGE_SOURCE" "$GITHUB_SHA"', workflow)
+        self.assertIn('"$PACKAGE_SOURCE/scripts/package-app.sh" release', workflow)
+        self.assertNotIn("INTERVIEW_ARC_LIVE_ALLOW_DIRTY", workflow)
+
     def test_classification_examples_inside_markdown_fences_are_ignored(self):
         body = "- [x] Capability Dossier\n\n```markdown\n- [x] ADR\n```"
         self.assertEqual(MODULE.validate(body, ["capability-dossier"]), "capability-dossier")

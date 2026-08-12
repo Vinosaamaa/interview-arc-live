@@ -85,10 +85,20 @@ jobs:
         run: Tests/ScriptTests/speech-smoke-tests.zsh
       - name: Test local Board editor and application icon
         run: Tests/ScriptTests/board-editor-assets-tests.zsh
-      - name: Package application
+      - name: Package exact source from a clean worktree
         env:
           INTERVIEW_ARC_LIVE_DERIVED_DATA_PATH: ${{ runner.temp }}/InterviewArcLivePackageDerivedData
-        run: scripts/package-app.sh release
+          PACKAGE_SOURCE: ${{ runner.temp }}/InterviewArcLivePackageSource
+        run: |
+          git worktree add --detach "$PACKAGE_SOURCE" "$GITHUB_SHA"
+          "$PACKAGE_SOURCE/scripts/package-app.sh" release
+          mkdir -p dist
+          /usr/bin/ditto \
+            "$PACKAGE_SOURCE/dist/Interview Arc Live.app" \
+            "dist/Interview Arc Live.app"
+          cp \
+            "$PACKAGE_SOURCE/dist/InterviewArcLive.package-manifest.txt" \
+            "dist/InterviewArcLive.package-manifest.txt"
       - name: Upload merged application
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         uses: actions/upload-artifact@v4
