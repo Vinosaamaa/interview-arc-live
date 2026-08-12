@@ -217,7 +217,6 @@ const normalizeScene = (elements, appState, files, currentBoxKind) => {
       : null;
 
     if (customData.iaElementType === "label") {
-      const supportedIndex = supported.length;
       supported.push({
         type: "label",
         webID: element.id,
@@ -235,6 +234,7 @@ const normalizeScene = (elements, appState, files, currentBoxKind) => {
       || ((element.type === "diamond" || element.type === "ellipse")
         && customData.iaElementType === "box")
     ) {
+      const supportedIndex = supported.length;
       supported.push({
         type: "box",
         webID: element.id,

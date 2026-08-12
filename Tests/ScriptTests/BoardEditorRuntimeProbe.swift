@@ -96,9 +96,7 @@ private final class RuntimeProbe: NSObject,
         case "ready":
             guard !isReady else { return }
             isReady = true
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
-                self.finish()
-            }
+            loadNonEmptySceneFixture()
         case "failure":
             failures.append(
                 object["message"] as? String ?? "editor reported failure"
@@ -130,6 +128,61 @@ private final class RuntimeProbe: NSObject,
         guard !didFinish else { return }
         failures.append("local editor did not become ready")
         finish()
+    }
+
+    private func loadNonEmptySceneFixture() {
+        guard let webView else {
+            failures.append("WKWebView was released before scene loading")
+            finish()
+            return
+        }
+        let scene: [String: Any] = [
+            "elements": [[
+                "type": "box",
+                "boardID": "runtime-probe-box",
+                "x": 120.0,
+                "y": 140.0,
+                "width": 180.0,
+                "height": 112.0,
+                "label": "API service",
+                "nodeKind": "service",
+                "fill": "#ffffff",
+                "stroke": "#4b3abf",
+            ]],
+            "selectedID": "runtime-probe-box",
+            "zoom": 1.0,
+            "readOnly": false,
+            "tool": "select",
+            "boxKind": "service",
+        ]
+        do {
+            let data = try JSONSerialization.data(
+                withJSONObject: scene,
+                options: [.sortedKeys]
+            )
+            let json = String(decoding: data, as: UTF8.self)
+            let quotedData = try JSONEncoder().encode(json)
+            guard let quoted = String(data: quotedData, encoding: .utf8) else {
+                throw CocoaError(.fileReadInapplicableStringEncoding)
+            }
+            webView.evaluateJavaScript("window.interviewArcLoad(\(quoted))") {
+                [weak self] _, error in
+                guard let self else { return }
+                if let error {
+                    failures.append(
+                        "non-empty scene failed: \(error.localizedDescription)"
+                    )
+                }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                    self.finish()
+                }
+            }
+        } catch {
+            failures.append(
+                "non-empty scene fixture failed: \(error.localizedDescription)"
+            )
+            finish()
+        }
     }
 
     private func finish() {
