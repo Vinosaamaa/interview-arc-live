@@ -39,8 +39,8 @@ final class BoardNodePresentationTests: XCTestCase {
             boardWidth
         )
         XCTAssertEqual(worstCaseRevisionWidth, 428)
-        XCTAssertEqual(BoardRailWidthBudget.compactHorizontalPadding, 6)
-        XCTAssertEqual(BoardRailWidthBudget.compactToolbarRequiredWidth, 527)
+        XCTAssertEqual(BoardRailWidthBudget.compactHorizontalPadding, 8)
+        XCTAssertEqual(BoardRailWidthBudget.compactToolbarRequiredWidth, 483)
         XCTAssertLessThanOrEqual(worstCaseRevisionWidth, boardWidth)
         XCTAssertLessThanOrEqual(
             BoardRailWidthBudget.compactToolbarRequiredWidth,
