@@ -23,6 +23,10 @@ struct SystemDesignRoomView: View {
         VStack(spacing: 0) {
             header
             GeometryReader { workspace in
+                let baseTurnlineWidth = FullRoomLayout.turnlineBaseWidth(
+                    for: workspace.size.width,
+                    preferredTurnlineWidth: preferredTurnlineWidth
+                )
                 let widths = FullRoomLayout.workspaceWidths(
                     for: workspace.size.width,
                     preferredTurnlineWidth: preferredTurnlineWidth,
@@ -37,6 +41,7 @@ struct SystemDesignRoomView: View {
                         )
                         .overlay(alignment: .trailing) {
                             workspaceDivider(
+                                baseWidth: baseTurnlineWidth,
                                 currentWidth: widths.turnlineWidth,
                                 totalWidth: widths.totalWidth
                             )
@@ -55,6 +60,9 @@ struct SystemDesignRoomView: View {
                     width: widths.totalWidth,
                     height: workspace.size.height,
                     alignment: .leading
+                )
+                .coordinateSpace(
+                    name: FullRoomLayout.workspaceCoordinateSpaceName
                 )
             }
 
@@ -441,6 +449,7 @@ struct SystemDesignRoomView: View {
     }
 
     private func workspaceDivider(
+        baseWidth: CGFloat,
         currentWidth: CGFloat,
         totalWidth: CGFloat
     ) -> some View {
@@ -467,14 +476,20 @@ struct SystemDesignRoomView: View {
         }
         .animation(.easeOut(duration: 0.14), value: isWorkspaceDividerHovered)
         .gesture(
-            DragGesture(minimumDistance: 1)
+            DragGesture(
+                minimumDistance: 1,
+                coordinateSpace: .named(
+                    FullRoomLayout.workspaceCoordinateSpaceName
+                )
+            )
                 .updating($splitDragTranslation) { value, state, _ in
                     state = value.translation.width
                 }
                 .onEnded { value in
-                    preferredTurnlineWidth = FullRoomLayout.clampedTurnlineWidth(
-                        currentWidth + value.translation.width,
-                        for: totalWidth
+                    preferredTurnlineWidth = FullRoomLayout.committedTurnlineWidth(
+                        baseWidth: baseWidth,
+                        dragTranslation: value.translation.width,
+                        workspaceWidth: totalWidth
                     )
                 }
         )
@@ -1044,6 +1059,18 @@ enum FullRoomLayout {
     /// brand beyond the standard close/minimize/zoom group while the custom
     /// header occupies that same row instead of leaving a blank strip.
     static let trafficLightClearance: CGFloat = 92
+    static let workspaceCoordinateSpaceName = "system-design-workspace"
+
+    static func turnlineBaseWidth(
+        for workspaceWidth: CGFloat,
+        preferredTurnlineWidth: CGFloat? = nil
+    ) -> CGFloat {
+        let totalWidth = max(0, workspaceWidth)
+        return clampedTurnlineWidth(
+            preferredTurnlineWidth ?? totalWidth * turnlineWidthFraction,
+            for: totalWidth
+        )
+    }
 
     static func workspaceWidths(
         for workspaceWidth: CGFloat,
@@ -1051,8 +1078,10 @@ enum FullRoomLayout {
         dragTranslation: CGFloat = 0
     ) -> FullRoomWorkspaceWidths {
         let totalWidth = max(0, workspaceWidth)
-        let desiredWidth = (preferredTurnlineWidth
-            ?? totalWidth * turnlineWidthFraction) + dragTranslation
+        let desiredWidth = turnlineBaseWidth(
+            for: totalWidth,
+            preferredTurnlineWidth: preferredTurnlineWidth
+        ) + dragTranslation
         let turnlineWidth = clampedTurnlineWidth(
             desiredWidth,
             for: totalWidth
@@ -1062,6 +1091,17 @@ enum FullRoomLayout {
             turnlineWidth: turnlineWidth,
             boardWidth: totalWidth - turnlineWidth,
             visualDividerWidth: workspaceVisualDividerWidth
+        )
+    }
+
+    static func committedTurnlineWidth(
+        baseWidth: CGFloat,
+        dragTranslation: CGFloat,
+        workspaceWidth: CGFloat
+    ) -> CGFloat {
+        clampedTurnlineWidth(
+            baseWidth + dragTranslation,
+            for: workspaceWidth
         )
     }
 

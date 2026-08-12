@@ -62,7 +62,8 @@ const normalizedHex = (value, fallback) => {
 };
 
 const elementLabel = (element, textByContainer) =>
-  textByContainer.get(element.id)?.text ?? "";
+  textByContainer.get(element.id)?.text
+    ?? String(element.customData?.iaLabel ?? "");
 
 const pointAt = (element, index) => {
   const points = element.points ?? [];
@@ -99,9 +100,20 @@ const SemanticNodeOverlay = ({ elements, appState }) => {
   const scrollY = Number(appState?.scrollY ?? 0);
   const offsetLeft = Number(appState?.offsetLeft ?? 0);
   const offsetTop = Number(appState?.offsetTop ?? 0);
-  const boxes = getNonDeletedElements(elements).filter(
-    (element) => element.customData?.iaElementType === "box",
-  );
+  const live = getNonDeletedElements(elements);
+  const boxes = [];
+  const connectors = [];
+  for (const element of live) {
+    if (element.customData?.iaElementType === "box") {
+      boxes.push(element);
+    } else if (element.type === "arrow" && element.customData?.iaLabel) {
+      connectors.push(element);
+    }
+  }
+  const screenPoint = (x, y) => ({
+    left: (Number(x ?? 0) + scrollX) * zoom + offsetLeft,
+    top: (Number(y ?? 0) + scrollY) * zoom + offsetTop,
+  });
 
   return (
     <div className="semantic-node-overlay" aria-hidden="true">
@@ -109,23 +121,57 @@ const SemanticNodeOverlay = ({ elements, appState }) => {
         const width = Number(element.width ?? 0) * zoom;
         const height = Number(element.height ?? 0) * zoom;
         const size = Math.max(18, Math.min(34, width * 0.28, height * 0.3));
-        const left = (Number(element.x ?? 0) + scrollX) * zoom
-          + offsetLeft + (width - size) / 2;
-        const top = (Number(element.y ?? 0) + scrollY) * zoom
-          + offsetTop + Math.max(8, height * 0.14);
+        const origin = screenPoint(element.x, element.y);
+        const left = origin.left + (width - size) / 2;
+        const top = origin.top + Math.max(8, height * 0.14);
+        return (
+          <React.Fragment key={element.id}>
+            <div
+              className="semantic-node-pictogram"
+              style={{
+                color: normalizedHex(element.strokeColor, "#4b3abf"),
+                height: size,
+                left,
+                top,
+                width: size,
+              }}
+            >
+              <SemanticPictogram kind={element.customData?.iaKind} />
+            </div>
+            <div
+              className="semantic-node-label"
+              style={{
+                color: normalizedHex(element.strokeColor, "#1f2937"),
+                fontSize: Math.max(11, Math.min(15, 14 * zoom)),
+                height: Math.max(20, height * 0.34),
+                left: origin.left + Math.max(6, 8 * zoom),
+                top: origin.top + height * 0.59,
+                width: Math.max(0, width - Math.max(12, 16 * zoom)),
+              }}
+            >
+              {String(element.customData?.iaLabel ?? "")}
+            </div>
+          </React.Fragment>
+        );
+      })}
+      {connectors.map((element) => {
+        const start = pointAt(element, 0);
+        const end = pointAt(element, -1);
+        const center = screenPoint(
+          (start.x + end.x) / 2,
+          (start.y + end.y) / 2,
+        );
         return (
           <div
-            className="semantic-node-pictogram"
-            key={element.id}
+            className="semantic-connector-label"
+            key={`${element.id}--label`}
             style={{
-              color: normalizedHex(element.strokeColor, "#4b3abf"),
-              height: size,
-              left,
-              top,
-              width: size,
+              color: normalizedHex(element.strokeColor, "#1f2937"),
+              left: center.left,
+              top: center.top,
             }}
           >
-            <SemanticPictogram kind={element.customData?.iaKind} />
+            {String(element.customData?.iaLabel ?? "")}
           </div>
         );
       })}
@@ -135,20 +181,39 @@ const SemanticNodeOverlay = ({ elements, appState }) => {
 
 const normalizeScene = (elements, appState, files, currentBoxKind) => {
   const live = getNonDeletedElements(elements);
-  const textByContainer = new Map(
-    live
-      .filter((element) => element.type === "text" && element.containerId)
-      .map((element) => [element.containerId, element]),
-  );
+  const textByContainer = new Map();
   const supported = [];
+  const pendingContainerLabels = [];
   let unsupportedElementCount = Object.keys(files ?? {}).length;
 
   for (const element of live) {
-    if (element.containerId) continue;
+    if (element.type === "text") {
+      const containerID = element.containerId
+        ?? element.customData?.iaContainerID;
+      if (containerID) {
+        textByContainer.set(containerID, element);
+        continue;
+      }
+    }
+    if (element.containerId || element.customData?.iaContainerID) continue;
     const customData = element.customData ?? {};
     const boardID = typeof customData.iaElementID === "string"
       ? customData.iaElementID
       : null;
+
+    if (customData.iaElementType === "label") {
+      const supportedIndex = supported.length;
+      supported.push({
+        type: "label",
+        webID: element.id,
+        boardID,
+        x: Number(element.x),
+        y: Number(element.y),
+        text: String(element.text ?? customData.iaText ?? ""),
+        color: normalizedHex(customData.iaColor, "#1f2937"),
+      });
+      continue;
+    }
 
     if (
       element.type === "rectangle"
@@ -163,19 +228,21 @@ const normalizeScene = (elements, appState, files, currentBoxKind) => {
         y: Number(element.y),
         width: Number(element.width),
         height: Number(element.height),
-        label: elementLabel(element, textByContainer),
+        label: String(customData.iaLabel ?? ""),
         nodeKind: typeof customData.iaKind === "string"
           ? customData.iaKind
           : currentBoxKind,
         fill: normalizedHex(element.backgroundColor, "#ffffff"),
         stroke: normalizedHex(element.strokeColor, "#4b3abf"),
       });
+      pendingContainerLabels.push({ element, supportedIndex });
       continue;
     }
 
     if (element.type === "arrow") {
       const start = pointAt(element, 0);
       const end = pointAt(element, -1);
+      const supportedIndex = supported.length;
       supported.push({
         type: "connector",
         webID: element.id,
@@ -188,9 +255,10 @@ const normalizeScene = (elements, appState, files, currentBoxKind) => {
         targetWebID: element.endBinding?.elementId ?? null,
         startAnchorPolicy: customData.iaStartAnchorPolicy ?? "automatic",
         endAnchorPolicy: customData.iaEndAnchorPolicy ?? "automatic",
-        label: elementLabel(element, textByContainer),
+        label: String(customData.iaLabel ?? ""),
         stroke: normalizedHex(element.strokeColor, "#1f2937"),
       });
+      pendingContainerLabels.push({ element, supportedIndex });
       continue;
     }
 
@@ -226,6 +294,10 @@ const normalizeScene = (elements, appState, files, currentBoxKind) => {
     }
 
     unsupportedElementCount += 1;
+  }
+
+  for (const { element, supportedIndex } of pendingContainerLabels) {
+    supported[supportedIndex].label = elementLabel(element, textByContainer);
   }
 
   return {
@@ -290,8 +362,7 @@ const strokeSkeleton = (element) => {
   };
 };
 
-const toExcalidrawElements = (scene) => {
-  const skeletons = scene.elements.map((element) => {
+const excalidrawSkeleton = (element) => {
     if (element.type === "box") {
       const presentation = semanticBoxPresentation(element.nodeKind);
       return {
@@ -308,18 +379,11 @@ const toExcalidrawElements = (scene) => {
         strokeStyle: "solid",
         roughness: 0,
         roundness: presentation.roundness,
-        label: element.label
-          ? {
-            text: element.label,
-            fontSize: 16,
-            fontFamily: 2,
-            verticalAlign: "bottom",
-          }
-          : undefined,
         customData: {
           iaElementID: element.boardID,
           iaElementType: "box",
           iaKind: element.nodeKind,
+          iaLabel: element.label,
           iaVisualKey: presentation.visualKey,
         },
       };
@@ -345,11 +409,10 @@ const toExcalidrawElements = (scene) => {
         roughness: 0,
         start: element.sourceID ? { id: element.sourceID } : undefined,
         end: element.targetID ? { id: element.targetID } : undefined,
-        label: element.label
-          ? { text: element.label, fontSize: 14, fontFamily: 2 }
-          : undefined,
         customData: {
           iaElementID: element.boardID,
+          iaElementType: "connector",
+          iaLabel: element.label,
           iaStartAnchorPolicy: element.startAnchorPolicy,
           iaEndAnchorPolicy: element.endAnchorPolicy,
         },
@@ -362,17 +425,36 @@ const toExcalidrawElements = (scene) => {
         id: element.boardID,
         x: element.x,
         y: element.y,
+        width: 240,
+        height: 32,
         text: element.text,
-        strokeColor: element.color,
-        fontSize: 16,
+        originalText: element.text,
+        fontSize: 15,
         fontFamily: 2,
-        customData: { iaElementID: element.boardID },
+        textAlign: "left",
+        verticalAlign: "top",
+        lineHeight: 1.25,
+        containerId: null,
+        strokeColor: element.color,
+        backgroundColor: "transparent",
+        fillStyle: "solid",
+        strokeWidth: 1,
+        roughness: 0,
+        opacity: 100,
+        customData: {
+          iaElementID: element.boardID,
+          iaElementType: "label",
+          iaText: element.text,
+          iaColor: element.color,
+        },
       };
     }
 
     return strokeSkeleton(element);
-  });
+};
 
+const toExcalidrawElements = (scene) => {
+  const skeletons = scene.elements.map(excalidrawSkeleton);
   return convertToExcalidrawElements(skeletons, { regenerateIds: false });
 };
 
@@ -422,26 +504,24 @@ function BoardEditor() {
           ...itemStyleForTool(scene.tool),
         },
       });
-      setOverlayScene({
-        elements,
-        appState: {
-          ...api.getAppState(),
-          zoom: { value: Number(scene.zoom ?? 1) },
-        },
-      });
-      if (!scene.readOnly) {
-        api.setActiveTool({ type: toolType(scene.tool) });
-      }
-      api.history.clear();
-      requestAnimationFrame(() => requestAnimationFrame(() => {
-        loadingRef.current = false;
+      window.requestAnimationFrame(() => {
+        if (!scene.readOnly) {
+          api.setActiveTool({ type: toolType(scene.tool) });
+        }
         if (elements.length > 0) {
           api.scrollToContent(elements, {
             fitToContent: false,
             animate: false,
           });
         }
-      }));
+        window.requestAnimationFrame(() => {
+          setOverlayScene({
+            elements: api.getSceneElements(),
+            appState: api.getAppState(),
+          });
+          loadingRef.current = false;
+        });
+      });
       return elements.length;
     };
 

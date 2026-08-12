@@ -203,6 +203,7 @@ struct ExcalidrawBoardEditorView: NSViewRepresentable {
         private var isReady = false
         private var didStartLoading = false
         private var readyDeadlineTask: Task<Void, Never>?
+        private var pendingReloadTask: Task<Void, Never>?
         private weak var bridgeController: ExcalidrawBoardBridgeController?
         private var onSceneChange: @MainActor (ExcalidrawBoardDecodeResult) -> Bool
         private var onCommand: @MainActor (ExcalidrawBoardCommand) -> Void
@@ -253,6 +254,8 @@ struct ExcalidrawBoardEditorView: NSViewRepresentable {
         func detach() {
             readyDeadlineTask?.cancel()
             readyDeadlineTask = nil
+            pendingReloadTask?.cancel()
+            pendingReloadTask = nil
             bridgeController?.detach(self)
             webView = nil
             assetHandler = nil
@@ -280,9 +283,13 @@ struct ExcalidrawBoardEditorView: NSViewRepresentable {
             snapshot = next
             guard isReady else { return }
             if lastLoadedDocument != document {
-                load(next)
+                scheduleLoad(next)
             } else if previous != next {
-                sendState(next)
+                if pendingReloadTask != nil {
+                    scheduleLoad(next)
+                } else {
+                    sendState(next)
+                }
             }
         }
 
@@ -345,8 +352,8 @@ struct ExcalidrawBoardEditorView: NSViewRepresentable {
                 isReady = true
                 readyDeadlineTask?.cancel()
                 readyDeadlineTask = nil
-                if let snapshot { load(snapshot) }
                 onReady()
+                if let snapshot { scheduleLoad(snapshot) }
 
             case "scene":
                 _ = receiveScene(object)
@@ -444,12 +451,12 @@ struct ExcalidrawBoardEditorView: NSViewRepresentable {
                 )
                 guard onSceneChange(decoded) else {
                     onIssue("That canvas change could not be saved. The last valid Board remains available.")
-                    load(snapshot)
+                    scheduleLoad(snapshot)
                     return false
                 }
                 lastLoadedDocument = decoded.document
                 if decoded.requiresReload {
-                    load(
+                    scheduleLoad(
                         Snapshot(
                             document: decoded.document,
                             selectedElementID: decoded.selectedElementID,
@@ -463,12 +470,26 @@ struct ExcalidrawBoardEditorView: NSViewRepresentable {
                 return true
             } catch ExcalidrawBoardCodecError.unsupportedElements {
                 onIssue("That shape is not part of the Interview Arc Board. Use Box, Connector, Text, Pen, or Eraser.")
-                load(snapshot)
+                scheduleLoad(snapshot)
                 return false
             } catch {
                 onIssue("That canvas change is outside the supported Board bounds. The last valid Board remains available.")
-                load(snapshot)
+                scheduleLoad(snapshot)
                 return false
+            }
+        }
+
+        private func scheduleLoad(_ snapshot: Snapshot) {
+            pendingReloadTask?.cancel()
+            pendingReloadTask = Task { @MainActor [weak self] in
+                // WKScriptMessageHandler and evaluateJavaScript callbacks must
+                // return before native code calls back into the same WKWebView.
+                // One executor yield provides that boundary without a timing
+                // guess, while cancellation makes the latest snapshot win.
+                await Task.yield()
+                guard !Task.isCancelled, let self else { return }
+                self.pendingReloadTask = nil
+                self.load(snapshot)
             }
         }
 
