@@ -57,7 +57,23 @@ The Arc generator derives the receipt source commit, immutable source permalink,
 
 A receipt is always required, but rich prose is not. Use a rich record when a change materially affects a Module or Interface, schema or migration, cross-repository protocol, durable state or ownership rule, dependency boundary, security, privacy, reliability, accessibility, performance, incident repair, or a difficult-to-reverse tradeoff.
 
+Apply these decision tests consistently:
+
+| Category | Material when the pull request… | Typical evidence |
+| --- | --- | --- |
+| Module or Interface | changes an accepted command, snapshot, invariant, ownership rule, or Adapter boundary | public API diff, state-transition test, accepted ADR |
+| Schema or migration | changes a persisted format, compatibility rule, recovery path, or data conversion | schema diff, migration/recovery test |
+| Cross-repository protocol or dependency | changes a hosted/native contract, package boundary, trusted pin, or release ordering | paired issues/PRs, compatibility test, exact commit pin |
+| Security, privacy, or reliability | changes authorization, credentials, private media, durable ordering, retry, recovery, signing, or data-loss behavior | threat/privacy review, failure-path test, release evidence |
+| Accessibility or performance | changes user-reachable semantics or a measured resource/latency budget, rather than local formatting | accessibility verification or before/after measurement |
+| Incident repair | fixes a verified production or release failure with an evidence-backed cause and prevention action | timeline, logs, failing test, prevention check |
+| Difficult-to-reverse decision | adds a long-lived dependency, application boundary, canonical source, or operational commitment | alternatives, tradeoffs, accepted ADR |
+
+After the materiality test passes, choose the record type by its evidence scope: Change Note for one material behavior change; ADR for one accepted durable decision; Architecture Review for an alternatives/constraints evaluation; Feature Retrospective for a reviewed multi-PR feature or migration; Postmortem for a verified incident and prevention work; Capability Dossier for a capability described by several exact records or repositories.
+
 Do not inflate a small receipt into a rich record. Do not compress architecture, incident causality, or a multi-PR migration into a 280-character receipt.
+
+Accepted rich records are not deleted. Correct them with a reviewed new revision, amendment, or superseding record so existing receipt references remain resolvable and historical changes stay explicit.
 
 ## Diagrams
 

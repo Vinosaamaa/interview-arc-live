@@ -24,7 +24,10 @@ jobs:
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        run: git fetch --no-tags --depth=1 origin "$BASE_SHA" "$HEAD_SHA"
+          HEAD_REPO_URL: ${{ github.event.pull_request.head.repo.clone_url }}
+        run: |
+          git fetch --no-tags --depth=1 origin "$BASE_SHA"
+          git fetch --no-tags --depth=1 "$HEAD_REPO_URL" "$HEAD_SHA"
       - name: Validate Engineering impact classification
         if: github.event_name == 'pull_request'
         run: python3 scripts/validate-engineering-impact.py "$GITHUB_EVENT_PATH"

@@ -54,12 +54,33 @@ RECORD_REF_PATTERN = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*@[1-9]\d*$")
 COMMIT_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 MERGED_AT_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
 REPOSITORY_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+$")
+MAX_SOURCES = 32
+MAX_SOURCE_LABEL_LENGTH = 160
+MAX_SOURCE_URL_LENGTH = 2048
+MAX_STRING_LIST_ITEMS = 32
+MAX_STRING_LENGTH = 512
+MAX_RECORD_REFS = 16
+MAX_RECORD_REF_LENGTH = 180
+
+
+def markdown_lines_outside_fences(body: str):
+    fence = None
+    for line in body.splitlines():
+        marker = re.match(r"^\s*(`{3,}|~{3,})", line)
+        if fence:
+            if marker and marker.group(1)[0] == fence[0] and len(marker.group(1)) >= fence[1]:
+                fence = None
+            continue
+        if marker:
+            fence = (marker.group(1)[0], len(marker.group(1)))
+            continue
+        yield line
 
 
 def selected_classifications(body: str):
     return [
         (CLASSIFICATIONS[match.group(1).lower()], (match.group(2) or "").strip())
-        for line in body.splitlines()
+        for line in markdown_lines_outside_fences(body)
         if (match := CLASSIFICATION_PATTERN.match(line))
     ]
 
@@ -109,9 +130,20 @@ def frontmatter_document(markdown: str, path: str):
     return values, match.group(2).strip()
 
 
-def string_list(value, field: str, path: str):
+def string_list(
+    value,
+    field: str,
+    path: str,
+    *,
+    max_items: int = MAX_STRING_LIST_ITEMS,
+    max_length: int = MAX_STRING_LENGTH,
+):
     if not isinstance(value, list) or any(not isinstance(item, str) or not item for item in value):
         raise ValueError(f"Receipt `{field}` must be a list of nonempty strings: {path}.")
+    if len(value) > max_items or any(len(item) > max_length for item in value):
+        raise ValueError(
+            f"Receipt `{field}` must contain at most {max_items} items of at most {max_length} characters: {path}."
+        )
     if len(value) != len(set(value)):
         raise ValueError(f"Receipt `{field}` must not contain duplicates: {path}.")
     return value
@@ -172,7 +204,13 @@ def validate_receipt(
         raise ValueError(f"Receipt `confidence` is invalid: {path}.")
     string_list(receipt["unknowns"], "unknowns", path)
 
-    rich_record_refs = string_list(receipt["richRecordRefs"], "richRecordRefs", path)
+    rich_record_refs = string_list(
+        receipt["richRecordRefs"],
+        "richRecordRefs",
+        path,
+        max_items=MAX_RECORD_REFS,
+        max_length=MAX_RECORD_REF_LENGTH,
+    )
     if any(not RECORD_REF_PATTERN.fullmatch(reference) for reference in rich_record_refs):
         raise ValueError(f"Receipt `richRecordRefs` contains an invalid exact record reference: {path}.")
     if classification == "none" and rich_record_refs:
@@ -196,13 +234,21 @@ def validate_receipt(
     sources = receipt["sources"]
     if not isinstance(sources, list) or not sources:
         raise ValueError(f"Receipt `sources` must contain at least one source: {path}.")
+    if len(sources) > MAX_SOURCES:
+        raise ValueError(f"Receipt `sources` must contain at most {MAX_SOURCES} sources: {path}.")
     for source in sources:
         if not isinstance(source, dict) or set(source) != {"label", "url", "kind"}:
             raise ValueError(f"Receipt source fields are invalid: {path}.")
-        if not isinstance(source["label"], str) or not source["label"]:
+        if not isinstance(source["label"], str) or not 1 <= len(source["label"]) <= MAX_SOURCE_LABEL_LENGTH:
             raise ValueError(f"Receipt source label is invalid: {path}.")
-        if not isinstance(source["url"], str) or not source["url"].startswith("https://"):
-            raise ValueError(f"Receipt source URL must use HTTPS: {path}.")
+        if (
+            not isinstance(source["url"], str)
+            or not source["url"].startswith("https://")
+            or len(source["url"]) > MAX_SOURCE_URL_LENGTH
+        ):
+            raise ValueError(
+                f"Receipt source URL must use HTTPS and contain at most {MAX_SOURCE_URL_LENGTH} characters: {path}."
+            )
         if source["kind"] not in SOURCE_KINDS:
             raise ValueError(f"Receipt source kind is invalid: {path}.")
     expected_pr_url = pr_url or f"https://github.com/Vinosaamaa/{repository}/pull/{pr_number}"
@@ -276,15 +322,15 @@ def record_type_from_markdown(markdown: str, path: str):
     return record_type
 
 
-def record_types(paths: list[str], head: str, base: str):
+def record_types(paths: list[str], head: str):
     head_blobs = git_blobs(head, paths)
-    deleted = [path for path in paths if head_blobs[path] is None]
-    base_blobs = git_blobs(base, deleted)
     types = []
     for path in paths:
-        markdown = head_blobs[path] if head_blobs[path] is not None else base_blobs.get(path)
+        markdown = head_blobs[path]
         if markdown is None:
-            raise ValueError(f"Changed canonical Engineering record is missing from both revisions: {path}.")
+            raise ValueError(
+                f"Canonical Engineering records cannot be deleted; publish a superseding record instead: {path}."
+            )
         types.append(record_type_from_markdown(markdown, path))
     return types
 
@@ -367,7 +413,7 @@ def main():
         raise ValueError("Pull request base, head, number, title, repository, and URL are required.")
     changed = git("diff", "--name-only", base, head).splitlines()
     record_paths = [path for path in changed if path.startswith("docs/engineering/records/") and path.endswith(".md")]
-    classification = validate(pull_request.get("body") or "", record_types(record_paths, head, base))
+    classification = validate(pull_request.get("body") or "", record_types(record_paths, head))
     receipt_path = required_receipt_path(changed, pr_number)
     receipt_markdown = git_blobs(head, [receipt_path])[receipt_path]
     if receipt_markdown is None:
