@@ -41,6 +41,14 @@ struct SystemDesignBoardView: View {
         .sheet(isPresented: $isRevisionHistoryPresented) {
             revisionHistoryBrowser
         }
+        .onChange(of: model.selectedWorkSurface) { previous, current in
+            guard BoardEnhancedEditorLifecycle.shouldInvalidateAttempt(
+                from: previous,
+                to: current
+            ) else { return }
+            enhancedEditorIsReady = false
+            enhancedEditorAttemptID = UUID()
+        }
         .onDeleteCommand {
             guard model.selectedWorkSurface == .board,
                   !model.isInspectingBoardRevision else { return }
@@ -973,7 +981,8 @@ struct SystemDesignBoardView: View {
     }
 
     private var enhancedCanvas: some View {
-        ZStack(alignment: .topLeading) {
+        let attemptID = enhancedEditorAttemptID
+        return ZStack(alignment: .topLeading) {
             ExcalidrawBoardEditorView(
                 document: model.boardDocumentForPresentation,
                 selectedElementID: model.boardSelectedElementIDForPresentation,
@@ -1015,19 +1024,25 @@ struct SystemDesignBoardView: View {
                 },
                 onCommand: handleEnhancedEditorCommand,
                 onReady: {
+                    guard attemptID == enhancedEditorAttemptID,
+                          model.selectedWorkSurface == .board else { return }
                     enhancedEditorIsReady = true
                     interactionFeedback = "Enhanced canvas ready · edits stay local"
                 },
                 onIssue: { message in
+                    guard attemptID == enhancedEditorAttemptID,
+                          model.selectedWorkSurface == .board else { return }
                     interactionFeedback = message
                 },
                 onFailure: { message in
+                    guard attemptID == enhancedEditorAttemptID,
+                          model.selectedWorkSurface == .board else { return }
                     enhancedEditorFailure = message
                     enhancedEditorIsReady = false
                     interactionFeedback = "\(message) Using the native canvas."
                 }
             )
-            .id(enhancedEditorAttemptID)
+            .id(attemptID)
             .accessibilityHidden(true)
 
             if !enhancedEditorIsReady {
@@ -2563,6 +2578,15 @@ enum BoardRailPresentation {
         _ status: BoardRevisionStatusPresentation
     ) -> String {
         status.compactText
+    }
+}
+
+enum BoardEnhancedEditorLifecycle {
+    static func shouldInvalidateAttempt(
+        from previous: SystemDesignWorkSurfacePane,
+        to current: SystemDesignWorkSurfacePane
+    ) -> Bool {
+        previous == .board && current != .board
     }
 }
 
