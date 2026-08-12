@@ -24,8 +24,14 @@ class EngineeringImpactPolicyTests(unittest.TestCase):
     def test_none_requires_a_reason_and_no_record(self):
         with self.assertRaisesRegex(ValueError, "concrete reason"):
             MODULE.validate("- [x] None — reason: TODO", [])
+        with self.assertRaisesRegex(ValueError, "concrete reason"):
+            MODULE.validate("- [x] None — reason: REPLACE WITH A CONCRETE REASON", [])
         self.assertEqual(
             MODULE.validate("- [x] None — reason: This change only corrects non-engineering copy.", []),
+            "none",
+        )
+        self.assertEqual(
+            MODULE.validate("- [x] None — reason: This change replaces an obsolete workflow without changing runtime behavior.", []),
             "none",
         )
         with self.assertRaisesRegex(ValueError, "cannot be `None`"):

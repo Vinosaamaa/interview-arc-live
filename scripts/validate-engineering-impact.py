@@ -15,6 +15,14 @@ CLASSIFICATIONS = {
     "capability dossier": "capability-dossier",
 }
 
+PLACEHOLDER_REASONS = {
+    "todo",
+    "n/a",
+    "na",
+    "none",
+    "replace with a concrete reason",
+}
+
 
 def selected_classifications(body: str):
     pattern = re.compile(
@@ -34,7 +42,8 @@ def validate(body: str, record_types: list[str]):
         raise ValueError("Select exactly one Engineering impact classification in the pull request body.")
     classification, reason = selected[0]
     if classification == "none":
-        if len(reason) < 12 or re.search(r"replace|todo|n/a|none", reason, re.IGNORECASE):
+        normalized_reason = re.sub(r"[.!]+$", "", reason.strip()).lower()
+        if len(reason) < 12 or normalized_reason in PLACEHOLDER_REASONS:
             raise ValueError("Engineering impact `None` requires a concrete reason.")
         if record_types:
             raise ValueError("A canonical Engineering record changed, so Engineering impact cannot be `None`.")
@@ -51,18 +60,31 @@ def git(*args):
     return subprocess.check_output(["git", *args], text=True).strip()
 
 
-def record_type(path: str, head: str, base: str):
-    markdown = ""
+def record_types(paths: list[str], head: str, base: str):
+    found: dict[str, str] = {}
     for revision in (head, base):
-        try:
-            markdown = git("show", f"{revision}:{path}")
+        pending = [path for path in paths if path not in found]
+        if not pending:
             break
-        except subprocess.CalledProcessError:
-            continue
-    match = re.search(r"^type:\s*(\S+)\s*$", markdown, re.MULTILINE)
-    if not match:
-        raise ValueError(f"Changed canonical Engineering record has no type: {path}.")
-    return match.group(1)
+        result = subprocess.run(
+            ["git", "grep", "-E", r"^type:[[:space:]]*[^[:space:]]+", revision, "--", *pending],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        if result.returncode not in (0, 1):
+            raise subprocess.CalledProcessError(result.returncode, result.args, result.stdout, result.stderr)
+        prefix = f"{revision}:"
+        for line in result.stdout.splitlines():
+            if not line.startswith(prefix) or ":type:" not in line:
+                continue
+            path, value = line[len(prefix):].rsplit(":type:", 1)
+            if path in pending and path not in found:
+                found[path] = value.strip()
+    missing = [path for path in paths if path not in found]
+    if missing:
+        raise ValueError(f"Changed canonical Engineering record has no type: {missing[0]}.")
+    return [found[path] for path in paths]
 
 
 def main():
@@ -77,7 +99,7 @@ def main():
         raise ValueError("Pull request base and head revisions are required.")
     changed = git("diff", "--name-only", base, head).splitlines()
     record_paths = [path for path in changed if path.startswith("docs/engineering/records/") and path.endswith(".md")]
-    classification = validate(pull_request.get("body") or "", [record_type(path, head, base) for path in record_paths])
+    classification = validate(pull_request.get("body") or "", record_types(record_paths, head, base))
     print(f"Engineering impact: {classification}; {len(changed)} changed file(s).")
 
 
