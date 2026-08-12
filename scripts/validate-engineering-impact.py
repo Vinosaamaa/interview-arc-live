@@ -551,6 +551,19 @@ def build_record_index(metadata_by_path, changed_paths):
             raise ValueError(f"Canonical Engineering record has an invalid revision: {path}.")
         if record_type not in set(CLASSIFICATIONS.values()) - {"none"}:
             raise ValueError(f"Canonical Engineering record has an invalid type: {path}.")
+        if metadata.get("confidence") == "verified":
+            verification = metadata.get("verification")
+            evidence_refs = verification.get("evidenceRefs") if isinstance(verification, dict) else None
+            if (
+                not isinstance(verification, dict)
+                or verification.get("state") != "verified"
+                or not isinstance(evidence_refs, list)
+                or not evidence_refs
+                or any(not isinstance(reference, str) or not reference for reference in evidence_refs)
+            ):
+                raise ValueError(
+                    f"Canonical Engineering record with verified confidence requires recorded evidence: {path}."
+                )
         reference = f"{record_id}@{record_revision}"
         if reference in index:
             raise ValueError(f"Duplicate canonical Engineering record reference: {reference}.")

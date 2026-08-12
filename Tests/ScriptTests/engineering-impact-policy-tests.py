@@ -433,6 +433,18 @@ Adopted complete pull-request receipts and a curated Engineering record for the 
                 MODULE.record_index_and_changed_types_at("head", [changed_path], [])
         matching_paths.assert_called_once_with("head", {"session"})
 
+    def test_verified_rich_record_requires_recorded_evidence(self):
+        path = "docs/engineering/records/session.md"
+        metadata = {
+            "id": "session",
+            "revision": 1,
+            "type": "capability-dossier",
+            "confidence": "verified",
+            "verification": {"state": "not-recorded", "evidenceRefs": []},
+        }
+        with self.assertRaisesRegex(ValueError, "verified confidence.*evidence"):
+            MODULE.build_record_index({path: metadata}, [path])
+
     def test_record_frontmatters_are_requested_in_bounded_batches(self):
         paths = [f"docs/engineering/records/record-{index}.md" for index in range(65)]
         output = bytearray()

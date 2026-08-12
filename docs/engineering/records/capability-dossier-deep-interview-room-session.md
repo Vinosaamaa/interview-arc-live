@@ -24,7 +24,7 @@ amends: []
 supersedes: []
 learningRefs: []
 sources: [{"label":"Live domain context","url":"https://github.com/Vinosaamaa/interview-arc-live/blob/main/CONTEXT.md","kind":"documentation"},{"label":"ADR 0001 — separate Live application","url":"https://github.com/Vinosaamaa/interview-arc-live/blob/main/docs/adr/0001-separate-live-application.md","kind":"documentation"},{"label":"ADR 0002 — deep Interview Room Session","url":"https://github.com/Vinosaamaa/interview-arc-live/blob/main/docs/adr/0002-deep-interview-room-session.md","kind":"documentation"},{"label":"Live adoption issue #41","url":"https://github.com/Vinosaamaa/interview-arc-live/issues/41","kind":"issue"}]
-verification: {"state":"not-recorded","evidenceRefs":[]}
+verification: {"state":"verified","evidenceRefs":["documentation:CONTEXT.md","adr:0001-separate-live-application","adr:0002-deep-interview-room-session","issue:41"]}
 visibility: public-safe
 publicationEligibility: eligible
 issue: 41
