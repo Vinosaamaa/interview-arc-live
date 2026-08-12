@@ -73,7 +73,8 @@ configuration=$xcode_configuration
 enable_testability=$package_testability
 macosx_deployment_target=$deployment_target
 code_signing_allowed=$code_signing_allowed"
-if [[ -f "$build_receipt" && "$(<"$build_receipt")" == "$expected_build_receipt" ]]; then
+if [[ "$source_tree_clean" == "true" && -f "$build_receipt" \
+    && "$(<"$build_receipt")" == "$expected_build_receipt" ]]; then
   echo "Reusing verified $xcode_configuration build products from $derived_data."
 else
   # MLX compiles Metal shaders through Xcode. A plain `swift build` can produce
@@ -89,10 +90,6 @@ else
     MACOSX_DEPLOYMENT_TARGET="$deployment_target" \
     ENABLE_TESTABILITY="$package_testability" \
     CODE_SIGNING_ALLOWED="$code_signing_allowed"
-  printf 'source_commit=%s\nscheme=%s\nconfiguration=%s\nenable_testability=%s\nmacosx_deployment_target=%s\ncode_signing_allowed=%s\n' \
-    "$source_commit" "$package_scheme" "$xcode_configuration" \
-    "$package_testability" "$deployment_target" "$code_signing_allowed" \
-    > "$build_receipt"
 fi
 
 bin_dir="$derived_data/Build/Products/$xcode_configuration"
@@ -107,6 +104,15 @@ if [[ -n "$(git status --porcelain --untracked-files=all)" ]]; then
     echo "The build changed tracked or untracked source state; packaging stopped." >&2
     exit 65
   fi
+fi
+
+if [[ "$source_tree_clean" == "true" ]]; then
+  printf 'source_commit=%s\nscheme=%s\nconfiguration=%s\nenable_testability=%s\nmacosx_deployment_target=%s\ncode_signing_allowed=%s\n' \
+    "$source_commit" "$package_scheme" "$xcode_configuration" \
+    "$package_testability" "$deployment_target" "$code_signing_allowed" \
+    > "$build_receipt"
+else
+  print -r -- 'dirty_source=true' > "$build_receipt"
 fi
 
 if [[ ! -x "$executable" || ! -x "$smoke_executable" \

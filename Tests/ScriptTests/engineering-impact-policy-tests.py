@@ -123,7 +123,12 @@ Adopted complete pull-request receipts and a curated Engineering record for the 
         self.assertIn('configuration=$xcode_configuration', package_script)
         self.assertIn('enable_testability=$package_testability', package_script)
         self.assertIn('ENABLE_TESTABILITY="$package_testability"', package_script)
-        self.assertIn('[[ -f "$build_receipt" && "$(<"$build_receipt")" == "$expected_build_receipt" ]]', package_script)
+        self.assertRegex(
+            package_script,
+            r'\[\[ "\$source_tree_clean" == "true" && -f "\$build_receipt" \\\n'
+            r'\s+&& "\$\(<"\$build_receipt"\)" == "\$expected_build_receipt" \]\]',
+        )
+        self.assertIn("print -r -- 'dirty_source=true' > \"$build_receipt\"", package_script)
 
     def test_classification_examples_inside_markdown_fences_are_ignored(self):
         body = "- [x] Capability Dossier\n\n```markdown\n- [x] ADR\n```"
