@@ -93,6 +93,8 @@ body {
 
 .interview-arc-board-controls {
   position: fixed;
+  top: 72px;
+  right: 8px;
   z-index: 5;
   display: flex;
   align-items: center;
@@ -102,11 +104,6 @@ body {
   border-radius: 12px;
   background: var(--island-bg-color, #fbfaf7);
   box-shadow: 0 3px 12px rgb(31 41 55 / 10%);
-  visibility: hidden;
-}
-
-.interview-arc-board-controls[data-positioned="true"] {
-  visibility: visible;
 }
 
 .interview-arc-board-status {

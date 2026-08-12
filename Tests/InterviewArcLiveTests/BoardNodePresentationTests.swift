@@ -245,6 +245,60 @@ final class BoardNodePresentationTests: XCTestCase {
         )
     }
 
+    func testNativeRevisionControlsAppearOnlyForBoardFallback() {
+        XCTAssertTrue(
+            BoardRailPresentation.showsNativeRevisionControls(
+                selectedWorkSurface: .board,
+                enhancedEditorIsReady: false
+            )
+        )
+        XCTAssertFalse(
+            BoardRailPresentation.showsNativeRevisionControls(
+                selectedWorkSurface: .board,
+                enhancedEditorIsReady: true
+            )
+        )
+        XCTAssertFalse(
+            BoardRailPresentation.showsNativeRevisionControls(
+                selectedWorkSurface: .brief,
+                enhancedEditorIsReady: false
+            )
+        )
+        XCTAssertFalse(
+            BoardRailPresentation.showsNativeRevisionControls(
+                selectedWorkSurface: .notes,
+                enhancedEditorIsReady: false
+            )
+        )
+    }
+
+    func testEnhancedEditorAttemptInvalidatesWhenLeavingBoard() {
+        XCTAssertTrue(
+            BoardEnhancedEditorLifecycle.shouldInvalidateAttempt(
+                from: .board,
+                to: .brief
+            )
+        )
+        XCTAssertTrue(
+            BoardEnhancedEditorLifecycle.shouldInvalidateAttempt(
+                from: .board,
+                to: .notes
+            )
+        )
+        XCTAssertFalse(
+            BoardEnhancedEditorLifecycle.shouldInvalidateAttempt(
+                from: .brief,
+                to: .board
+            )
+        )
+        XCTAssertFalse(
+            BoardEnhancedEditorLifecycle.shouldInvalidateAttempt(
+                from: .board,
+                to: .board
+            )
+        )
+    }
+
     func testRevisionMenuBoundsRecentItemsAndFullBrowserKeepsEveryRevision() {
         let revisions = (0..<8).map { ordinal in
             BoardRevision(

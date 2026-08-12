@@ -23,6 +23,13 @@ struct SystemDesignBoardView: View {
         model.enhancedBoardBridgeController
     }
 
+    private var showsNativeBoardRevisionControls: Bool {
+        BoardRailPresentation.showsNativeRevisionControls(
+            selectedWorkSurface: model.selectedWorkSurface,
+            enhancedEditorIsReady: enhancedEditorIsReady
+        )
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             revisionRail
@@ -33,6 +40,14 @@ struct SystemDesignBoardView: View {
         .foregroundStyle(BoardPalette.navy)
         .sheet(isPresented: $isRevisionHistoryPresented) {
             revisionHistoryBrowser
+        }
+        .onChange(of: model.selectedWorkSurface) { previous, current in
+            guard BoardEnhancedEditorLifecycle.shouldInvalidateAttempt(
+                from: previous,
+                to: current
+            ) else { return }
+            enhancedEditorIsReady = false
+            enhancedEditorAttemptID = UUID()
         }
         .onDeleteCommand {
             guard model.selectedWorkSurface == .board,
@@ -149,11 +164,8 @@ struct SystemDesignBoardView: View {
                     workSurfaceStatus(compact: true)
                 }
                 Spacer(minLength: BoardRailWidthBudget.compactRevisionSpacerWidth)
-                if model.selectedWorkSurface == .board {
-                    revisionPrimaryAction(compact: true)
-                    revisionMenu(compact: true)
-                    attachRevisionButton(compact: true)
-                    exportRevisionButton(compact: true)
+                if showsNativeBoardRevisionControls {
+                    nativeRevisionControls(compact: true)
                 }
             } else {
                 Spacer(
@@ -163,12 +175,8 @@ struct SystemDesignBoardView: View {
                 if model.selectedWorkSurface == .board {
                     HStack(spacing: 18) {
                         revisionStatus(compact: false)
-                        if !enhancedEditorIsReady {
-                            revisionPrimaryAction(compact: false)
-                            revisionMenu(compact: false)
-                            railDivider
-                            attachRevisionButton(compact: false)
-                            exportRevisionButton(compact: false)
+                        if showsNativeBoardRevisionControls {
+                            nativeRevisionControls(compact: false)
                         }
                     }
                     .fixedSize()
@@ -191,6 +199,7 @@ struct SystemDesignBoardView: View {
     }
 
     private var compactRevisionActionCount: Int {
+        guard showsNativeBoardRevisionControls else { return 0 }
         var count = 2 // Attach and Export are always discoverable.
         if model.isInspectingBoardRevision || model.isBoardDraftDirty {
             count += 1
@@ -199,6 +208,17 @@ struct SystemDesignBoardView: View {
             count += 1
         }
         return count
+    }
+
+    @ViewBuilder
+    private func nativeRevisionControls(compact: Bool) -> some View {
+        revisionPrimaryAction(compact: compact)
+        revisionMenu(compact: compact)
+        if !compact {
+            railDivider
+        }
+        attachRevisionButton(compact: compact)
+        exportRevisionButton(compact: compact)
     }
 
     private func workSurfaceSwitcher(compact: Bool) -> some View {
@@ -961,7 +981,8 @@ struct SystemDesignBoardView: View {
     }
 
     private var enhancedCanvas: some View {
-        ZStack(alignment: .topLeading) {
+        let attemptID = enhancedEditorAttemptID
+        return ZStack(alignment: .topLeading) {
             ExcalidrawBoardEditorView(
                 document: model.boardDocumentForPresentation,
                 selectedElementID: model.boardSelectedElementIDForPresentation,
@@ -1003,19 +1024,25 @@ struct SystemDesignBoardView: View {
                 },
                 onCommand: handleEnhancedEditorCommand,
                 onReady: {
+                    guard attemptID == enhancedEditorAttemptID,
+                          model.selectedWorkSurface == .board else { return }
                     enhancedEditorIsReady = true
                     interactionFeedback = "Enhanced canvas ready · edits stay local"
                 },
                 onIssue: { message in
+                    guard attemptID == enhancedEditorAttemptID,
+                          model.selectedWorkSurface == .board else { return }
                     interactionFeedback = message
                 },
                 onFailure: { message in
+                    guard attemptID == enhancedEditorAttemptID,
+                          model.selectedWorkSurface == .board else { return }
                     enhancedEditorFailure = message
                     enhancedEditorIsReady = false
                     interactionFeedback = "\(message) Using the native canvas."
                 }
             )
-            .id(enhancedEditorAttemptID)
+            .id(attemptID)
             .accessibilityHidden(true)
 
             if !enhancedEditorIsReady {
@@ -2540,10 +2567,26 @@ enum BoardRailWidthBudget {
 }
 
 enum BoardRailPresentation {
+    static func showsNativeRevisionControls(
+        selectedWorkSurface: SystemDesignWorkSurfacePane,
+        enhancedEditorIsReady: Bool
+    ) -> Bool {
+        selectedWorkSurface == .board && !enhancedEditorIsReady
+    }
+
     static func compactRevisionStatus(
         _ status: BoardRevisionStatusPresentation
     ) -> String {
         status.compactText
+    }
+}
+
+enum BoardEnhancedEditorLifecycle {
+    static func shouldInvalidateAttempt(
+        from previous: SystemDesignWorkSurfacePane,
+        to current: SystemDesignWorkSurfacePane
+    ) -> Bool {
+        previous == .board && current != .board
     }
 }
 

@@ -279,6 +279,43 @@ private final class RuntimeProbe: NSObject,
           hasRevisions: Boolean(document.querySelector('button[aria-label="Browse revisions"]')),
           hasAttach: Boolean(document.querySelector('button[aria-label="Attach revision"]')),
           hasExport: Boolean(document.querySelector('button[aria-label="Export board"]')),
+          chromeComputedVisible: (() => {
+            const controls = document.querySelector('.interview-arc-board-controls');
+            if (!controls) return false;
+            const style = getComputedStyle(controls);
+            return style.display !== 'none'
+              && style.visibility === 'visible'
+              && Number(style.opacity) > 0;
+          })(),
+          chromeComputedOpacity: (() => {
+            const controls = document.querySelector('.interview-arc-board-controls');
+            return controls ? Number(getComputedStyle(controls).opacity) : 0;
+          })(),
+          chromeActionableButtonCount: (() => {
+            return Array.from(document.querySelectorAll(
+              '.interview-arc-board-controls button:not(:disabled)'
+            )).length;
+          })(),
+          chromeActionableButtonsInViewport: (() => {
+            const buttons = Array.from(document.querySelectorAll(
+              '.interview-arc-board-controls button:not(:disabled)'
+            ));
+            if (buttons.length === 0) return false;
+            return buttons.every((button) => {
+              const rect = button.getBoundingClientRect();
+              const style = getComputedStyle(button);
+              return rect.width > 0
+                && rect.height > 0
+                && rect.left >= 0
+                && rect.top >= 0
+                && rect.right <= document.documentElement.clientWidth
+                && rect.bottom <= document.documentElement.clientHeight
+                && style.display !== 'none'
+                && style.visibility === 'visible'
+                && Number(style.opacity) > 0
+                && style.pointerEvents !== 'none';
+            });
+          })(),
           chromeFitsWithoutOverlap: (() => {
             const toolbar = document.querySelector('.App-toolbar-container')?.getBoundingClientRect();
             const controls = document.querySelector('.interview-arc-board-controls')?.getBoundingClientRect();
@@ -289,7 +326,9 @@ private final class RuntimeProbe: NSObject,
               && toolbar.bottom > controls.top;
             return !overlaps
               && controls.left >= 0
-              && controls.right <= document.documentElement.clientWidth;
+              && controls.right <= document.documentElement.clientWidth
+              && controls.top >= 0
+              && controls.bottom <= document.documentElement.clientHeight;
           })(),
           chromeMetrics: (() => {
             const toolbar = document.querySelector('.App-toolbar-container')?.getBoundingClientRect();
@@ -332,6 +371,10 @@ private final class RuntimeProbe: NSObject,
                 && object["hasRevisions"] as? Bool == true
                 && object["hasAttach"] as? Bool == true
                 && object["hasExport"] as? Bool == true
+                && object["chromeComputedVisible"] as? Bool == true
+                && (object["chromeComputedOpacity"] as? NSNumber)?.doubleValue == 1
+                && (object["chromeActionableButtonCount"] as? Int ?? 0) == 4
+                && object["chromeActionableButtonsInViewport"] as? Bool == true
                 && object["chromeFitsWithoutOverlap"] as? Bool == true
                 && loadedElementCount == 3
                 && containsRuntimeProbeBox(object["snapshot"])

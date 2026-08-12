@@ -22,6 +22,7 @@ import {
   nativeToolForExcalType,
 } from "./tool-mapping.js";
 import {
+  BOARD_CHROME_FALLBACK_PLACEMENT,
   boardChromeActionConfigurations,
   resolveBoardChromePlacement,
 } from "./board-chrome.js";
@@ -613,7 +614,9 @@ const useBoardChromePlacement = () => {
   const controlsRef = useRef(null);
   const fullControlsWidthRef = useRef(null);
   const [compact, setCompact] = useState(false);
-  const [placement, setPlacement] = useState(null);
+  const [placement, setPlacement] = useState(
+    BOARD_CHROME_FALLBACK_PLACEMENT,
+  );
 
   useLayoutEffect(() => {
     let animationFrame = null;
@@ -694,10 +697,9 @@ const BoardChromeControls = ({ controls, onAction }) => {
       aria-label="Board revisions and export"
       className="interview-arc-board-controls"
       data-compact={compact ? "true" : "false"}
-      data-positioned={placement ? "true" : "false"}
       ref={controlsRef}
       role="toolbar"
-      style={placement ?? undefined}
+      style={placement}
     >
       <span
         className={`interview-arc-board-status${controls.noticeIsError ? " interview-arc-board-status--error" : ""}`}
