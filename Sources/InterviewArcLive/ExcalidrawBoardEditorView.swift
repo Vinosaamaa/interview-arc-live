@@ -536,6 +536,11 @@ struct ExcalidrawBoardEditorView: NSViewRepresentable {
                 guard !Task.isCancelled, let self else { return }
                 self.pendingReconcileTask = nil
                 self.reconcile(snapshot)
+                // Geometry reconciliation deliberately preserves the live
+                // viewport/tool. Follow it with the newest authoritative
+                // state so a simultaneous native zoom or tool command is not
+                // lost while this task yields.
+                self.sendState(snapshot)
             }
         }
 

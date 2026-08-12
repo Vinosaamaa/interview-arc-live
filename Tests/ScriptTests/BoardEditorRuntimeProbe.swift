@@ -224,15 +224,17 @@ private final class RuntimeProbe: NSObject,
                   const scene = JSON.parse(serialized);
                   const count = window.interviewArcLoad(serialized);
                   window.setTimeout(() => {
-                    window.interviewArcSetState(JSON.stringify({
+                    const currentState = JSON.stringify({
                       selectedID: "runtime-probe-box",
                       zoom: 1.25,
                       readOnly: false,
                       tool: "hand",
                       boxKind: "service",
                       controls: scene.controls
-                    }));
+                    });
+                    window.interviewArcSetState(currentState);
                     window.interviewArcReconcile(serialized);
+                    window.interviewArcSetState(currentState);
                   }, 250);
                   return count;
                 })()
