@@ -404,19 +404,6 @@ def record_type_from_markdown(markdown: str, path: str):
     return record_type
 
 
-def record_identity(metadata, path):
-    record_id = metadata.get("id")
-    record_revision = metadata.get("revision")
-    record_type = metadata.get("type")
-    if not isinstance(record_id, str) or not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", record_id):
-        raise ValueError(f"Canonical Engineering record has an invalid id: {path}.")
-    if type(record_revision) is not int or record_revision < 1:
-        raise ValueError(f"Canonical Engineering record has an invalid revision: {path}.")
-    if record_type not in set(CLASSIFICATIONS.values()) - {"none"}:
-        raise ValueError(f"Canonical Engineering record has an invalid type: {path}.")
-    return record_id, record_revision, record_type
-
-
 def iter_frontmatters_at(revision: str, paths: list[str]):
     if not paths:
         return
@@ -485,9 +472,11 @@ def record_index_and_changed_types_at(
         reference.rsplit("@", 1)[0]
         for reference in required_refs or []
     }
-    for path, metadata in changed_metadata:
-        record_id, _, _ = record_identity(metadata, path)
-        record_ids.add(record_id)
+    record_ids.update(
+        metadata.get("id")
+        for _, metadata in changed_metadata
+        if isinstance(metadata.get("id"), str)
+    )
     paths = set(changed_paths)
     for record_id in record_ids:
         if re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", record_id):
@@ -501,7 +490,15 @@ def record_index_and_changed_types_at(
         if metadata.get("id") in record_ids:
             metadata_by_path[path] = metadata
     for path, metadata in sorted(metadata_by_path.items()):
-        record_id, record_revision, record_type = record_identity(metadata, path)
+        record_id = metadata.get("id")
+        record_revision = metadata.get("revision")
+        record_type = metadata.get("type")
+        if not isinstance(record_id, str) or not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", record_id):
+            raise ValueError(f"Canonical Engineering record has an invalid id: {path}.")
+        if type(record_revision) is not int or record_revision < 1:
+            raise ValueError(f"Canonical Engineering record has an invalid revision: {path}.")
+        if record_type not in set(CLASSIFICATIONS.values()) - {"none"}:
+            raise ValueError(f"Canonical Engineering record has an invalid type: {path}.")
         reference = f"{record_id}@{record_revision}"
         if reference in index:
             raise ValueError(f"Duplicate canonical Engineering record reference: {reference}.")

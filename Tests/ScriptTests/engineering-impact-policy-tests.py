@@ -203,11 +203,7 @@ Adopted complete pull-request receipts and a curated Engineering record for the 
         path = "docs/engineering/records/example.md"
         with (
             patch.object(MODULE, "git_object_exists", return_value=True),
-            patch.object(
-                MODULE,
-                "matching_record_paths",
-                side_effect=AssertionError("invalid changed metadata must fail before catalog lookup"),
-            ),
+            patch.object(MODULE, "matching_record_paths", return_value=[]) as matching_paths,
             patch.object(
                 MODULE,
                 "iter_frontmatters_at",
@@ -216,6 +212,7 @@ Adopted complete pull-request receipts and a curated Engineering record for the 
         ):
             with self.assertRaisesRegex(ValueError, "invalid type"):
                 MODULE.record_index_and_changed_types_at("head", [path])
+        matching_paths.assert_called_once_with("head", "example")
 
     def test_canonical_records_must_be_superseded_instead_of_deleted(self):
         path = "docs/engineering/records/example.md"
