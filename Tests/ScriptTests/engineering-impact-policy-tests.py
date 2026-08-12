@@ -115,6 +115,11 @@ Adopted complete pull-request receipts and a curated Engineering record for the 
         with self.assertRaisesRegex(ValueError, "valid type in leading front matter"):
             MODULE.record_type_from_markdown("---\ntitle: Missing type\n---\n\ntype: capability-dossier\n", "record.md")
 
+    def test_frontmatter_rejects_yaml_only_syntax(self):
+        for value in ("'single quoted'", "|", ">", "&anchor", "*alias", "!tag"):
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, "unsupported YAML-only syntax"):
+                MODULE.frontmatter_document(f"---\ntitle: {value}\n---\n", "record.md")
+
     def test_record_type_reuses_the_canonical_frontmatter_parser(self):
         with patch.object(
             MODULE,

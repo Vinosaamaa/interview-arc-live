@@ -110,6 +110,11 @@ def frontmatter_document(markdown: str, path: str):
         raw_value = raw_value.strip()
         if not key or key in values or not raw_value:
             raise ValueError(f"Engineering document has invalid front matter: {path}.")
+        if raw_value.startswith(("'", "|", ">", "&", "*", "!")):
+            raise ValueError(
+                f"Engineering document front matter uses unsupported YAML-only syntax; "
+                f"use one key per line with JSON-compatible structured values: {path}."
+            )
         if raw_value[0] in '[{"' or raw_value in {"true", "false", "null"} or re.fullmatch(r"-?\d+", raw_value):
             try:
                 values[key] = json.loads(raw_value)

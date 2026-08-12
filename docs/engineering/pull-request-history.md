@@ -9,6 +9,8 @@ Engineering history has two deliberately separate layers. The separation keeps t
 
 The receipt contract is versioned by `docs/contracts/engineering-pull-request-receipt.schema.json`. The six rich record types remain Change Note, ADR, Architecture Review, Feature Retrospective, Postmortem, and Capability Dossier. Tooling must not silently reinterpret an accepted v1 document.
 
+Version 1 uses a deliberately restricted frontmatter encoding, not general YAML: one unique `key: value` per line; unquoted strings for simple scalars; JSON syntax for arrays, objects, booleans, integers, and `null`. YAML block lists, multiline scalars, anchors, aliases, tags, and single-quoted scalars are rejected. This keeps the Python policy gate and Arc's deterministic JavaScript projection on one portable representation without adding a parser dependency or accepting ambiguous implicit YAML types.
+
 ## Forward authoring protocol
 
 The implementation coordinator owns the receipt as part of the pull request. The user does not need to request a separate Journal operation.
