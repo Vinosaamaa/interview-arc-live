@@ -32,7 +32,8 @@ signing_identity="${INTERVIEW_ARC_LIVE_SIGNING_IDENTITY:--}"
 manifest_path="$repo_root/dist/InterviewArcLive.package-manifest.txt"
 allow_dirty="${INTERVIEW_ARC_LIVE_ALLOW_DIRTY:-0}"
 derived_data="${INTERVIEW_ARC_LIVE_DERIVED_DATA_PATH:-$repo_root/.build/xcode-derived-data}"
-build_receipt="$derived_data/InterviewArcLive.source-commit"
+verified_build_receipt="$derived_data/InterviewArcLive.verified-build"
+build_candidate_receipt="$derived_data/InterviewArcLive.build-candidate"
 package_scheme="InterviewArcLive-Package"
 deployment_target="14.0"
 code_signing_allowed="NO"
@@ -62,20 +63,30 @@ if [[ -n "$(git status --porcelain --untracked-files=all)" ]]; then
   fi
 fi
 
-if ! command -v xcodebuild >/dev/null 2>&1; then
+if ! command -v xcodebuild >/dev/null 2>&1 || ! command -v xcrun >/dev/null 2>&1; then
   echo "Packaging the MLX runtime requires Xcode and xcodebuild." >&2
   exit 69
 fi
 
-expected_build_receipt="source_commit=$source_commit
-scheme=$package_scheme
-configuration=$xcode_configuration
-enable_testability=$package_testability
-macosx_deployment_target=$deployment_target
-code_signing_allowed=$code_signing_allowed"
-if [[ "$source_tree_clean" == "true" && -f "$build_receipt" \
-    && "$(<"$build_receipt")" == "$expected_build_receipt" ]]; then
-  echo "Reusing verified $xcode_configuration build products from $derived_data."
+expected_build_receipt="$("$repo_root/scripts/build-product-receipt.sh" \
+  "$source_commit" "$package_scheme" "$xcode_configuration" \
+  "$package_testability" "$deployment_target" "$code_signing_allowed")"
+reuse_build_products="false"
+if [[ "$source_tree_clean" == "true" ]]; then
+  for receipt in "$verified_build_receipt" "$build_candidate_receipt"; do
+    if [[ -f "$receipt" && "$(<"$receipt")" == "$expected_build_receipt" ]]; then
+      reuse_build_products="true"
+      break
+    fi
+  done
+fi
+
+# Consume either provenance file before trusting products. A failed package can
+# never leave a matching receipt that would suppress the next rebuild.
+rm -f "$verified_build_receipt" "$build_candidate_receipt"
+
+if [[ "$reuse_build_products" == "true" ]]; then
+  echo "Reusing matching $xcode_configuration build products from $derived_data."
 else
   # MLX compiles Metal shaders through Xcode. A plain `swift build` can produce
   # source objects while omitting the runtime metallib, so it is not accepted as
@@ -104,15 +115,6 @@ if [[ -n "$(git status --porcelain --untracked-files=all)" ]]; then
     echo "The build changed tracked or untracked source state; packaging stopped." >&2
     exit 65
   fi
-fi
-
-if [[ "$source_tree_clean" == "true" ]]; then
-  printf 'source_commit=%s\nscheme=%s\nconfiguration=%s\nenable_testability=%s\nmacosx_deployment_target=%s\ncode_signing_allowed=%s\n' \
-    "$source_commit" "$package_scheme" "$xcode_configuration" \
-    "$package_testability" "$deployment_target" "$code_signing_allowed" \
-    > "$build_receipt"
-else
-  print -r -- 'dirty_source=true' > "$build_receipt"
 fi
 
 if [[ ! -x "$executable" || ! -x "$smoke_executable" \
@@ -234,6 +236,13 @@ fi
 chmod 0600 "$manifest_path"
 
 "$repo_root/scripts/verify-package-manifest.sh" "$app_dir" "$manifest_path"
+
+if [[ "$source_tree_clean" == "true" ]]; then
+  receipt_temp="$(/usr/bin/mktemp "$derived_data/.InterviewArcLive.verified-build.XXXXXX")"
+  printf '%s\n' "$expected_build_receipt" > "$receipt_temp"
+  chmod 0600 "$receipt_temp"
+  mv -f "$receipt_temp" "$verified_build_receipt"
+fi
 
 echo "$app_dir"
 echo "$manifest_path"

@@ -5,11 +5,12 @@ import json
 import unittest
 from io import BytesIO
 from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, call, patch
 
 SCRIPT = Path(__file__).parents[2] / "scripts" / "validate-engineering-impact.py"
 WORKFLOW = Path(__file__).parents[2] / ".github" / "workflows" / "swift.yml"
 PACKAGE_SCRIPT = Path(__file__).parents[2] / "scripts" / "package-app.sh"
+BUILD_RECEIPT_SCRIPT = Path(__file__).parents[2] / "scripts" / "build-product-receipt.sh"
 SCHEMA = Path(__file__).parents[2] / "docs" / "contracts" / "engineering-pull-request-receipt.schema.json"
 CURRENT_RECEIPT = Path(__file__).parents[2] / "docs" / "engineering" / "changes" / "pr-42.md"
 SPEC = importlib.util.spec_from_file_location("engineering_impact", SCRIPT)
@@ -78,57 +79,57 @@ Adopted complete pull-request receipts and a curated Engineering record for the 
     def test_workflow_revalidates_after_title_or_body_edits(self):
         workflow = WORKFLOW.read_text(encoding="utf-8")
         self.assertIn("pull_request:\n    types: [opened, synchronize, reopened, edited]", workflow)
-        for step in (
-            "Report Swift toolchain",
-            "Install Metal toolchain",
-            "Resolve dependency graph",
-            "Report package schemes",
-            "Retain resolved dependency graph",
-            "Build package and tests with Metal",
-            "Test package",
-            "Prepare release-equivalent package products",
-            "Test installer safety",
-            "Test installed Codex smoke safety",
-            "Test installed endpoint smoke safety",
-            "Test installed local-speech smoke safety",
-            "Test local Board editor and application icon",
-            "Package exact source from a clean worktree",
-        ):
-            self.assertRegex(
-                workflow,
-                rf"- name: {step}\n        if: .*github\.event\.action != 'edited'",
-            )
+        self.assertIn("  engineering-policy:\n", workflow)
+        self.assertIn(
+            "  test:\n    if: github.event.action != 'edited'\n    needs: engineering-policy\n",
+            workflow,
+        )
+        self.assertEqual(workflow.count("github.event.action != 'edited'"), 1)
+        policy_job = workflow.split("  engineering-policy:\n", 1)[1].split("\n  test:\n", 1)[0]
+        self.assertIn("Test Engineering impact policy", policy_job)
+        self.assertIn("Validate Engineering impact classification", policy_job)
 
     def test_packaging_uses_a_clean_exact_tree_after_mutating_tests(self):
         workflow = WORKFLOW.read_text(encoding="utf-8")
         self.assertIn('git worktree add --detach "$PACKAGE_SOURCE" "$GITHUB_SHA"', workflow)
         self.assertIn('"$PACKAGE_SOURCE/scripts/package-app.sh" release', workflow)
         self.assertNotIn("INTERVIEW_ARC_LIVE_ALLOW_DIRTY", workflow)
+        self.assertNotIn("/usr/bin/ditto", workflow)
+        self.assertNotIn("mkdir -p dist", workflow)
+        self.assertIn(
+            "${{ runner.temp }}/InterviewArcLivePackageSource/dist/Interview Arc Live.app",
+            workflow,
+        )
 
     def test_packaging_reuses_the_verified_release_build_products(self):
         workflow = WORKFLOW.read_text(encoding="utf-8")
         package_script = PACKAGE_SCRIPT.read_text(encoding="utf-8")
+        receipt_script = BUILD_RECEIPT_SCRIPT.read_text(encoding="utf-8")
         self.assertNotIn("InterviewArcLivePackageDerivedData", workflow)
         self.assertNotIn("INTERVIEW_ARC_LIVE_REUSE_BUILD_PRODUCTS", workflow)
         self.assertNotIn("ENABLE_TESTABILITY=YES", workflow)
-        self.assertEqual(workflow.count("${{ runner.temp }}/InterviewArcLiveDerivedData"), 4)
+        self.assertGreaterEqual(workflow.count("${{ runner.temp }}/InterviewArcLiveDerivedData"), 4)
         self.assertIn(
-            "'source_commit=%s\\nscheme=%s\\nconfiguration=%s\\nenable_testability=%s\\n"
-            "macosx_deployment_target=%s\\ncode_signing_allowed=%s\\n'",
+            'scripts/build-product-receipt.sh "$GITHUB_SHA" "InterviewArcLive-Package" "Release" "NO" "14.0" "NO"',
             workflow,
         )
-        self.assertIn('"$GITHUB_SHA" "InterviewArcLive-Package" "Release" "NO" "14.0" "NO"', workflow)
+        self.assertIn("InterviewArcLive.build-candidate", workflow)
         self.assertIn("ENABLE_TESTABILITY=NO", workflow)
-        self.assertIn('expected_build_receipt="source_commit=$source_commit', package_script)
-        self.assertIn('configuration=$xcode_configuration', package_script)
-        self.assertIn('enable_testability=$package_testability', package_script)
+        self.assertIn('expected_build_receipt="$("$repo_root/scripts/build-product-receipt.sh"', package_script)
         self.assertIn('ENABLE_TESTABILITY="$package_testability"', package_script)
-        self.assertRegex(
-            package_script,
-            r'\[\[ "\$source_tree_clean" == "true" && -f "\$build_receipt" \\\n'
-            r'\s+&& "\$\(<"\$build_receipt"\)" == "\$expected_build_receipt" \]\]',
+        self.assertIn('xcode_version_sha256=', receipt_script)
+        self.assertIn('metal_tool_sha256=', receipt_script)
+        self.assertIn('xcrun --find metal', receipt_script)
+
+    def test_verified_build_receipt_is_invalidated_before_reuse_and_written_atomically_last(self):
+        package_script = PACKAGE_SCRIPT.read_text(encoding="utf-8")
+        manifest_verification = package_script.index(
+            '"$repo_root/scripts/verify-package-manifest.sh" "$app_dir" "$manifest_path"'
         )
-        self.assertIn("print -r -- 'dirty_source=true' > \"$build_receipt\"", package_script)
+        receipt_write = package_script.index('mv -f "$receipt_temp" "$verified_build_receipt"')
+        self.assertLess(manifest_verification, receipt_write)
+        self.assertIn('rm -f "$verified_build_receipt" "$build_candidate_receipt"', package_script)
+        self.assertNotIn('dirty_source=true', package_script)
 
     def test_classification_examples_inside_markdown_fences_are_ignored(self):
         body = "- [x] Capability Dossier\n\n```markdown\n- [x] ADR\n```"
@@ -201,7 +202,7 @@ Adopted complete pull-request receipts and a curated Engineering record for the 
     def test_existing_broken_head_never_falls_back_to_stale_base_metadata(self):
         path = "docs/engineering/records/example.md"
         with (
-            patch.object(MODULE, "git", return_value=path),
+            patch.object(MODULE, "git_object_exists", return_value=True),
             patch.object(
                 MODULE,
                 "iter_frontmatters_at",
@@ -213,7 +214,7 @@ Adopted complete pull-request receipts and a curated Engineering record for the 
 
     def test_canonical_records_must_be_superseded_instead_of_deleted(self):
         path = "docs/engineering/records/example.md"
-        with patch.object(MODULE, "git", return_value=""):
+        with patch.object(MODULE, "git_object_exists", return_value=False):
             with self.assertRaisesRegex(ValueError, "cannot be deleted"):
                 MODULE.record_index_and_changed_types_at("head", [path])
 
@@ -307,22 +308,71 @@ Adopted complete pull-request receipts and a curated Engineering record for the 
         parsed = self.validate_receipt(CURRENT_RECEIPT.read_text(encoding="utf-8"))
         self.assertEqual(parsed["richRecordRefs"], ["capability-dossier-deep-interview-room-session@1"])
 
-    def test_record_catalog_indexes_and_classifies_changes_in_one_bounded_scan(self):
+    def test_oversized_receipt_is_rejected_before_blob_content_is_read(self):
+        size_result = Mock(returncode=0, stdout=str(MODULE.MAX_RECEIPT_BYTES + 1), stderr="")
+        with patch.object(MODULE.subprocess, "run", return_value=size_result) as run:
+            with self.assertRaisesRegex(ValueError, "oversized"):
+                MODULE.bounded_git_blob("head", "docs/engineering/changes/pr-42.md")
+        self.assertEqual(run.call_count, 1)
+
+    def test_accepted_record_revisions_cannot_be_replaced_in_place(self):
         path = "docs/engineering/records/session.md"
+        with patch.object(MODULE, "git_object_exists", return_value=True):
+            with self.assertRaisesRegex(ValueError, "immutable.*new record"):
+                MODULE.validate_record_history("base", [path])
+        with patch.object(MODULE, "git_object_exists", return_value=False):
+            MODULE.validate_record_history("base", [path])
+
+    def test_record_lookup_parses_only_changed_records_and_exact_receipt_references(self):
+        validator = SCRIPT.read_text(encoding="utf-8")
+        self.assertNotIn('"ls-tree"', validator)
+        changed_path = "docs/engineering/records/session.md"
+        linked_path = "docs/engineering/records/shared.md"
         with (
-            patch.object(MODULE, "git", return_value=path),
-            patch.object(MODULE, "git_blobs", side_effect=AssertionError("must not buffer the record corpus")),
+            patch.object(MODULE, "git_object_exists", return_value=True),
+            patch.object(MODULE, "matching_record_paths", return_value=[linked_path]) as matching_paths,
+            patch.object(MODULE, "bounded_git_blob", side_effect=AssertionError("must not buffer the record corpus")),
             patch.object(
                 MODULE,
                 "iter_frontmatters_at",
-                return_value=iter([(path, {"id": "session", "revision": 1, "type": "capability-dossier"})]),
+                side_effect=[
+                    iter([(changed_path, {"id": "session", "revision": 1, "type": "capability-dossier"})]),
+                    iter([(linked_path, {"id": "shared", "revision": 2, "type": "capability-dossier"})]),
+                ],
             ) as iter_frontmatters_at,
         ):
             self.assertEqual(
-                MODULE.record_index_and_changed_types_at("head", [path]),
-                ({"session@1": "capability-dossier"}, ["capability-dossier"]),
+                MODULE.record_index_and_changed_types_at("head", [changed_path], ["shared@2"]),
+                (
+                    {"session@1": "capability-dossier", "shared@2": "capability-dossier"},
+                    ["capability-dossier"],
+                ),
             )
-        iter_frontmatters_at.assert_called_once_with("head", [path])
+        matching_paths.assert_has_calls([call("head", "session"), call("head", "shared")], any_order=True)
+        self.assertEqual(iter_frontmatters_at.call_count, 2)
+        iter_frontmatters_at.assert_any_call("head", [changed_path])
+        iter_frontmatters_at.assert_any_call("head", [linked_path])
+
+    def test_changed_record_identity_is_queried_for_duplicates_even_when_not_linked(self):
+        changed_path = "docs/engineering/records/session.md"
+        duplicate_path = "docs/engineering/records/other.md"
+        with (
+            patch.object(MODULE, "git_object_exists", return_value=True),
+            patch.object(MODULE, "matching_record_paths", return_value=[changed_path, duplicate_path]) as matching_paths,
+            patch.object(
+                MODULE,
+                "iter_frontmatters_at",
+                side_effect=[
+                    iter([(changed_path, {"id": "session", "revision": 1, "type": "capability-dossier"})]),
+                    iter([
+                        (duplicate_path, {"id": "session", "revision": 1, "type": "capability-dossier"}),
+                    ]),
+                ],
+            ),
+        ):
+            with self.assertRaisesRegex(ValueError, "Duplicate canonical"):
+                MODULE.record_index_and_changed_types_at("head", [changed_path], [])
+        matching_paths.assert_called_once_with("head", "session")
 
     def test_record_frontmatters_are_requested_in_bounded_batches(self):
         paths = [f"docs/engineering/records/record-{index}.md" for index in range(65)]

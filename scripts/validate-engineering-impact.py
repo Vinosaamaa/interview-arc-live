@@ -3,7 +3,6 @@ import json
 import re
 import subprocess
 import sys
-from io import BytesIO
 from pathlib import Path
 
 CLASSIFICATIONS = {
@@ -50,6 +49,7 @@ MAX_STRING_LENGTH = RECEIPT_DEFINITIONS["stringList"]["items"]["maxLength"]
 MAX_RECORD_REFS = RECEIPT_DEFINITIONS["recordRefs"]["maxItems"]
 MAX_RECORD_REF_LENGTH = RECEIPT_DEFINITIONS["recordRefs"]["items"]["maxLength"]
 MAX_FRONTMATTER_BYTES = 65_536
+MAX_RECEIPT_BYTES = 131_072
 MAX_BATCH_RECORDS = 64
 FRONTMATTER_BYTES_PATTERN = re.compile(rb"\A---\r?\n.*?\r?\n---(?:\r?\n|\Z)", re.DOTALL)
 
@@ -189,16 +189,10 @@ def validate_receipt_fields(receipt, path, *, repository, pr_number, pr_title, c
 
 
 def validate_receipt_record_refs(receipt, path, *, classification, record_index):
-
-    rich_record_refs = string_list(
-        receipt["richRecordRefs"],
-        "richRecordRefs",
+    rich_record_refs = validate_record_refs(
+        receipt.get("richRecordRefs"),
         path,
-        max_items=MAX_RECORD_REFS,
-        max_length=MAX_RECORD_REF_LENGTH,
     )
-    if any(not RECORD_REF_PATTERN.fullmatch(reference) for reference in rich_record_refs):
-        raise ValueError(f"Receipt `richRecordRefs` contains an invalid exact record reference: {path}.")
     if classification == "none" and rich_record_refs:
         raise ValueError(f"A `none` receipt cannot link a rich record: {path}.")
     if classification != "none" and not rich_record_refs:
@@ -216,6 +210,24 @@ def validate_receipt_record_refs(receipt, path, *, classification, record_index)
     merged_at = receipt["mergedAt"]
     if merged_at is not None and (not isinstance(merged_at, str) or not MERGED_AT_PATTERN.fullmatch(merged_at)):
         raise ValueError(f"Receipt `mergedAt` must be null or a UTC timestamp without fractional seconds: {path}.")
+
+
+def validate_record_refs(value, path):
+    rich_record_refs = string_list(
+        value,
+        "richRecordRefs",
+        path,
+        max_items=MAX_RECORD_REFS,
+        max_length=MAX_RECORD_REF_LENGTH,
+    )
+    if any(not RECORD_REF_PATTERN.fullmatch(reference) for reference in rich_record_refs):
+        raise ValueError(f"Receipt `richRecordRefs` contains an invalid exact record reference: {path}.")
+    return rich_record_refs
+
+
+def receipt_record_refs(markdown: str, path: str):
+    receipt, _ = frontmatter_document(markdown, path)
+    return validate_record_refs(receipt.get("richRecordRefs"), path)
 
 
 def validate_receipt_sources(receipt, path, *, repository, pr_number, pr_url):
@@ -307,30 +319,76 @@ def git(*args):
     return subprocess.check_output(["git", *args], text=True).strip()
 
 
-def git_blobs(revision: str, paths: list[str]):
-    if not paths:
-        return {}
-    result = subprocess.run(
-        ["git", "cat-file", "--batch"],
-        input="".join(f"{revision}:{path}\n" for path in paths).encode(),
+def bounded_git_blob(revision: str, path: str):
+    object_spec = f"{revision}:{path}"
+    size_result = subprocess.run(
+        ["git", "cat-file", "-s", object_spec],
+        capture_output=True,
+        text=True,
+    )
+    if size_result.returncode != 0:
+        return None
+    try:
+        object_size = int(size_result.stdout.strip())
+    except ValueError as error:
+        raise ValueError("Unable to read the pull-request receipt Git object.") from error
+    if object_size > MAX_RECEIPT_BYTES:
+        raise ValueError(
+            f"Pull-request receipt is oversized; maximum {MAX_RECEIPT_BYTES} bytes: {path}."
+        )
+    blob_result = subprocess.run(
+        ["git", "cat-file", "blob", object_spec],
         capture_output=True,
         check=True,
     )
-    stream = BytesIO(result.stdout)
-    blobs: dict[str, str | None] = {}
-    for path in paths:
-        header = stream.readline().decode("utf-8", errors="strict").rstrip("\n")
-        if header.endswith(" missing"):
-            blobs[path] = None
+    if len(blob_result.stdout) != object_size:
+        raise ValueError("Unable to read the pull-request receipt Git object.")
+    return blob_result.stdout.decode("utf-8", errors="strict")
+
+
+def git_object_exists(revision: str, path: str):
+    return subprocess.run(
+        ["git", "cat-file", "-e", f"{revision}:{path}"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    ).returncode == 0
+
+
+def matching_record_paths(revision: str, record_id: str):
+    result = subprocess.run(
+        [
+            "git",
+            "grep",
+            "-l",
+            "-E",
+            "-z",
+            rf"^[[:space:]]*id[[:space:]]*:[[:space:]]*{record_id}[[:space:]]*$",
+            revision,
+            "--",
+            "docs/engineering/records",
+        ],
+        capture_output=True,
+    )
+    if result.returncode == 1:
+        return []
+    if result.returncode != 0:
+        raise subprocess.CalledProcessError(
+            result.returncode,
+            result.args,
+            output=result.stdout,
+            stderr=result.stderr,
+        )
+    prefix = f"{revision}:".encode()
+    paths = []
+    for entry in result.stdout.split(b"\0"):
+        if not entry:
             continue
-        parts = header.split()
-        if len(parts) != 3 or parts[1] != "blob":
-            raise ValueError("Unable to read a canonical Engineering record Git object.")
-        content = stream.read(int(parts[2]))
-        if stream.read(1) != b"\n":
-            raise ValueError("Unable to read a canonical Engineering record Git object.")
-        blobs[path] = content.decode("utf-8", errors="strict")
-    return blobs
+        if not entry.startswith(prefix):
+            raise ValueError("Unable to resolve a canonical Engineering record Git object.")
+        path = entry[len(prefix):].decode("utf-8", errors="strict")
+        if path.endswith(".md"):
+            paths.append(path)
+    return paths
 
 
 def record_type_from_markdown(markdown: str, path: str):
@@ -398,30 +456,40 @@ def iter_frontmatters_at(revision: str, paths: list[str]):
         raise subprocess.CalledProcessError(return_code, process.args, stderr=stderr)
 
 
-def record_index_and_changed_types_at(revision: str, changed_paths: list[str]):
-    paths = [
-        path
-        for path in git(
-            "ls-tree",
-            "-r",
-            "--name-only",
-            revision,
-            "--",
-            "docs/engineering/records",
-        ).splitlines()
-        if path.endswith(".md")
-    ]
-    missing_changed_paths = set(changed_paths) - set(paths)
-    if missing_changed_paths:
-        path = sorted(missing_changed_paths)[0]
-        raise ValueError(
-            f"Canonical Engineering records cannot be deleted; publish a superseding record instead: {path}."
-        )
+def record_index_and_changed_types_at(
+    revision: str,
+    changed_paths: list[str],
+    required_refs: list[str] | None = None,
+):
+    for path in changed_paths:
+        if not git_object_exists(revision, path):
+            raise ValueError(
+                f"Canonical Engineering records cannot be deleted; publish a superseding record instead: {path}."
+            )
+
+    changed_metadata = list(iter_frontmatters_at(revision, sorted(changed_paths)))
+    record_ids = {
+        reference.rsplit("@", 1)[0]
+        for reference in required_refs or []
+    }
+    record_ids.update(
+        metadata.get("id")
+        for _, metadata in changed_metadata
+        if isinstance(metadata.get("id"), str)
+    )
+    paths = set(changed_paths)
+    for record_id in record_ids:
+        if re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", record_id):
+            paths.update(matching_record_paths(revision, record_id))
 
     changed_path_set = set(changed_paths)
     index = {}
     changed_types = []
-    for path, metadata in iter_frontmatters_at(revision, paths):
+    metadata_by_path = dict(changed_metadata)
+    for path, metadata in iter_frontmatters_at(revision, sorted(paths - set(metadata_by_path))):
+        if metadata.get("id") in record_ids:
+            metadata_by_path[path] = metadata
+    for path, metadata in sorted(metadata_by_path.items()):
         record_id = metadata.get("id")
         record_revision = metadata.get("revision")
         record_type = metadata.get("type")
@@ -440,6 +508,15 @@ def record_index_and_changed_types_at(revision: str, changed_paths: list[str]):
     return index, changed_types
 
 
+def validate_record_history(base: str, changed_paths: list[str]):
+    for path in sorted(changed_paths):
+        if git_object_exists(base, path):
+            raise ValueError(
+                "An accepted canonical Engineering record revision is immutable; "
+                f"publish a new record instead of replacing it in place: {path}."
+            )
+
+
 def main():
     event_path = Path(sys.argv[1] if len(sys.argv) > 1 else "")
     if not event_path.is_file():
@@ -456,12 +533,18 @@ def main():
         raise ValueError("Pull request base, head, number, title, repository, and URL are required.")
     changed = git("diff", "--name-only", base, head).splitlines()
     record_paths = [path for path in changed if path.startswith("docs/engineering/records/") and path.endswith(".md")]
-    record_index, changed_record_types = record_index_and_changed_types_at(head, record_paths)
-    classification = validate(pull_request.get("body") or "", changed_record_types)
+    validate_record_history(base, record_paths)
     receipt_path = required_receipt_path(changed, pr_number)
-    receipt_markdown = git_blobs(head, [receipt_path])[receipt_path]
+    receipt_markdown = bounded_git_blob(head, receipt_path)
     if receipt_markdown is None:
         raise ValueError(f"Pull-request receipt is missing at the pull-request head: {receipt_path}.")
+    required_record_refs = receipt_record_refs(receipt_markdown, receipt_path)
+    record_index, changed_record_types = record_index_and_changed_types_at(
+        head,
+        record_paths,
+        required_record_refs,
+    )
+    classification = validate(pull_request.get("body") or "", changed_record_types)
     receipt = validate_receipt(
         receipt_markdown,
         receipt_path,

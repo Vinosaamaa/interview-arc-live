@@ -84,7 +84,7 @@ After the materiality test passes, choose the record type by its evidence scope:
 
 Do not inflate a small receipt into a rich record. Do not compress architecture, incident causality, or a multi-PR migration into a 280-character receipt.
 
-Accepted rich records are not deleted. Correct them with a reviewed new revision, amendment, or superseding record so existing receipt references remain resolvable and historical changes stay explicit.
+An accepted rich-record file and exact revision are immutable in place and are not deleted. Correct one by adding a reviewed new revision, amendment, or superseding record as a separate document so existing receipt references remain resolvable and historical changes stay explicit.
 
 ## Diagrams
 
