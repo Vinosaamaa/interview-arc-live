@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   hasCanonicalBoardAngle,
+  semanticOverlayElements,
   semanticOverlayFingerprint,
+  semanticOverlaySnapshot,
 } from "../src/semantic-overlay.js";
 
 const box = {
@@ -72,6 +74,21 @@ test("nonsemantic Excalidraw elements do not trigger overlay work", () => {
       points: [[0, 0], [20, 20]],
     }], viewport),
     baseline,
+  );
+});
+
+test("semantic overlay snapshot reuses one filtered element list", () => {
+  const stroke = {
+    id: "stroke-1",
+    type: "freedraw",
+    points: [[0, 0], [20, 20]],
+  };
+  assert.deepEqual(semanticOverlayElements([box, stroke]), [box]);
+  const snapshot = semanticOverlaySnapshot([box, stroke], viewport);
+  assert.deepEqual(snapshot.elements, [box]);
+  assert.equal(
+    snapshot.fingerprint,
+    semanticOverlayFingerprint([box, stroke], viewport),
   );
 });
 
