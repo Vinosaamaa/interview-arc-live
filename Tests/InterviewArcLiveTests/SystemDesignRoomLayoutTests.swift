@@ -98,17 +98,21 @@ final class SystemDesignRoomLayoutTests: XCTestCase {
             for: workspaceWidth,
             preferredTurnlineWidth: 420
         )
+        let stableWidths = FullRoomLayout.workspaceWidths(
+            for: workspaceWidth,
+            preferredTurnlineWidth: baseWidth
+        )
+        let preview = FullRoomLayout.splitDragPreview(
+            baseWidth: baseWidth,
+            dragTranslation: 60,
+            workspaceWidth: workspaceWidth
+        )
 
         XCTAssertEqual(baseWidth, 420, accuracy: 0.001)
-        XCTAssertEqual(
-            FullRoomLayout.workspaceWidths(
-                for: workspaceWidth,
-                preferredTurnlineWidth: baseWidth,
-                dragTranslation: 60
-            ).turnlineWidth,
-            480,
-            accuracy: 0.001
-        )
+        XCTAssertEqual(stableWidths.turnlineWidth, 420, accuracy: 0.001)
+        XCTAssertEqual(stableWidths.boardWidth, 760, accuracy: 0.001)
+        XCTAssertEqual(preview.translation, 60, accuracy: 0.001)
+        XCTAssertEqual(preview.proposedTurnlineWidth, 480, accuracy: 0.001)
         XCTAssertEqual(
             FullRoomLayout.committedTurnlineWidth(
                 baseWidth: baseWidth,
@@ -129,6 +133,30 @@ final class SystemDesignRoomLayoutTests: XCTestCase {
         XCTAssertEqual(
             FullRoomLayout.workspaceCoordinateSpaceName,
             "system-design-workspace"
+        )
+    }
+
+    func testDividerPreviewClampsWithoutRelayingOutEitherPane() {
+        let workspaceWidth: CGFloat = 800
+        let baseWidth = FullRoomLayout.turnlineBaseWidth(for: workspaceWidth)
+        let stableWidths = FullRoomLayout.workspaceWidths(for: workspaceWidth)
+        let preview = FullRoomLayout.splitDragPreview(
+            baseWidth: baseWidth,
+            dragTranslation: 400,
+            workspaceWidth: workspaceWidth
+        )
+
+        XCTAssertEqual(stableWidths.turnlineWidth, 272, accuracy: 0.001)
+        XCTAssertEqual(stableWidths.boardWidth, 528, accuracy: 0.001)
+        XCTAssertEqual(
+            preview.proposedTurnlineWidth,
+            workspaceWidth - FullRoomLayout.boardMinimumWidth,
+            accuracy: 0.001
+        )
+        XCTAssertEqual(
+            preview.translation,
+            preview.proposedTurnlineWidth - baseWidth,
+            accuracy: 0.001
         )
     }
 

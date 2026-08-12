@@ -4,17 +4,21 @@ import InterviewArcLiveCore
 
 extension BoardNodeKind {
     static let selectableKinds: [BoardNodeKind] = [
+        .generic,
+        .decision,
+        .ellipse,
         .client,
         .service,
         .database,
         .queue,
         .storage,
-        .generic,
     ]
 
     var displayName: String {
         switch self {
         case .generic: "Generic"
+        case .decision: "Decision"
+        case .ellipse: "Ellipse"
         case .client: "Web client"
         case .service: "Service"
         case .database: "Database"
@@ -39,6 +43,8 @@ struct BoardNodeVisual: Equatable {
         case cylinder
         case queue
         case folder
+        case diamond
+        case ellipse
     }
 
     enum Pictogram: String, Equatable {
@@ -48,6 +54,7 @@ struct BoardNodeVisual: Equatable {
         case records
         case messageQueue
         case archive
+        case none
     }
 
     let kind: BoardNodeKind
@@ -64,6 +71,16 @@ struct BoardNodeVisual: Equatable {
             pictogram = .componentGrid
             accessibilityName = "Generic architecture component"
             drawIOShapeStyle = "shape=rectangle;rounded=1"
+        case .decision:
+            outline = .diamond
+            pictogram = .none
+            accessibilityName = "Decision"
+            drawIOShapeStyle = "shape=rhombus;perimeter=rhombusPerimeter"
+        case .ellipse:
+            outline = .ellipse
+            pictogram = .none
+            accessibilityName = "Ellipse"
+            drawIOShapeStyle = "shape=ellipse;perimeter=ellipsePerimeter"
         case .client:
             outline = .browser
             pictogram = .globe
@@ -169,6 +186,16 @@ struct BoardNodeVisual: Equatable {
                 .line(CGPoint(x: inset.minX, y: inset.maxY)),
                 .close,
             ])
+        case .diamond:
+            return BoardVectorPath(commands: [
+                .move(CGPoint(x: inset.midX, y: inset.minY)),
+                .line(CGPoint(x: inset.maxX, y: inset.midY)),
+                .line(CGPoint(x: inset.midX, y: inset.maxY)),
+                .line(CGPoint(x: inset.minX, y: inset.midY)),
+                .close,
+            ])
+        case .ellipse:
+            return .ellipse(in: inset)
         }
     }
 
@@ -255,6 +282,8 @@ struct BoardNodeVisual: Equatable {
         let h = icon.height
         let unit = geometryUnit(in: icon)
         switch pictogram {
+        case .none:
+            return []
         case .componentGrid:
             let side = min(8 * unit, h * 0.32)
             return [
@@ -352,6 +381,10 @@ struct BoardNodeVisual: Equatable {
 
     func labelRect(in rect: CGRect) -> CGRect {
         let horizontalInset = min(10, rect.width * 0.08)
+        if pictogram == .none {
+            let verticalInset = min(10, rect.height * 0.12)
+            return rect.insetBy(dx: horizontalInset, dy: verticalInset)
+        }
         return CGRect(
             x: rect.minX + horizontalInset,
             y: rect.minY + rect.height * 0.54,

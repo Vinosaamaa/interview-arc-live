@@ -9,6 +9,12 @@ import {
   hasCanonicalBoardAngle,
   semanticOverlaySnapshot,
 } from "./semantic-overlay.js";
+import { createScenePublicationController } from "./scene-publication.js";
+import {
+  boxKindForExcalType,
+  excalTypeForNativeTool,
+  nativeToolForExcalType,
+} from "./tool-mapping.js";
 import "./style.css";
 
 const bridge = window.webkit?.messageHandlers?.boardBridge;
@@ -17,20 +23,13 @@ const post = (payload) => {
   bridge?.postMessage(payload);
 };
 
-const toolType = (tool) => ({
-  select: "selection",
-  box: "rectangle",
-  connector: "arrow",
-  label: "text",
-  pen: "freedraw",
-  eraser: "eraser",
-}[tool] ?? "selection");
-
 // Excalidraw has a smaller native shape vocabulary than BoardNodeVisual. Keep
 // these projections architecture-safe (a service must never look like a
 // decision diamond) and retain the canonical visual key for reload/export.
 const semanticBoxPresentation = (kind) => ({
   generic: { type: "rectangle", roundness: { type: 3 }, visualKey: "roundedRectangle.componentGrid" },
+  decision: { type: "diamond", roundness: null, visualKey: "diamond.none" },
+  ellipse: { type: "ellipse", roundness: null, visualKey: "ellipse.none" },
   client: { type: "rectangle", roundness: { type: 3 }, visualKey: "browser.globe" },
   service: { type: "rectangle", roundness: { type: 3 }, visualKey: "hexagon.fanout" },
   database: { type: "ellipse", roundness: null, visualKey: "cylinder.records" },
@@ -95,6 +94,7 @@ const SemanticPictogram = ({ kind }) => {
     queue: <><path d="M5 6h18M5 13h18M5 20h18" /><circle cx="8" cy="6" r="1.6" fill="currentColor" /><circle cx="14" cy="13" r="1.6" fill="currentColor" /><circle cx="20" cy="20" r="1.6" fill="currentColor" /></>,
     storage: <><path d="M5 8h7l2-3h9v17H5z" /><path d="M9 13h10M9 17h7" /></>,
   }[kind] ?? null;
+  if (!marks) return null;
   return <svg viewBox="0 0 28 26" {...common}>{marks}</svg>;
 };
 
@@ -134,28 +134,32 @@ const SemanticNodeOverlay = ({ elements, appState }) => {
         const origin = screenPoint(element.x, element.y);
         const left = origin.left + (width - size) / 2;
         const top = origin.top + Math.max(8, height * 0.14);
+        const kind = element.customData?.iaKind;
+        const hasPictogram = !["decision", "ellipse"].includes(kind);
         return (
           <React.Fragment key={element.id}>
-            <div
-              className="semantic-node-pictogram"
-              style={{
-                color: normalizedHex(element.strokeColor, "#4b3abf"),
-                height: size,
-                left,
-                top,
-                width: size,
-              }}
-            >
-              <SemanticPictogram kind={element.customData?.iaKind} />
-            </div>
+            {hasPictogram && (
+              <div
+                className="semantic-node-pictogram"
+                style={{
+                  color: normalizedHex(element.strokeColor, "#4b3abf"),
+                  height: size,
+                  left,
+                  top,
+                  width: size,
+                }}
+              >
+                <SemanticPictogram kind={kind} />
+              </div>
+            )}
             <div
               className="semantic-node-label"
               style={{
                 color: normalizedHex(element.strokeColor, "#1f2937"),
                 fontSize: Math.max(11, Math.min(15, 14 * zoom)),
-                height: Math.max(20, height * 0.34),
+                height: hasPictogram ? Math.max(20, height * 0.34) : height,
                 left: origin.left + Math.max(6, 8 * zoom),
-                top: origin.top + height * 0.59,
+                top: hasPictogram ? origin.top + height * 0.59 : origin.top,
                 width: Math.max(0, width - Math.max(12, 16 * zoom)),
               }}
             >
@@ -228,11 +232,7 @@ const normalizeScene = (elements, appState, files, currentBoxKind) => {
       continue;
     }
 
-    if (
-      element.type === "rectangle"
-      || ((element.type === "diamond" || element.type === "ellipse")
-        && customData.iaElementType === "box")
-    ) {
+    if (["rectangle", "diamond", "ellipse"].includes(element.type)) {
       const supportedIndex = supported.length;
       supported.push({
         type: "box",
@@ -245,7 +245,7 @@ const normalizeScene = (elements, appState, files, currentBoxKind) => {
         label: String(customData.iaLabel ?? ""),
         nodeKind: typeof customData.iaKind === "string"
           ? customData.iaKind
-          : currentBoxKind,
+          : boxKindForExcalType(element.type, currentBoxKind),
         fill: normalizedHex(element.backgroundColor, "#ffffff"),
         stroke: normalizedHex(element.strokeColor, "#4b3abf"),
       });
@@ -265,6 +265,10 @@ const normalizeScene = (elements, appState, files, currentBoxKind) => {
         startY: start.y,
         endX: end.x,
         endY: end.y,
+        points: (element.points ?? []).map((point) => ({
+          x: Number(element.x ?? 0) + Number(point[0] ?? 0),
+          y: Number(element.y ?? 0) + Number(point[1] ?? 0),
+        })),
         sourceWebID: element.startBinding?.elementId ?? null,
         targetWebID: element.endBinding?.elementId ?? null,
         startAnchorPolicy: customData.iaStartAnchorPolicy ?? "automatic",
@@ -291,7 +295,7 @@ const normalizeScene = (elements, appState, files, currentBoxKind) => {
 
     if (
       element.type === "freedraw"
-      || (element.type === "line" && customData.iaElementType === "stroke")
+      || element.type === "line"
     ) {
       supported.push({
         type: "stroke",
@@ -322,6 +326,11 @@ const normalizeScene = (elements, appState, files, currentBoxKind) => {
       : null,
     selectedWebIDs: Object.keys(appState?.selectedElementIds ?? {}).filter(
       (id) => appState.selectedElementIds[id],
+    ),
+    tool: nativeToolForExcalType(appState?.activeTool?.type),
+    boxKind: boxKindForExcalType(
+      appState?.activeTool?.type,
+      currentBoxKind,
     ),
     unsupportedElementCount,
   };
@@ -472,25 +481,134 @@ const toExcalidrawElements = (scene) => {
   return convertToExcalidrawElements(skeletons, { regenerateIds: false });
 };
 
+const defaultNativeControls = {
+  revisionStatus: "Board",
+  notice: null,
+  noticeIsError: false,
+  isInspecting: false,
+  canSave: false,
+  hasRevisions: false,
+  canAttach: false,
+  canExport: false,
+  isExporting: false,
+};
+
+const BoardActionIcon = ({ name }) => {
+  const paths = {
+    save: <><path d="M12 3v11" /><path d="m8 10 4 4 4-4" /><path d="M5 17v3h14v-3" /></>,
+    draft: <><path d="M9 7H5v4" /><path d="M5 11a7 7 0 1 0 2-5" /><path d="m5 11 4-4" /></>,
+    revisions: <><path d="M4 12a8 8 0 1 0 2.3-5.7" /><path d="M4 5v5h5" /><path d="M12 7v5l3 2" /></>,
+    attach: <path d="M8.5 12.5 14.8 6.2a3 3 0 0 1 4.2 4.2l-8.5 8.5a5 5 0 0 1-7.1-7.1l8-8" />,
+    export: <><path d="M12 21V9" /><path d="m8 13 4-4 4 4" /><path d="M5 4h14v4" /></>,
+    working: <><circle cx="12" cy="12" r="8" /><path d="M12 7v5l3 2" /></>,
+  };
+  return (
+    <svg
+      aria-hidden="true"
+      className="interview-arc-board-action__icon"
+      viewBox="0 0 24 24"
+    >
+      {paths[name]}
+    </svg>
+  );
+};
+
+const BoardChromeControls = ({ controls, onAction }) => {
+  const primaryCommand = controls.isInspecting
+    ? "returnToDraft"
+    : "saveRevision";
+  const primaryTitle = controls.isInspecting
+    ? "Return to draft"
+    : "Save revision";
+  const primaryEnabled = controls.isInspecting || controls.canSave;
+  const status = controls.notice ?? controls.revisionStatus;
+
+  return (
+    <div className="interview-arc-board-controls" role="toolbar" aria-label="Board revisions and export">
+      <span
+        className={`interview-arc-board-status${controls.noticeIsError ? " interview-arc-board-status--error" : ""}`}
+        title={status}
+        role={controls.noticeIsError ? "alert" : "status"}
+      >
+        {status}
+      </span>
+      <button
+        className="interview-arc-board-action interview-arc-board-action--primary"
+        type="button"
+        disabled={!primaryEnabled}
+        onClick={() => onAction(primaryCommand)}
+        title={primaryTitle}
+        aria-label={primaryTitle}
+      >
+        <BoardActionIcon name={controls.isInspecting ? "draft" : "save"} />
+        <span className="interview-arc-board-action__label">{primaryTitle}</span>
+      </button>
+      <button
+        className="interview-arc-board-action"
+        type="button"
+        disabled={!controls.hasRevisions}
+        onClick={() => onAction("showRevisions")}
+        title="Browse revisions"
+        aria-label="Browse revisions"
+      >
+        <BoardActionIcon name="revisions" />
+        <span className="interview-arc-board-action__label">Revisions</span>
+      </button>
+      <button
+        className="interview-arc-board-action"
+        type="button"
+        disabled={!controls.canAttach}
+        onClick={() => onAction("attachRevision")}
+        title="Attach revision"
+        aria-label="Attach revision"
+      >
+        <BoardActionIcon name="attach" />
+        <span className="interview-arc-board-action__label">Attach</span>
+      </button>
+      <button
+        className="interview-arc-board-action interview-arc-board-action--primary"
+        type="button"
+        disabled={!controls.canExport || controls.isExporting}
+        onClick={() => onAction("exportRevision")}
+        title="Export Draw.io, SVG, and PNG"
+        aria-label={controls.isExporting ? "Exporting board" : "Export board"}
+      >
+        <BoardActionIcon name={controls.isExporting ? "working" : "export"} />
+        <span className="interview-arc-board-action__label">
+          {controls.isExporting ? "Exporting" : "Export"}
+        </span>
+      </button>
+    </div>
+  );
+};
+
 function BoardEditor() {
   const [readOnly, setReadOnly] = useState(false);
+  const [nativeControls, setNativeControls] = useState(defaultNativeControls);
   const [overlayScene, setOverlayScene] = useState({
     elements: [],
     appState: null,
   });
   const apiRef = useRef(null);
   const loadingRef = useRef(false);
+  const nativeControlsRef = useRef(defaultNativeControls);
   const overlayFingerprintRef = useRef("");
-  const pointerDownRef = useRef(false);
-  const pendingRef = useRef(null);
-  const currentBoxKindRef = useRef("service");
-
-  const publish = useCallback(() => {
-    if (loadingRef.current || !pendingRef.current) return;
-    const { elements, appState, files } = pendingRef.current;
-    pendingRef.current = null;
-    post(normalizeScene(elements, appState, files, currentBoxKindRef.current));
-  }, []);
+  const pointerSubscriptionsRef = useRef([]);
+  const currentBoxKindRef = useRef("generic");
+  const previousActiveToolRef = useRef("selection");
+  const publicationRef = useRef(null);
+  if (publicationRef.current === null) {
+    publicationRef.current = createScenePublicationController((scene) => {
+      if (loadingRef.current) return;
+      const { elements, appState, files } = scene;
+      post(normalizeScene(
+        elements,
+        appState,
+        files,
+        currentBoxKindRef.current,
+      ));
+    });
+  }
 
   const updateSemanticOverlay = useCallback((elements, appState) => {
     const snapshot = semanticOverlaySnapshot(elements, appState);
@@ -502,20 +620,53 @@ function BoardEditor() {
 
   const handleChange = useCallback((elements, appState, files) => {
     if (loadingRef.current) return;
+    const activeTool = appState?.activeTool?.type ?? "selection";
+    if (activeTool !== previousActiveToolRef.current) {
+      currentBoxKindRef.current = boxKindForExcalType(
+        activeTool,
+        currentBoxKindRef.current,
+      );
+      previousActiveToolRef.current = activeTool;
+    }
     updateSemanticOverlay(elements, appState);
-    pendingRef.current = { elements, appState, files };
-    if (!pointerDownRef.current) publish();
-  }, [publish, updateSemanticOverlay]);
+    publicationRef.current.acceptScene({ elements, appState, files });
+  }, [updateSemanticOverlay]);
 
   const installAPI = useCallback((api) => {
     apiRef.current = api;
+    if (
+      typeof api.onPointerDown !== "function"
+      || typeof api.onPointerUp !== "function"
+    ) {
+      post({
+        event: "failure",
+        message: "The local canvas pointer bridge is unavailable.",
+      });
+      return;
+    }
+    for (const unsubscribe of pointerSubscriptionsRef.current) unsubscribe();
+    pointerSubscriptionsRef.current = [
+      api.onPointerDown(() => {
+        publicationRef.current.beginPointerInteraction();
+      }),
+      api.onPointerUp(() => {
+        publicationRef.current.endPointerInteraction();
+      }),
+    ];
 
     window.interviewArcLoad = (serializedScene) => {
       const scene = JSON.parse(serializedScene);
       const elements = toExcalidrawElements(scene);
       loadingRef.current = true;
+      publicationRef.current.reset();
       setReadOnly(Boolean(scene.readOnly));
-      currentBoxKindRef.current = scene.boxKind ?? "service";
+      nativeControlsRef.current = scene.controls ?? defaultNativeControls;
+      setNativeControls(nativeControlsRef.current);
+      currentBoxKindRef.current = scene.boxKind ?? "generic";
+      previousActiveToolRef.current = excalTypeForNativeTool(
+        scene.tool,
+        scene.boxKind,
+      );
       api.updateScene({
         elements,
         appState: {
@@ -529,7 +680,9 @@ function BoardEditor() {
       });
       window.requestAnimationFrame(() => {
         if (!scene.readOnly) {
-          api.setActiveTool({ type: toolType(scene.tool) });
+          api.setActiveTool({
+            type: excalTypeForNativeTool(scene.tool, scene.boxKind),
+          });
         }
         if (elements.length > 0) {
           api.scrollToContent(elements, {
@@ -552,8 +705,16 @@ function BoardEditor() {
       const state = JSON.parse(serializedState);
       currentBoxKindRef.current = state.boxKind ?? currentBoxKindRef.current;
       setReadOnly(Boolean(state.readOnly));
+      nativeControlsRef.current = state.controls ?? defaultNativeControls;
+      setNativeControls(nativeControlsRef.current);
       if (!state.readOnly) {
-        api.setActiveTool({ type: toolType(state.tool) });
+        previousActiveToolRef.current = excalTypeForNativeTool(
+          state.tool,
+          state.boxKind,
+        );
+        api.setActiveTool({
+          type: excalTypeForNativeTool(state.tool, state.boxKind),
+        });
       }
       const zoom = Number(state.zoom);
       api.updateScene({
@@ -574,7 +735,7 @@ function BoardEditor() {
     };
 
     window.interviewArcFlush = () => {
-      pendingRef.current = null;
+      publicationRef.current.reset();
       return normalizeScene(
         api.getSceneElements(),
         api.getAppState(),
@@ -590,15 +751,29 @@ function BoardEditor() {
       currentBoxKindRef.current,
     );
 
+    window.interviewArcRuntimeState = () => ({
+      activeTool: api.getAppState().activeTool.type,
+      nativeControls: nativeControlsRef.current,
+    });
+
     document.documentElement.dataset.interviewArcBoardReady = "true";
     post({ event: "ready" });
   }, [updateSemanticOverlay]);
 
+  const flushThenPost = useCallback((command) => {
+    const scene = window.interviewArcFlush?.();
+    if (scene) post({ ...scene, event: "flushedCommand", command });
+  }, []);
+
+  const handleNativeAction = useCallback((command) => {
+    if (command === "saveRevision") {
+      flushThenPost(command);
+      return;
+    }
+    post({ event: "command", command });
+  }, [flushThenPost]);
+
   useEffect(() => {
-    const flushThenPost = (command) => {
-      const scene = window.interviewArcFlush?.();
-      if (scene) post({ ...scene, event: "flushedCommand", command });
-    };
     const handleKeyDown = (event) => {
       const key = event.key.toLowerCase();
       const command = event.metaKey || event.ctrlKey;
@@ -617,13 +792,14 @@ function BoardEditor() {
       } else if (event.metaKey && key === "0") {
         event.preventDefault();
         post({ event: "command", command: "zoomReset" });
-      } else if (event.ctrlKey && ["v", "c", "b", "t", "p", "e"].includes(key)) {
+      } else if (event.ctrlKey && ["v", "c", "b", "t", "l", "p", "e"].includes(key)) {
         event.preventDefault();
         const tool = {
           v: "select",
           c: "connector",
           b: "box",
           t: "label",
+          l: "line",
           p: "pen",
           e: "eraser",
         }[key];
@@ -631,8 +807,12 @@ function BoardEditor() {
       }
     };
     window.addEventListener("keydown", handleKeyDown, true);
-    return () => window.removeEventListener("keydown", handleKeyDown, true);
-  }, []);
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown, true);
+      for (const unsubscribe of pointerSubscriptionsRef.current) unsubscribe();
+      pointerSubscriptionsRef.current = [];
+    };
+  }, [flushThenPost]);
 
   return (
     <main className="board-shell">
@@ -641,15 +821,16 @@ function BoardEditor() {
         autoFocus={false}
         handleKeyboardGlobally={false}
         gridModeEnabled={false}
-        zenModeEnabled={true}
+        zenModeEnabled={false}
         viewModeEnabled={readOnly}
         theme="light"
         onChange={handleChange}
-        onPointerDown={() => { pointerDownRef.current = true; }}
-        onPointerUp={() => {
-          pointerDownRef.current = false;
-          publish();
-        }}
+        renderTopRightUI={() => (
+          <BoardChromeControls
+            controls={nativeControls}
+            onAction={handleNativeAction}
+          />
+        )}
         validateEmbeddable={() => false}
         renderEmbeddable={() => null}
         onLinkOpen={(_element, event) => event.preventDefault()}

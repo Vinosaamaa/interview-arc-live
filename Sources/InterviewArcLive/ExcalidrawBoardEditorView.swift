@@ -11,6 +11,10 @@ enum ExcalidrawBoardCommand: Equatable, Sendable {
     case zoomIn
     case zoomOut
     case zoomReset
+    case showRevisions
+    case returnToDraft
+    case attachRevision
+    case exportRevision
     case tool(BoardEditorTool)
 }
 
@@ -91,6 +95,7 @@ struct ExcalidrawBoardEditorView: NSViewRepresentable {
     let zoom: Double
     let tool: BoardEditorTool
     let boxKind: BoardNodeKind
+    let controls: ExcalidrawBoardControls
     let isReadOnly: Bool
     let bridgeController: ExcalidrawBoardBridgeController
     let onSceneChange: @MainActor (ExcalidrawBoardDecodeResult) -> Bool
@@ -143,6 +148,7 @@ struct ExcalidrawBoardEditorView: NSViewRepresentable {
             zoom: zoom,
             tool: tool,
             boxKind: boxKind,
+            controls: controls,
             isReadOnly: isReadOnly
         )
         context.coordinator.loadEditor()
@@ -163,6 +169,7 @@ struct ExcalidrawBoardEditorView: NSViewRepresentable {
             zoom: zoom,
             tool: tool,
             boxKind: boxKind,
+            controls: controls,
             isReadOnly: isReadOnly
         )
     }
@@ -193,6 +200,7 @@ struct ExcalidrawBoardEditorView: NSViewRepresentable {
             let zoom: Double
             let tool: BoardEditorTool
             let boxKind: BoardNodeKind
+            let controls: ExcalidrawBoardControls
             let isReadOnly: Bool
         }
 
@@ -269,6 +277,7 @@ struct ExcalidrawBoardEditorView: NSViewRepresentable {
             zoom: Double,
             tool: BoardEditorTool,
             boxKind: BoardNodeKind,
+            controls: ExcalidrawBoardControls,
             isReadOnly: Bool
         ) {
             let next = Snapshot(
@@ -277,6 +286,7 @@ struct ExcalidrawBoardEditorView: NSViewRepresentable {
                 zoom: zoom,
                 tool: tool,
                 boxKind: boxKind,
+                controls: controls,
                 isReadOnly: isReadOnly
             )
             let previous = snapshot
@@ -463,13 +473,14 @@ struct ExcalidrawBoardEditorView: NSViewRepresentable {
                             zoom: snapshot.zoom,
                             tool: snapshot.tool,
                             boxKind: snapshot.boxKind,
+                            controls: snapshot.controls,
                             isReadOnly: snapshot.isReadOnly
                         )
                     )
                 }
                 return true
             } catch ExcalidrawBoardCodecError.unsupportedElements {
-                onIssue("That shape is not part of the Interview Arc Board. Use Box, Connector, Text, Pen, or Eraser.")
+                onIssue("That item is not supported by the local interview Board. Use Excalidraw's shape, arrow, line, draw, text, or eraser tools.")
                 scheduleLoad(snapshot)
                 return false
             } catch {
@@ -502,6 +513,10 @@ struct ExcalidrawBoardEditorView: NSViewRepresentable {
             case "zoomIn": onCommand(.zoomIn)
             case "zoomOut": onCommand(.zoomOut)
             case "zoomReset": onCommand(.zoomReset)
+            case "showRevisions": onCommand(.showRevisions)
+            case "returnToDraft": onCommand(.returnToDraft)
+            case "attachRevision": onCommand(.attachRevision)
+            case "exportRevision": onCommand(.exportRevision)
             case "tool":
                 guard let rawTool = object["tool"] as? String,
                       let tool = BoardEditorTool(rawValue: rawTool) else { return }
@@ -520,7 +535,8 @@ struct ExcalidrawBoardEditorView: NSViewRepresentable {
                         zoom: snapshot.zoom,
                         readOnly: snapshot.isReadOnly,
                         tool: snapshot.tool,
-                        boxKind: snapshot.boxKind
+                        boxKind: snapshot.boxKind,
+                        controls: snapshot.controls
                     )
                   ) else {
                 return
@@ -536,7 +552,8 @@ struct ExcalidrawBoardEditorView: NSViewRepresentable {
                     zoom: snapshot.zoom,
                     readOnly: snapshot.isReadOnly,
                     tool: snapshot.tool.rawValue,
-                    boxKind: snapshot.boxKind.rawValue
+                    boxKind: snapshot.boxKind.rawValue,
+                    controls: snapshot.controls
                 )
             ) else {
                 return

@@ -20,6 +20,8 @@ final class BoardNodePresentationTests: XCTestCase {
         XCTAssertEqual(BoardRailInteractionMetrics.pressedScale, 0.985)
         XCTAssertEqual(BoardRailInteractionMetrics.disabledOpacity, 0.5)
         XCTAssertEqual(BoardRailInteractionMetrics.transitionDuration, 0.12)
+        XCTAssertEqual(BoardEditorTool.hand.rawValue, "hand")
+        XCTAssertEqual(BoardEditorTool.line.rawValue, "line")
     }
 
     func testCompactBoardRailsFitTheSupported680PointBoardWidth() {
@@ -37,7 +39,8 @@ final class BoardNodePresentationTests: XCTestCase {
             boardWidth
         )
         XCTAssertEqual(worstCaseRevisionWidth, 428)
-        XCTAssertEqual(BoardRailWidthBudget.compactToolbarRequiredWidth, 483)
+        XCTAssertEqual(BoardRailWidthBudget.compactHorizontalPadding, 6)
+        XCTAssertEqual(BoardRailWidthBudget.compactToolbarRequiredWidth, 527)
         XCTAssertLessThanOrEqual(worstCaseRevisionWidth, boardWidth)
         XCTAssertLessThanOrEqual(
             BoardRailWidthBudget.compactToolbarRequiredWidth,
@@ -274,7 +277,11 @@ final class BoardNodePresentationTests: XCTestCase {
         let rect = CGRect(x: 20, y: 30, width: 160, height: 90)
         for visual in visuals {
             XCTAssertFalse(visual.outlinePath(in: rect).commands.isEmpty)
-            XCTAssertFalse(visual.pictogramPaths(in: rect).isEmpty)
+            if visual.pictogram == .none {
+                XCTAssertTrue(visual.pictogramPaths(in: rect).isEmpty)
+            } else {
+                XCTAssertFalse(visual.pictogramPaths(in: rect).isEmpty)
+            }
             XCTAssertEqual(
                 visual.outlinePath(in: rect).svgPathData,
                 visual.outlinePath(in: rect).svgPathData

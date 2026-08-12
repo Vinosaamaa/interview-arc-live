@@ -7,7 +7,7 @@ struct SystemDesignBoardView: View {
     @State private var connectorSourceID: BoardElementID?
     @State private var activePenPoints: [BoardPoint] = []
     @State private var lastEraserPoint: BoardPoint?
-    @State private var newBoxKind: BoardNodeKind = .service
+    @State private var newBoxKind: BoardNodeKind = .generic
     @State private var editingElementID: BoardElementID?
     @State private var editingText = ""
     @State private var interactionFeedback: String?
@@ -64,8 +64,10 @@ struct SystemDesignBoardView: View {
         switch model.selectedWorkSurface {
         case .board:
             VStack(spacing: 0) {
-                toolRail
-                Divider().overlay(BoardPalette.line)
+                if enhancedEditorFailure != nil {
+                    toolRail
+                    Divider().overlay(BoardPalette.line)
+                }
                 canvas
             }
             .accessibilityElement(children: .contain)
@@ -79,6 +81,38 @@ struct SystemDesignBoardView: View {
                 next: { selectRelativeElement(forward: true) },
                 previous: { selectRelativeElement(forward: false) }
             )
+            .optionalBoardAccessibilityAction(
+                isEnabled: model.isInspectingBoardRevision,
+                title: "Return to board draft"
+            ) {
+                Task { await model.returnToBoardDraft() }
+            }
+            .optionalBoardAccessibilityAction(
+                isEnabled: model.canSaveBoardRevision
+                    && model.isBoardDraftDirty,
+                title: "Save board revision"
+            ) {
+                saveRevisionAfterEnhancedFlush()
+            }
+            .optionalBoardAccessibilityAction(
+                isEnabled: model.snapshot?.board.revisions.isEmpty == false,
+                title: "Browse board revisions"
+            ) {
+                isRevisionHistoryPresented = true
+            }
+            .optionalBoardAccessibilityAction(
+                isEnabled: model.canAttachBoardRevision,
+                title: "Attach board revision"
+            ) {
+                Task { await model.attachSelectedBoardRevision() }
+            }
+            .optionalBoardAccessibilityAction(
+                isEnabled: model.canExportBoardRevision
+                    && !model.isBoardExporting,
+                title: "Export board revision"
+            ) {
+                Task { await model.exportSelectedBoardRevision() }
+            }
         case .brief:
             briefSurface
         case .notes:
@@ -108,7 +142,8 @@ struct SystemDesignBoardView: View {
         return HStack(spacing: compact ? BoardRailWidthBudget.compactRevisionSpacing : 0) {
             workSurfaceSwitcher(compact: compact)
             if compact {
-                if model.selectedWorkSurface == .board {
+                if model.selectedWorkSurface == .board,
+                   !enhancedEditorIsReady {
                     revisionStatus(compact: true)
                 } else {
                     workSurfaceStatus(compact: true)
@@ -128,11 +163,13 @@ struct SystemDesignBoardView: View {
                 if model.selectedWorkSurface == .board {
                     HStack(spacing: 18) {
                         revisionStatus(compact: false)
-                        revisionPrimaryAction(compact: false)
-                        revisionMenu(compact: false)
-                        railDivider
-                        attachRevisionButton(compact: false)
-                        exportRevisionButton(compact: false)
+                        if !enhancedEditorIsReady {
+                            revisionPrimaryAction(compact: false)
+                            revisionMenu(compact: false)
+                            railDivider
+                            attachRevisionButton(compact: false)
+                            exportRevisionButton(compact: false)
+                        }
                     }
                     .fixedSize()
                 } else {
@@ -931,13 +968,13 @@ struct SystemDesignBoardView: View {
                 zoom: model.boardEditor.zoom,
                 tool: model.boardEditor.tool,
                 boxKind: newBoxKind,
+                controls: enhancedEditorControls,
                 isReadOnly: model.isInspectingBoardRevision,
                 bridgeController: enhancedEditorBridgeController,
                 onSceneChange: { decoded in
                     let previousIDs = Set(
                         model.boardEditor.document.elements.map(\.id)
                     )
-                    let activeTool = model.boardEditor.tool
                     _ = model.applyBoardAction(
                         .replaceDocument(
                             decoded.document,
@@ -950,15 +987,17 @@ struct SystemDesignBoardView: View {
                        abs(zoom - model.boardEditor.zoom) > 0.000_1 {
                         model.applyBoardAction(.setZoom(zoom))
                     }
-                    let addedElements = decoded.document.elements.filter {
-                        !previousIDs.contains($0.id)
+                    if let decodedBoxKind = decoded.boxKind {
+                        newBoxKind = decodedBoxKind
                     }
-                    if ExcalidrawBoardToolPolicy.returnsToSelect(
-                        afterAdding: addedElements,
-                        with: activeTool
-                    ) {
-                        model.applyBoardAction(.setTool(.select))
-                        interactionFeedback = "Canvas element added and selected"
+                    if let decodedTool = decoded.tool,
+                       decodedTool != model.boardEditor.tool {
+                        model.applyBoardAction(.setTool(decodedTool))
+                    }
+                    if decoded.document.elements.contains(where: {
+                        !previousIDs.contains($0.id)
+                    }) {
+                        interactionFeedback = "Canvas element added and saved locally"
                     }
                     return true
                 },
@@ -990,35 +1029,9 @@ struct SystemDesignBoardView: View {
                 .padding(12)
                 .accessibilityElement(children: .combine)
                 .accessibilityLabel("Loading the local Board canvas")
-            } else if model.boardDocumentForPresentation.elements.isEmpty {
-                emptyState
-                    .padding(.leading, 28)
-                    .padding(.top, 26)
-            }
-
-            if enhancedEditorIsReady {
-                Label("Excalidraw · Local", systemImage: "checkmark.circle.fill")
-                    .font(.system(.caption2, design: .rounded, weight: .semibold))
-                    .foregroundStyle(BoardPalette.violet)
-                    .padding(.horizontal, 9)
-                    .frame(minHeight: 28)
-                    .background(BoardPalette.paper.opacity(0.92))
-                    .clipShape(Capsule())
-                    .overlay {
-                        Capsule()
-                            .stroke(BoardPalette.violet.opacity(0.24), lineWidth: 1)
-                    }
-                    .padding(12)
-                    .frame(maxWidth: .infinity, alignment: .topTrailing)
-                    .allowsHitTesting(false)
-                    .accessibilityLabel("Local Excalidraw canvas ready")
             }
         }
         .background(BoardPalette.canvas)
-        .overlay(alignment: .bottomLeading) {
-            boardFooter
-                .padding(12)
-        }
     }
 
     private func nativeCanvas(showsStatusOverlays: Bool) -> some View {
@@ -1140,9 +1153,36 @@ struct SystemDesignBoardView: View {
             )
         case .zoomReset:
             model.applyBoardAction(.resetZoom)
+        case .showRevisions:
+            isRevisionHistoryPresented = true
+        case .returnToDraft:
+            Task { await model.returnToBoardDraft() }
+        case .attachRevision:
+            Task { await model.attachSelectedBoardRevision() }
+        case .exportRevision:
+            Task { await model.exportSelectedBoardRevision() }
         case .tool(let tool):
             model.applyBoardAction(.setTool(tool))
         }
+    }
+
+    private var enhancedEditorControls: ExcalidrawBoardControls {
+        let footer = BoardFooterPresentation.make(
+            errorMessage: model.boardErrorMessage,
+            exportMessage: model.boardExportMessage,
+            interactionFeedback: interactionFeedback
+        )
+        return ExcalidrawBoardControls(
+            revisionStatus: model.boardRevisionStatusPresentation.fullText,
+            notice: footer.tone == .neutral ? nil : footer.text,
+            noticeIsError: footer.tone == .error,
+            isInspecting: model.isInspectingBoardRevision,
+            canSave: model.canSaveBoardRevision && model.isBoardDraftDirty,
+            hasRevisions: model.snapshot?.board.revisions.isEmpty == false,
+            canAttach: model.canAttachBoardRevision,
+            canExport: model.canExportBoardRevision,
+            isExporting: model.isBoardExporting
+        )
     }
 
     private var emptyState: some View {
@@ -1608,7 +1648,7 @@ struct SystemDesignBoardView: View {
                     y: value.location.y
                 )
                 switch model.boardEditor.tool {
-                case .pen:
+                case .line, .pen:
                     if activePenPoints.count < BoardDocument.maximumStrokePoints,
                        activePenPoints.isEmpty
                         || distance(activePenPoints.last!, point) >= 2 {
@@ -1630,6 +1670,8 @@ struct SystemDesignBoardView: View {
                 guard !model.isInspectingBoardRevision else { return }
                 let point = BoardPoint(x: value.location.x, y: value.location.y)
                 switch model.boardEditor.tool {
+                case .hand:
+                    break
                 case .select:
                     select(nil)
                     interactionFeedback = "Selection cleared"
@@ -1663,7 +1705,7 @@ struct SystemDesignBoardView: View {
                     if let id = model.boardEditor.selectedElementID {
                         beginEditing(id: id, text: "Label")
                     }
-                case .pen:
+                case .line, .pen:
                     if activePenPoints.count >= 2 {
                         model.applyBoardAction(.addStroke(points: activePenPoints))
                     }
@@ -1989,10 +2031,12 @@ struct SystemDesignBoardView: View {
 
     private func shortcut(for tool: BoardEditorTool) -> KeyEquivalent {
         switch tool {
+        case .hand: "h"
         case .select: "v"
         case .connector: "c"
         case .box: "b"
         case .label: "t"
+        case .line: "l"
         case .pen: "p"
         case .eraser: "e"
         }
@@ -2000,10 +2044,12 @@ struct SystemDesignBoardView: View {
 
     private func hint(for tool: BoardEditorTool) -> String {
         switch tool {
+        case .hand: "Pan the enhanced Excalidraw canvas"
         case .select: "Select, move, relabel, or delete board elements"
         case .connector: "Choose a source box, then a target box"
         case .box: "Draw on the canvas to add an architecture box"
         case .label: "Click the canvas to add editable text"
+        case .line: "Drag on the canvas to draw a straight line"
         case .pen: "Drag on the canvas to draw a freehand annotation"
         case .eraser: "Drag across a freehand annotation to erase it"
         }
@@ -2027,6 +2073,19 @@ struct SystemDesignBoardView: View {
 }
 
 private extension View {
+    @ViewBuilder
+    func optionalBoardAccessibilityAction(
+        isEnabled: Bool,
+        title: String,
+        action: @escaping () -> Void
+    ) -> some View {
+        if isEnabled {
+            accessibilityAction(named: Text(title)) { action() }
+        } else {
+            self
+        }
+    }
+
     @ViewBuilder
     func boardRootAccessibilityActions(
         isReadOnly: Bool,

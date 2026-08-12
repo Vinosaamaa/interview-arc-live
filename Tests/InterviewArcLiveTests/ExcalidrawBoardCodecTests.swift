@@ -50,8 +50,19 @@ final class ExcalidrawBoardCodecTests: XCTestCase {
             selectedElementID: queue.id,
             zoom: 1.25,
             readOnly: false,
-            tool: .connector,
-            boxKind: .queue
+            tool: .hand,
+            boxKind: .queue,
+            controls: ExcalidrawBoardControls(
+                revisionStatus: "Unsaved changes · revision 2",
+                notice: "Canvas element added and saved locally",
+                noticeIsError: false,
+                isInspecting: false,
+                canSave: true,
+                hasRevisions: true,
+                canAttach: false,
+                canExport: true,
+                isExporting: false
+            )
         )
 
         let first = try ExcalidrawBoardCodec.encodeScene(scene)
@@ -62,7 +73,17 @@ final class ExcalidrawBoardCodecTests: XCTestCase {
                 as? [String: Any]
         )
         XCTAssertEqual(object["selectedID"] as? String, queue.id.rawValue)
-        XCTAssertEqual(object["tool"] as? String, BoardEditorTool.connector.rawValue)
+        XCTAssertEqual(object["tool"] as? String, BoardEditorTool.hand.rawValue)
+        let controls = try XCTUnwrap(object["controls"] as? [String: Any])
+        XCTAssertEqual(controls["canSave"] as? Bool, true)
+        XCTAssertEqual(
+            controls["revisionStatus"] as? String,
+            "Unsaved changes · revision 2"
+        )
+        XCTAssertEqual(
+            controls["notice"] as? String,
+            "Canvas element added and saved locally"
+        )
         let encoded = try XCTUnwrap(object["elements"] as? [[String: Any]])
         XCTAssertEqual(encoded.count, 3)
         XCTAssertEqual(encoded.map { $0["type"] as? String }, [
@@ -87,6 +108,8 @@ final class ExcalidrawBoardCodecTests: XCTestCase {
             "event": "scene",
             "unsupportedElementCount": 0,
             "zoom": 8.0,
+            "tool": "hand",
+            "boxKind": "generic",
             "selectedWebIDs": ["web-queue"],
             "elements": [
                 box(
@@ -144,6 +167,8 @@ final class ExcalidrawBoardCodecTests: XCTestCase {
         )
         XCTAssertTrue(result.requiresReload)
         XCTAssertEqual(result.zoom, BoardEditorState.maximumZoom)
+        XCTAssertEqual(result.tool, .hand)
+        XCTAssertEqual(result.boxKind, .generic)
         XCTAssertEqual(result.document.elements.map(\.id.rawValue), [
             "box-1",
             "box-2",
@@ -168,6 +193,42 @@ final class ExcalidrawBoardCodecTests: XCTestCase {
         XCTAssertEqual(label.origin, BoardPoint(x: 960, y: 768))
         XCTAssertEqual(stroke.points.first, BoardPoint(x: 0, y: 410))
         XCTAssertEqual(stroke.points.last, BoardPoint(x: 180, y: 800))
+    }
+
+    func testExcalidrawDiamondAndEllipseBecomeCanonicalNodeKinds() throws {
+        let change: [String: Any] = [
+            "event": "scene",
+            "unsupportedElementCount": 0,
+            "selectedWebIDs": [],
+            "tool": "box",
+            "boxKind": "ellipse",
+            "elements": [
+                box(
+                    webID: "decision-web",
+                    x: 80,
+                    y: 80,
+                    label: "Route?",
+                    kind: "decision"
+                ),
+                box(
+                    webID: "ellipse-web",
+                    x: 360,
+                    y: 80,
+                    label: "Actor",
+                    kind: "ellipse"
+                ),
+            ],
+        ]
+
+        let result = try ExcalidrawBoardCodec.decodeChange(
+            from: change,
+            currentDocument: .empty
+        )
+        let kinds: [BoardNodeKind] = result.document.elements.compactMap { element in
+            guard case .box(let box) = element else { return nil }
+            return box.kind
+        }
+        XCTAssertEqual(kinds, [.decision, .ellipse])
     }
 
     func testExistingIDsAreRetainedButPastedCanonicalIDsCannotTakeOwnership() throws {
