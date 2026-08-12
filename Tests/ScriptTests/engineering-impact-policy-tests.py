@@ -11,9 +11,14 @@ SPEC.loader.exec_module(MODULE)
 
 
 class EngineeringImpactPolicyTests(unittest.TestCase):
-    def test_workflow_fetches_history_for_exact_pr_revision_diff(self):
+    def test_workflow_fetches_only_exact_pr_revisions_for_diff(self):
         workflow = WORKFLOW.read_text(encoding="utf-8")
-        self.assertRegex(workflow, r"actions/checkout@v4\s+with:\s+fetch-depth:\s*0")
+        self.assertNotIn("fetch-depth: 0", workflow)
+        self.assertIn("git fetch --no-tags --depth=1 origin \"$BASE_SHA\" \"$HEAD_SHA\"", workflow)
+
+    def test_classification_pattern_is_derived_from_the_canonical_map(self):
+        for label in MODULE.CLASSIFICATIONS:
+            self.assertRegex(f"- [x] {label}", MODULE.CLASSIFICATION_PATTERN)
 
     def test_requires_exactly_one_choice(self):
         with self.assertRaisesRegex(ValueError, "exactly one"):

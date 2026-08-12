@@ -17,10 +17,14 @@ jobs:
     steps:
       - name: Check out source
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
       - name: Test Engineering impact policy
         run: python3 Tests/ScriptTests/engineering-impact-policy-tests.py
+      - name: Fetch exact Engineering impact comparison revisions
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: git fetch --no-tags --depth=1 origin "$BASE_SHA" "$HEAD_SHA"
       - name: Validate Engineering impact classification
         if: github.event_name == 'pull_request'
         run: python3 scripts/validate-engineering-impact.py "$GITHUB_EVENT_PATH"

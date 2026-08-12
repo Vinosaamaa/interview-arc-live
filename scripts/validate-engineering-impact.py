@@ -23,16 +23,17 @@ PLACEHOLDER_REASONS = {
     "replace with a concrete reason",
 }
 
+CLASSIFICATION_PATTERN = re.compile(
+    rf"^\s*-\s*\[[xX]\]\s*({'|'.join(re.escape(label) for label in CLASSIFICATIONS)})(?:\s*[—-]\s*reason:\s*(.*))?\s*$",
+    re.IGNORECASE,
+)
+
 
 def selected_classifications(body: str):
-    pattern = re.compile(
-        r"^\s*-\s*\[[xX]\]\s*(None|Change Note|ADR|Architecture Review|Feature Retrospective|Postmortem|Capability Dossier)(?:\s*[—-]\s*reason:\s*(.*))?\s*$",
-        re.IGNORECASE,
-    )
     return [
         (CLASSIFICATIONS[match.group(1).lower()], (match.group(2) or "").strip())
         for line in body.splitlines()
-        if (match := pattern.match(line))
+        if (match := CLASSIFICATION_PATTERN.match(line))
     ]
 
 
