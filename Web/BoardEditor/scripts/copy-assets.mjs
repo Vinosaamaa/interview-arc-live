@@ -1,4 +1,4 @@
-import { copyFile, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
+import { cp, copyFile, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 const sourceRoot = join(
@@ -15,18 +15,12 @@ const packageDistributionRoot = join(
   "excalidraw",
   "dist",
 );
-const fonts = [
-  "Assistant-Bold.woff2",
-  "Assistant-Medium.woff2",
-  "Assistant-Regular.woff2",
-  "Assistant-SemiBold.woff2",
-  "Cascadia.woff2",
-  "Virgil.woff2",
-];
-
 await mkdir(destinationRoot, { recursive: true });
-for (const font of fonts) {
-  await copyFile(join(sourceRoot, font), join(destinationRoot, font));
+for (const entry of await readdir(sourceRoot)) {
+  if (entry.endsWith(".LICENSE.txt")) continue;
+  await cp(join(sourceRoot, entry), join(destinationRoot, entry), {
+    recursive: true,
+  });
 }
 
 const licenseRoot = join("dist", "licenses");
