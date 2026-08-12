@@ -30,37 +30,27 @@ CLASSIFICATION_PATTERN = re.compile(
 )
 
 RECEIPT_DIRECTORY = "docs/engineering/changes/"
-RECEIPT_FIELDS = {
-    "schemaVersion",
-    "repository",
-    "pr",
-    "title",
-    "classification",
-    "richRecordRefs",
-    "reconstructed",
-    "confidence",
-    "unknowns",
-    "headCommit",
-    "mergeCommit",
-    "mergedAt",
-    "sources",
-    "verification",
-    "visibility",
-    "publicationEligibility",
-}
+RECEIPT_SCHEMA_PATH = Path(__file__).parents[1] / "docs" / "contracts" / "engineering-pull-request-receipt.schema.json"
+RECEIPT_SCHEMA = json.loads(RECEIPT_SCHEMA_PATH.read_text(encoding="utf-8"))
+RECEIPT_FIELDS = frozenset(RECEIPT_SCHEMA["required"])
+RECEIPT_PROPERTIES = RECEIPT_SCHEMA["properties"]
+RECEIPT_DEFINITIONS = RECEIPT_SCHEMA["$defs"]
+RECEIPT_CLASSIFICATIONS = frozenset(RECEIPT_PROPERTIES["classification"]["enum"])
 SOURCE_KINDS = {"issue", "pull-request", "commit", "release", "run", "documentation"}
 CONFIDENCE_VALUES = {"verified", "high", "medium", "low", "unknown"}
 RECORD_REF_PATTERN = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*@[1-9]\d*$")
 COMMIT_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 MERGED_AT_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
 REPOSITORY_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+$")
-MAX_SOURCES = 32
-MAX_SOURCE_LABEL_LENGTH = 160
-MAX_SOURCE_URL_LENGTH = 2048
-MAX_STRING_LIST_ITEMS = 32
-MAX_STRING_LENGTH = 512
-MAX_RECORD_REFS = 16
-MAX_RECORD_REF_LENGTH = 180
+MAX_SOURCES = RECEIPT_PROPERTIES["sources"]["maxItems"]
+MAX_SOURCE_LABEL_LENGTH = RECEIPT_PROPERTIES["sources"]["items"]["properties"]["label"]["maxLength"]
+MAX_SOURCE_URL_LENGTH = RECEIPT_PROPERTIES["sources"]["items"]["properties"]["url"]["maxLength"]
+MAX_STRING_LIST_ITEMS = RECEIPT_DEFINITIONS["stringList"]["maxItems"]
+MAX_STRING_LENGTH = RECEIPT_DEFINITIONS["stringList"]["items"]["maxLength"]
+MAX_RECORD_REFS = RECEIPT_DEFINITIONS["recordRefs"]["maxItems"]
+MAX_RECORD_REF_LENGTH = RECEIPT_DEFINITIONS["recordRefs"]["items"]["maxLength"]
+MAX_FRONTMATTER_BYTES = 65_536
+FRONTMATTER_BYTES_PATTERN = re.compile(rb"\A---\r?\n.*?\r?\n---(?:\r?\n|\Z)", re.DOTALL)
 
 
 def markdown_lines_outside_fences(body: str):
@@ -160,18 +150,7 @@ def required_receipt_path(changed_files: list[str], pr_number: int):
     return expected
 
 
-def validate_receipt(
-    markdown: str,
-    path: str,
-    *,
-    repository: str,
-    pr_number: int,
-    pr_title: str,
-    classification: str,
-    record_index: dict[str, str],
-    pr_url: str | None = None,
-):
-    receipt, body = frontmatter_document(markdown, path)
+def validate_receipt_fields(receipt, path, *, repository, pr_number, pr_title, classification):
     missing = sorted(RECEIPT_FIELDS - receipt.keys())
     extra = sorted(receipt.keys() - RECEIPT_FIELDS)
     if missing or extra:
@@ -194,7 +173,7 @@ def validate_receipt(
         raise ValueError(f"Receipt `title` must contain 1–160 characters: {path}.")
     if receipt["title"] != pr_title:
         raise ValueError(f"Receipt `title` must match the pull request title: {path}.")
-    if receipt["classification"] not in CLASSIFICATIONS.values():
+    if receipt["classification"] not in RECEIPT_CLASSIFICATIONS:
         raise ValueError(f"Receipt `classification` is invalid: {path}.")
     if receipt["classification"] != classification:
         raise ValueError(f"Receipt `classification` must match Engineering impact `{classification}`: {path}.")
@@ -203,6 +182,9 @@ def validate_receipt(
     if receipt["confidence"] not in CONFIDENCE_VALUES:
         raise ValueError(f"Receipt `confidence` is invalid: {path}.")
     string_list(receipt["unknowns"], "unknowns", path)
+
+
+def validate_receipt_record_refs(receipt, path, *, classification, record_index):
 
     rich_record_refs = string_list(
         receipt["richRecordRefs"],
@@ -231,6 +213,8 @@ def validate_receipt(
     if merged_at is not None and (not isinstance(merged_at, str) or not MERGED_AT_PATTERN.fullmatch(merged_at)):
         raise ValueError(f"Receipt `mergedAt` must be null or a UTC timestamp without fractional seconds: {path}.")
 
+
+def validate_receipt_sources(receipt, path, *, repository, pr_number, pr_url):
     sources = receipt["sources"]
     if not isinstance(sources, list) or not sources:
         raise ValueError(f"Receipt `sources` must contain at least one source: {path}.")
@@ -255,6 +239,8 @@ def validate_receipt(
     if not any(source["kind"] == "pull-request" and source["url"] == expected_pr_url for source in sources):
         raise ValueError(f"Receipt must cite its exact pull request URL `{expected_pr_url}`: {path}.")
 
+
+def validate_receipt_verification(receipt, path):
     verification = receipt["verification"]
     if not isinstance(verification, dict) or set(verification) != {"state", "evidenceRefs"}:
         raise ValueError(f"Receipt `verification` fields are invalid: {path}.")
@@ -269,12 +255,46 @@ def validate_receipt(
     if receipt["publicationEligibility"] != "eligible":
         raise ValueError(f"Receipt `publicationEligibility` must be `eligible`: {path}.")
 
+
+def validate_receipt_body(receipt, body, path):
     paragraphs = [paragraph.strip() for paragraph in re.split(r"\r?\n\s*\r?\n", body) if paragraph.strip()]
     if len(paragraphs) != 2 or paragraphs[0] != f"# {receipt['title']}":
         raise ValueError(f"Receipt body must contain its title heading and one factual summary paragraph: {path}.")
     summary = " ".join(paragraphs[1].split())
     if not summary or len(summary) > 280:
         raise ValueError(f"Receipt summary must contain at most 280 characters: {path}.")
+
+
+def validate_receipt(
+    markdown: str,
+    path: str,
+    *,
+    repository: str,
+    pr_number: int,
+    pr_title: str,
+    classification: str,
+    record_index: dict[str, str],
+    pr_url: str | None = None,
+):
+    receipt, body = frontmatter_document(markdown, path)
+    validate_receipt_fields(
+        receipt,
+        path,
+        repository=repository,
+        pr_number=pr_number,
+        pr_title=pr_title,
+        classification=classification,
+    )
+    validate_receipt_record_refs(receipt, path, classification=classification, record_index=record_index)
+    validate_receipt_sources(
+        receipt,
+        path,
+        repository=repository,
+        pr_number=pr_number,
+        pr_url=pr_url,
+    )
+    validate_receipt_verification(receipt, path)
+    validate_receipt_body(receipt, body, path)
 
     return receipt
 
@@ -335,34 +355,53 @@ def record_types(paths: list[str], head: str):
     return types
 
 
-def frontmatter_at(revision: str, path: str):
-    command = ["git", "show", f"{revision}:{path}"]
+def frontmatters_at(revision: str, paths: list[str]):
+    if not paths:
+        return {}
     process = subprocess.Popen(
-        command,
+        ["git", "cat-file", "--batch"],
+        stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        text=True,
-        encoding="utf-8",
     )
+    assert process.stdin is not None
     assert process.stdout is not None
     assert process.stderr is not None
-    lines = []
-    found_closing_fence = False
-    for line in process.stdout:
-        lines.append(line)
-        if len(lines) > 1 and line.rstrip("\r\n") == "---":
-            found_closing_fence = True
-            break
-    process.stdout.close()
-    if process.poll() is None:
-        process.terminate()
-    stderr = process.stderr.read()
-    process.stderr.close()
-    return_code = process.wait()
-    if not found_closing_fence and return_code != 0:
-        raise subprocess.CalledProcessError(return_code, command, stderr=stderr)
-    metadata, _ = frontmatter_document("".join(lines), path)
-    return metadata
+    frontmatters = {}
+    try:
+        for path in paths:
+            process.stdin.write(f"{revision}:{path}\n".encode())
+            process.stdin.flush()
+            header = process.stdout.readline().decode("utf-8", errors="strict").rstrip("\n")
+            if header.endswith(" missing"):
+                raise ValueError(f"Canonical Engineering record is missing at the pull-request head: {path}.")
+            parts = header.split()
+            if len(parts) != 3 or parts[1] != "blob":
+                raise ValueError("Unable to read a canonical Engineering record Git object.")
+            object_size = int(parts[2])
+            prefix = process.stdout.read(min(object_size, MAX_FRONTMATTER_BYTES))
+            remaining = object_size - len(prefix)
+            while remaining:
+                discarded = process.stdout.read(min(remaining, 65_536))
+                if not discarded:
+                    raise ValueError("Unable to read a canonical Engineering record Git object.")
+                remaining -= len(discarded)
+            if process.stdout.read(1) != b"\n":
+                raise ValueError("Unable to read a canonical Engineering record Git object.")
+            frontmatter_match = FRONTMATTER_BYTES_PATTERN.match(prefix)
+            if not frontmatter_match:
+                raise ValueError(f"Canonical Engineering record has invalid or oversized front matter: {path}.")
+            metadata, _ = frontmatter_document(frontmatter_match.group().decode("utf-8", errors="strict"), path)
+            frontmatters[path] = metadata
+    finally:
+        process.stdin.close()
+        process.stdout.close()
+        stderr = process.stderr.read()
+        process.stderr.close()
+        return_code = process.wait()
+    if return_code != 0:
+        raise subprocess.CalledProcessError(return_code, process.args, stderr=stderr)
+    return frontmatters
 
 
 def record_index_at(revision: str):
@@ -378,9 +417,10 @@ def record_index_at(revision: str):
         ).splitlines()
         if path.endswith(".md")
     ]
+    frontmatters = frontmatters_at(revision, paths)
     index = {}
     for path in paths:
-        metadata = frontmatter_at(revision, path)
+        metadata = frontmatters[path]
         record_id = metadata.get("id")
         record_revision = metadata.get("revision")
         record_type = metadata.get("type")

@@ -61,7 +61,7 @@ Adopted complete pull-request receipts and a curated Engineering record for the 
         }
         arguments.update(overrides)
         return MODULE.validate_receipt(
-            markdown or self.receipt_markdown(),
+            self.receipt_markdown() if markdown is None else markdown,
             "docs/engineering/changes/pr-42.md",
             **arguments,
         )
@@ -79,6 +79,10 @@ Adopted complete pull-request receipts and a curated Engineering record for the 
     def test_validator_fields_match_the_versioned_receipt_schema(self):
         schema = json.loads(SCHEMA.read_text(encoding="utf-8"))
         self.assertEqual(set(schema["required"]), MODULE.RECEIPT_FIELDS)
+        self.assertEqual(
+            set(schema["properties"]["classification"]["enum"]),
+            set(MODULE.CLASSIFICATIONS.values()),
+        )
         self.assertFalse(schema["additionalProperties"])
 
     def test_receipt_collection_and_source_bounds_match_the_schema(self):
@@ -192,6 +196,8 @@ Adopted complete pull-request receipts and a curated Engineering record for the 
             self.validate_receipt(self.receipt_markdown(repository="interview-arc"))
         with self.assertRaisesRegex(ValueError, "reconstructed"):
             self.validate_receipt(receipt.replace("reconstructed: false", "reconstructed: true"))
+        with self.assertRaisesRegex(ValueError, "leading front matter"):
+            self.validate_receipt("")
 
     def test_receipt_classification_and_exact_rich_record_must_match(self):
         with self.assertRaisesRegex(ValueError, "classification"):
@@ -229,12 +235,12 @@ Adopted complete pull-request receipts and a curated Engineering record for the 
             patch.object(MODULE, "git_blobs", side_effect=AssertionError("must not buffer the record corpus")),
             patch.object(
                 MODULE,
-                "frontmatter_at",
-                return_value={"id": "session", "revision": 1, "type": "capability-dossier"},
-            ) as frontmatter_at,
+                "frontmatters_at",
+                return_value={path: {"id": "session", "revision": 1, "type": "capability-dossier"}},
+            ) as frontmatters_at,
         ):
             self.assertEqual(MODULE.record_index_at("head"), {"session@1": "capability-dossier"})
-        frontmatter_at.assert_called_once_with("head", path)
+        frontmatters_at.assert_called_once_with("head", [path])
 
 
 if __name__ == "__main__":
