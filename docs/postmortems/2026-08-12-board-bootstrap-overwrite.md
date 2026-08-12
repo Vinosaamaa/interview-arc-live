@@ -1,9 +1,13 @@
 # Postmortem: Board Bootstrap Overwrote an Unsaved Draft
 
-**Date:** 2026-08-12  
-**Status:** In review; merged-release verification pending  
-**Severity:** Data loss in a local unsaved Board draft  
-**Issue:** [#17](https://github.com/Vinosaamaa/interview-arc-live/issues/17)  
+**Date:** 2026-08-12
+
+**Status:** In review; merged-release verification pending
+
+**Severity:** Data loss in a local unsaved Board draft
+
+**Issue:** [#17](https://github.com/Vinosaamaa/interview-arc-live/issues/17)
+
 **Fix PR:** [#43](https://github.com/Vinosaamaa/interview-arc-live/pull/43)
 
 ## Summary
