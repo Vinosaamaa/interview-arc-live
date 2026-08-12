@@ -5,7 +5,7 @@ import json
 import unittest
 from io import BytesIO
 from pathlib import Path
-from unittest.mock import Mock, call, patch
+from unittest.mock import Mock, patch
 
 SCRIPT = Path(__file__).parents[2] / "scripts" / "validate-engineering-impact.py"
 WORKFLOW = Path(__file__).parents[2] / ".github" / "workflows" / "swift.yml"
@@ -22,6 +22,28 @@ class EngineeringImpactPolicyTests(unittest.TestCase):
     DEFAULT_RECORD_INDEX = {
         "capability-dossier-deep-interview-room-session@1": "capability-dossier",
     }
+
+    @staticmethod
+    def workflow_mapping_block(workflow, key, indent):
+        lines = workflow.splitlines()
+        marker = f"{' ' * indent}{key}:"
+        start = next(
+            index for index, line in enumerate(lines)
+            if line.rstrip() == marker
+        )
+        end = len(lines)
+        for index in range(start + 1, len(lines)):
+            line = lines[index]
+            if line.strip() and len(line) - len(line.lstrip()) <= indent:
+                end = index
+                break
+        return "\n".join(lines[start:end])
+
+    @staticmethod
+    def workflow_scalar(block, key, indent):
+        prefix = f"{' ' * indent}{key}:"
+        line = next(line for line in block.splitlines() if line.startswith(prefix))
+        return line[len(prefix):].strip()
 
     @staticmethod
     def receipt_markdown(
@@ -78,14 +100,22 @@ Adopted complete pull-request receipts and a curated Engineering record for the 
 
     def test_workflow_revalidates_after_title_or_body_edits(self):
         workflow = WORKFLOW.read_text(encoding="utf-8")
-        self.assertIn("pull_request:\n    types: [opened, synchronize, reopened, edited]", workflow)
-        self.assertIn("  engineering-policy:\n", workflow)
-        self.assertIn(
-            "  test:\n    if: github.event.action != 'edited'\n    needs: engineering-policy\n",
-            workflow,
+        pull_request = self.workflow_mapping_block(workflow, "pull_request", 2)
+        concurrency = self.workflow_mapping_block(workflow, "concurrency", 0)
+        policy_job = self.workflow_mapping_block(workflow, "engineering-policy", 2)
+        native_job = self.workflow_mapping_block(workflow, "test", 2)
+        self.assertEqual(
+            self.workflow_scalar(pull_request, "types", 4),
+            "[opened, synchronize, reopened, edited]",
         )
+        self.assertEqual(self.workflow_scalar(native_job, "if", 4), "github.event.action != 'edited'")
+        self.assertEqual(self.workflow_scalar(native_job, "needs", 4), "engineering-policy")
         self.assertEqual(workflow.count("github.event.action != 'edited'"), 1)
-        policy_job = workflow.split("  engineering-policy:\n", 1)[1].split("\n  test:\n", 1)[0]
+        concurrency_group = self.workflow_scalar(concurrency, "group", 2)
+        self.assertIn("github.event.action == 'edited'", concurrency_group)
+        self.assertIn("'metadata'", concurrency_group)
+        self.assertIn("'source'", concurrency_group)
+        self.assertEqual(self.workflow_scalar(concurrency, "cancel-in-progress", 2), "true")
         self.assertIn("Test Engineering impact policy", policy_job)
         self.assertIn("Validate Engineering impact classification", policy_job)
 
@@ -202,7 +232,7 @@ Adopted complete pull-request receipts and a curated Engineering record for the 
     def test_existing_broken_head_never_falls_back_to_stale_base_metadata(self):
         path = "docs/engineering/records/example.md"
         with (
-            patch.object(MODULE, "git_object_exists", return_value=True),
+            patch.object(MODULE, "git_objects_exist", return_value={path}),
             patch.object(MODULE, "matching_record_paths", return_value=[]) as matching_paths,
             patch.object(
                 MODULE,
@@ -212,11 +242,11 @@ Adopted complete pull-request receipts and a curated Engineering record for the 
         ):
             with self.assertRaisesRegex(ValueError, "invalid type"):
                 MODULE.record_index_and_changed_types_at("head", [path])
-        matching_paths.assert_called_once_with("head", "example")
+        matching_paths.assert_called_once_with("head", {"example"})
 
     def test_canonical_records_must_be_superseded_instead_of_deleted(self):
         path = "docs/engineering/records/example.md"
-        with patch.object(MODULE, "git_object_exists", return_value=False):
+        with patch.object(MODULE, "git_objects_exist", return_value=set()):
             with self.assertRaisesRegex(ValueError, "cannot be deleted"):
                 MODULE.record_index_and_changed_types_at("head", [path])
 
@@ -319,11 +349,25 @@ Adopted complete pull-request receipts and a curated Engineering record for the 
 
     def test_accepted_record_revisions_cannot_be_replaced_in_place(self):
         path = "docs/engineering/records/session.md"
-        with patch.object(MODULE, "git_object_exists", return_value=True):
+        with patch.object(MODULE, "git_objects_exist", return_value={path}):
             with self.assertRaisesRegex(ValueError, "immutable.*new record"):
                 MODULE.validate_record_history("base", [path])
-        with patch.object(MODULE, "git_object_exists", return_value=False):
+        with patch.object(MODULE, "git_objects_exist", return_value=set()):
             MODULE.validate_record_history("base", [path])
+
+    def test_record_existence_checks_are_batched(self):
+        present = "docs/engineering/records/present.md"
+        missing = "docs/engineering/records/missing.md"
+        result = Mock(
+            stdout=f"{'0' * 40} blob 123\nhead:{missing} missing\n",
+        )
+        with patch.object(MODULE.subprocess, "run", return_value=result) as run:
+            self.assertEqual(MODULE.git_objects_exist("head", [present, missing]), {present})
+        run.assert_called_once()
+        self.assertEqual(
+            run.call_args.kwargs["input"],
+            f"head:{present}\nhead:{missing}\n",
+        )
 
     def test_record_lookup_parses_only_changed_records_and_exact_receipt_references(self):
         validator = SCRIPT.read_text(encoding="utf-8")
@@ -331,7 +375,7 @@ Adopted complete pull-request receipts and a curated Engineering record for the 
         changed_path = "docs/engineering/records/session.md"
         linked_path = "docs/engineering/records/shared.md"
         with (
-            patch.object(MODULE, "git_object_exists", return_value=True),
+            patch.object(MODULE, "git_objects_exist", return_value={changed_path}),
             patch.object(MODULE, "matching_record_paths", return_value=[linked_path]) as matching_paths,
             patch.object(MODULE, "bounded_git_blob", side_effect=AssertionError("must not buffer the record corpus")),
             patch.object(
@@ -350,7 +394,7 @@ Adopted complete pull-request receipts and a curated Engineering record for the 
                     ["capability-dossier"],
                 ),
             )
-        matching_paths.assert_has_calls([call("head", "session"), call("head", "shared")], any_order=True)
+        matching_paths.assert_called_once_with("head", {"session", "shared"})
         self.assertEqual(iter_frontmatters_at.call_count, 2)
         iter_frontmatters_at.assert_any_call("head", [changed_path])
         iter_frontmatters_at.assert_any_call("head", [linked_path])
@@ -359,7 +403,7 @@ Adopted complete pull-request receipts and a curated Engineering record for the 
         changed_path = "docs/engineering/records/session.md"
         duplicate_path = "docs/engineering/records/other.md"
         with (
-            patch.object(MODULE, "git_object_exists", return_value=True),
+            patch.object(MODULE, "git_objects_exist", return_value={changed_path}),
             patch.object(MODULE, "matching_record_paths", return_value=[changed_path, duplicate_path]) as matching_paths,
             patch.object(
                 MODULE,
@@ -374,7 +418,7 @@ Adopted complete pull-request receipts and a curated Engineering record for the 
         ):
             with self.assertRaisesRegex(ValueError, "Duplicate canonical"):
                 MODULE.record_index_and_changed_types_at("head", [changed_path], [])
-        matching_paths.assert_called_once_with("head", "session")
+        matching_paths.assert_called_once_with("head", {"session"})
 
     def test_record_frontmatters_are_requested_in_bounded_batches(self):
         paths = [f"docs/engineering/records/record-{index}.md" for index in range(65)]

@@ -346,15 +346,41 @@ def bounded_git_blob(revision: str, path: str):
     return blob_result.stdout.decode("utf-8", errors="strict")
 
 
-def git_object_exists(revision: str, path: str):
-    return subprocess.run(
-        ["git", "cat-file", "-e", f"{revision}:{path}"],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    ).returncode == 0
+def git_objects_exist(revision: str, paths: list[str]):
+    unique_paths = list(dict.fromkeys(paths))
+    if not unique_paths:
+        return set()
+    result = subprocess.run(
+        ["git", "cat-file", "--batch-check"],
+        input="".join(f"{revision}:{path}\n" for path in unique_paths),
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    headers = result.stdout.splitlines()
+    if len(headers) != len(unique_paths):
+        raise ValueError("Unable to check canonical Engineering record Git objects.")
+    existing = set()
+    for path, header in zip(unique_paths, headers):
+        if header.endswith(" missing"):
+            continue
+        parts = header.split()
+        if len(parts) != 3 or parts[1] != "blob":
+            raise ValueError("Unable to check canonical Engineering record Git objects.")
+        existing.add(path)
+    return existing
 
 
-def matching_record_paths(revision: str, record_id: str):
+def matching_record_paths(revision: str, record_ids: set[str]):
+    if not record_ids:
+        return []
+    grep_patterns = []
+    for record_id in sorted(record_ids):
+        if not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", record_id):
+            raise ValueError(f"Canonical Engineering record reference has an invalid id: {record_id}.")
+        grep_patterns.extend(
+            ["-e", rf"^[[:space:]]*id[[:space:]]*:[[:space:]]*{record_id}[[:space:]]*$"]
+        )
     result = subprocess.run(
         [
             "git",
@@ -362,7 +388,7 @@ def matching_record_paths(revision: str, record_id: str):
             "-l",
             "-E",
             "-z",
-            rf"^[[:space:]]*id[[:space:]]*:[[:space:]]*{record_id}[[:space:]]*$",
+            *grep_patterns,
             revision,
             "--",
             "docs/engineering/records",
@@ -461,26 +487,25 @@ def record_index_and_changed_types_at(
     changed_paths: list[str],
     required_refs: list[str] | None = None,
 ):
-    for path in changed_paths:
-        if not git_object_exists(revision, path):
-            raise ValueError(
-                f"Canonical Engineering records cannot be deleted; publish a superseding record instead: {path}."
-            )
+    missing_changed_paths = set(changed_paths) - git_objects_exist(revision, changed_paths)
+    if missing_changed_paths:
+        path = sorted(missing_changed_paths)[0]
+        raise ValueError(
+            f"Canonical Engineering records cannot be deleted; publish a superseding record instead: {path}."
+        )
 
     changed_metadata = list(iter_frontmatters_at(revision, sorted(changed_paths)))
     record_ids = {
         reference.rsplit("@", 1)[0]
         for reference in required_refs or []
     }
-    record_ids.update(
-        metadata.get("id")
-        for _, metadata in changed_metadata
-        if isinstance(metadata.get("id"), str)
-    )
+    for path, metadata in changed_metadata:
+        record_id = metadata.get("id")
+        if not isinstance(record_id, str) or not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", record_id):
+            raise ValueError(f"Canonical Engineering record has an invalid id: {path}.")
+        record_ids.add(record_id)
     paths = set(changed_paths)
-    for record_id in record_ids:
-        if re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", record_id):
-            paths.update(matching_record_paths(revision, record_id))
+    paths.update(matching_record_paths(revision, record_ids))
 
     changed_path_set = set(changed_paths)
     index = {}
@@ -509,12 +534,13 @@ def record_index_and_changed_types_at(
 
 
 def validate_record_history(base: str, changed_paths: list[str]):
-    for path in sorted(changed_paths):
-        if git_object_exists(base, path):
-            raise ValueError(
-                "An accepted canonical Engineering record revision is immutable; "
-                f"publish a new record instead of replacing it in place: {path}."
-            )
+    replaced_paths = git_objects_exist(base, changed_paths)
+    if replaced_paths:
+        path = sorted(replaced_paths)[0]
+        raise ValueError(
+            "An accepted canonical Engineering record revision is immutable; "
+            f"publish a new record instead of replacing it in place: {path}."
+        )
 
 
 def main():
