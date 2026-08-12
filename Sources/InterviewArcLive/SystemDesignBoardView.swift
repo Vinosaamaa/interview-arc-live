@@ -85,7 +85,7 @@ struct SystemDesignBoardView: View {
                 isEnabled: model.isInspectingBoardRevision,
                 title: "Return to board draft"
             ) {
-                Task { await model.returnToBoardDraft() }
+                handleEnhancedEditorCommand(.returnToDraft)
             }
             .optionalBoardAccessibilityAction(
                 isEnabled: model.canSaveBoardRevision
@@ -98,20 +98,20 @@ struct SystemDesignBoardView: View {
                 isEnabled: model.snapshot?.board.revisions.isEmpty == false,
                 title: "Browse board revisions"
             ) {
-                isRevisionHistoryPresented = true
+                handleEnhancedEditorCommand(.showRevisions)
             }
             .optionalBoardAccessibilityAction(
                 isEnabled: model.canAttachBoardRevision,
                 title: "Attach board revision"
             ) {
-                Task { await model.attachSelectedBoardRevision() }
+                handleEnhancedEditorCommand(.attachRevision)
             }
             .optionalBoardAccessibilityAction(
                 isEnabled: model.canExportBoardRevision
                     && !model.isBoardExporting,
                 title: "Export board revision"
             ) {
-                Task { await model.exportSelectedBoardRevision() }
+                handleEnhancedEditorCommand(.exportRevision)
             }
         case .brief:
             briefSurface
@@ -293,7 +293,7 @@ struct SystemDesignBoardView: View {
     private func revisionPrimaryAction(compact: Bool) -> some View {
         if model.isInspectingBoardRevision {
             Button {
-                Task { await model.returnToBoardDraft() }
+                handleEnhancedEditorCommand(.returnToDraft)
             } label: {
                 adaptiveRailLabel(
                     "Return to draft",
@@ -409,7 +409,7 @@ struct SystemDesignBoardView: View {
 
     private func attachRevisionButton(compact: Bool) -> some View {
         Button {
-            Task { await model.attachSelectedBoardRevision() }
+            handleEnhancedEditorCommand(.attachRevision)
         } label: {
             adaptiveRailLabel(
                 "Attach revision",
@@ -434,7 +434,7 @@ struct SystemDesignBoardView: View {
 
     private func exportRevisionButton(compact: Bool) -> some View {
         Button {
-            Task { await model.exportSelectedBoardRevision() }
+            handleEnhancedEditorCommand(.exportRevision)
         } label: {
             if model.isBoardExporting {
                 ProgressView()
@@ -1167,11 +1167,7 @@ struct SystemDesignBoardView: View {
     }
 
     private var enhancedEditorControls: ExcalidrawBoardControls {
-        let footer = BoardFooterPresentation.make(
-            errorMessage: model.boardErrorMessage,
-            exportMessage: model.boardExportMessage,
-            interactionFeedback: interactionFeedback
-        )
+        let footer = boardFooterPresentation
         return ExcalidrawBoardControls(
             revisionStatus: model.boardRevisionStatusPresentation.fullText,
             notice: footer.tone == .neutral ? nil : footer.text,
@@ -1207,11 +1203,7 @@ struct SystemDesignBoardView: View {
     }
 
     private var boardFooter: some View {
-        let presentation = BoardFooterPresentation.make(
-            errorMessage: model.boardErrorMessage,
-            exportMessage: model.boardExportMessage,
-            interactionFeedback: interactionFeedback
-        )
+        let presentation = boardFooterPresentation
 
         return HStack(spacing: 7) {
             Image(systemName: presentation.systemImage)
@@ -1232,6 +1224,14 @@ struct SystemDesignBoardView: View {
         .accessibilityElement(children: .combine)
         .accessibilityLabel("Board status")
         .accessibilityValue(presentation.text)
+    }
+
+    private var boardFooterPresentation: BoardFooterPresentation {
+        BoardFooterPresentation.make(
+            errorMessage: model.boardErrorMessage,
+            exportMessage: model.boardExportMessage,
+            interactionFeedback: interactionFeedback
+        )
     }
 
     private func boxLayer(_ document: BoardDocument) -> some View {

@@ -59,12 +59,13 @@ verification.
 - Canvas manipulation improves without changing durable Board evidence or
   export contracts.
 - The signed app grows by the local editor JavaScript, CSS, and font resources.
-- Excalidraw's own local toolbar is the primary enhanced-canvas Interface.
-  Rectangle, diamond, ellipse, arrow, line/freehand, text, eraser, selection,
-  and hand/pan tools are supported by the canonical model and deterministic
-  exports. Files, images, libraries, embeds, sharing, and cloud features remain
-  unavailable; adding another element requires a native domain decision and
-  deterministic codec/export coverage first.
+- Excalidraw's own local toolbar is the primary enhanced-canvas interface.
+  Rectangle, diamond, ellipse, connector, line/freehand, and text elements are
+  persisted by the canonical model and covered by deterministic exports.
+  Eraser, selection, and hand/pan are interaction tools and do not create
+  canonical elements. Files, images, libraries, embeds, sharing, and cloud
+  features remain unavailable; adding another element requires a native domain
+  decision and deterministic codec/export coverage first.
 - A broken or rejected editor update cannot replace the last valid native
   Board Document.
 - Third-party licenses and bundled-font notices ship with the editor resources

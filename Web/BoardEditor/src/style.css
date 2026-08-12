@@ -92,6 +92,8 @@ body {
 }
 
 .interview-arc-board-controls {
+  position: fixed;
+  z-index: 5;
   display: flex;
   align-items: center;
   gap: 6px;
@@ -100,6 +102,11 @@ body {
   border-radius: 12px;
   background: var(--island-bg-color, #fbfaf7);
   box-shadow: 0 3px 12px rgb(31 41 55 / 10%);
+  visibility: hidden;
+}
+
+.interview-arc-board-controls[data-positioned="true"] {
+  visibility: visible;
 }
 
 .interview-arc-board-status {
@@ -169,23 +176,16 @@ body {
   color: #4b3abf;
 }
 
-/* The room's Board pane is normally narrower than a standalone Excalidraw
-   window. Keep Interview Arc's durable actions in the Excalidraw chrome, but
-   move them below the centered drawing toolbar until both islands fit. */
-@media (max-width: 1199px) {
-  .interview-arc-board-controls {
-    margin-top: 72px;
-    transform: translateX(-52px);
-  }
-
+.interview-arc-board-controls[data-compact="true"]
   .interview-arc-board-status,
+.interview-arc-board-controls[data-compact="true"]
   .interview-arc-board-action__label {
-    display: none;
-  }
+  display: none;
+}
 
+.interview-arc-board-controls[data-compact="true"]
   .interview-arc-board-action {
-    padding: 0;
-  }
+  padding: 0;
 }
 
 @media (prefers-reduced-motion: reduce) {
