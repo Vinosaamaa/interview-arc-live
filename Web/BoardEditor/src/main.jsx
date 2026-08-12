@@ -4,6 +4,7 @@ import React, {
   useLayoutEffect,
   useRef,
   useState,
+  useSyncExternalStore,
 } from "react";
 import { createRoot } from "react-dom/client";
 import {
@@ -27,6 +28,12 @@ import {
   boardChromeLayout,
   createBoardToolbarGeometryAdapter,
 } from "./board-chrome.js";
+import { reconcileNativeElementVersions } from "./native-reconcile.js";
+import {
+  nativeAppStatePatchRequired,
+  nativeControlsEqual,
+} from "./native-state.js";
+import { createSemanticOverlayStore } from "./overlay-store.js";
 import "./style.css";
 
 const bridge = window.webkit?.messageHandlers?.boardBridge;
@@ -204,6 +211,20 @@ const SemanticNodeOverlay = ({ elements, appState }) => {
     </div>
   );
 };
+
+const SemanticOverlayHost = React.memo(({ store }) => {
+  const scene = useSyncExternalStore(
+    store.subscribe,
+    store.getSnapshot,
+    store.getSnapshot,
+  );
+  return (
+    <SemanticNodeOverlay
+      elements={scene.elements}
+      appState={scene.appState}
+    />
+  );
+});
 
 const normalizeScene = (elements, appState, files, currentBoxKind) => {
   const live = getNonDeletedElements(elements);
@@ -556,6 +577,7 @@ const installNativeWindowBridge = ({
   let deferredNativeUpdate = null;
   let deferredChange = null;
   let receivedUserInputDuringNativeUpdate = false;
+  let nativeSceneMutationCount = 0;
 
   const runOrDeferNativeUpdate = (update) => {
     if (publication.snapshot().isPointerInteractionActive) {
@@ -594,16 +616,9 @@ const installNativeWindowBridge = ({
 
   const nativeAppState = (
     scene,
-    { appliesTool = false, appliesZoom = false, transparent = false } = {},
+    { appliesZoom = false, transparent = false } = {},
   ) => {
-    setReadOnly(Boolean(scene.readOnly));
-    synchronizeControls(scene.controls);
     currentBoxKindRef.current = scene.boxKind ?? currentBoxKindRef.current;
-    if (appliesTool && !scene.readOnly) {
-      const activeTool = excalTypeForNativeTool(scene.tool, scene.boxKind);
-      previousActiveToolRef.current = activeTool;
-      api.setActiveTool({ type: activeTool });
-    }
     const zoom = Number(scene.zoom);
     return {
       selectedElementIds: scene.selectedID
@@ -617,14 +632,34 @@ const installNativeWindowBridge = ({
     };
   };
 
+  const synchronizePresentation = (scene) => {
+    const nextReadOnly = Boolean(scene.readOnly);
+    setReadOnly((current) => current === nextReadOnly ? current : nextReadOnly);
+    const nextControls = scene.controls ?? defaultNativeControls;
+    if (!nativeControlsEqual(nativeControlsRef.current, nextControls)) {
+      synchronizeControls(nextControls);
+    }
+  };
+
+  const updateExcalidrawScene = (sceneData) => {
+    nativeSceneMutationCount += 1;
+    api.updateScene({ ...sceneData, commitToHistory: false });
+  };
+
   window.interviewArcLoad = (serializedScene) => {
     const scene = JSON.parse(serializedScene);
     const elements = toExcalidrawElements(scene);
+    synchronizePresentation(scene);
     runOrDeferNativeUpdate(() => {
       const shouldRevealInitialContent = !hasLoadedScene;
       hasLoadedScene = true;
       const generation = beginNativeUpdate();
-      api.updateScene({
+      if (shouldRevealInitialContent && !scene.readOnly) {
+        const activeTool = excalTypeForNativeTool(scene.tool, scene.boxKind);
+        previousActiveToolRef.current = activeTool;
+        api.setActiveTool({ type: activeTool });
+      }
+      updateExcalidrawScene({
         elements,
         appState: nativeAppState(scene, {
           appliesTool: shouldRevealInitialContent,
@@ -647,14 +682,28 @@ const installNativeWindowBridge = ({
 
   window.interviewArcSetState = (serializedState) => {
     const state = JSON.parse(serializedState);
+    synchronizePresentation(state);
     runOrDeferNativeUpdate(() => {
-      const generation = beginNativeUpdate();
-      api.updateScene({
-        appState: nativeAppState(state, {
-          appliesTool: true,
-          appliesZoom: true,
-        }),
+      const desiredTool = !state.readOnly
+        ? excalTypeForNativeTool(state.tool, state.boxKind)
+        : null;
+      const appState = nativeAppState(state, {
+        appliesZoom: true,
       });
+      const currentAppState = api.getAppState();
+      const needsTool = desiredTool !== null
+        && currentAppState.activeTool.type !== desiredTool;
+      const needsAppState = nativeAppStatePatchRequired(
+        currentAppState,
+        appState,
+      );
+      if (!needsTool && !needsAppState) return;
+      const generation = beginNativeUpdate();
+      if (needsTool) {
+        previousActiveToolRef.current = desiredTool;
+        api.setActiveTool({ type: desiredTool });
+      }
+      if (needsAppState) updateExcalidrawScene({ appState });
       finishNativeUpdate(generation);
     });
   };
@@ -664,10 +713,15 @@ const installNativeWindowBridge = ({
   // active tool so ID/bounds/connector corrections never flash or jump.
   window.interviewArcReconcile = (serializedScene) => {
     const scene = JSON.parse(serializedScene);
-    const elements = toExcalidrawElements(scene);
+    const elements = reconcileNativeElementVersions(
+      toExcalidrawElements(scene),
+      api.getSceneElements(),
+      (id, version) => stableSeed(`${id}:reconcile:${version}`),
+    );
+    synchronizePresentation(scene);
     runOrDeferNativeUpdate(() => {
       const generation = beginNativeUpdate();
-      api.updateScene({
+      updateExcalidrawScene({
         elements,
         // Canonicalization may replace IDs/bounds/routes, but it must never
         // reset the viewport or tool that the person is actively using.
@@ -688,6 +742,7 @@ const installNativeWindowBridge = ({
     activeTool: api.getAppState().activeTool.type,
     zoom: Number(api.getAppState().zoom?.value ?? 1),
     nativeControls: nativeControlsRef.current,
+    nativeSceneMutationCount,
   });
 
   return {
@@ -808,10 +863,6 @@ const BoardChromeControls = ({ controls, onAction }) => {
 function BoardEditor() {
   const [readOnly, setReadOnly] = useState(false);
   const [nativeControls, setNativeControls] = useState(defaultNativeControls);
-  const [overlayScene, setOverlayScene] = useState({
-    elements: [],
-    appState: null,
-  });
   const apiRef = useRef(null);
   // Start closed: Excalidraw publishes an empty scene during bootstrap, before
   // Swift has supplied the durable Board document. The native load adopts the
@@ -819,7 +870,14 @@ function BoardEditor() {
   const loadingRef = useRef(true);
   const nativeBridgeRef = useRef(null);
   const nativeControlsRef = useRef(defaultNativeControls);
-  const overlayFingerprintRef = useRef("");
+  const overlayStoreRef = useRef(null);
+  if (overlayStoreRef.current === null) {
+    overlayStoreRef.current = createSemanticOverlayStore({
+      elements: [],
+      appState: null,
+      fingerprint: "",
+    });
+  }
   const pointerSubscriptionsRef = useRef([]);
   const currentBoxKindRef = useRef("generic");
   const previousActiveToolRef = useRef("selection");
@@ -844,10 +902,7 @@ function BoardEditor() {
 
   const updateSemanticOverlay = useCallback((elements, appState) => {
     const snapshot = semanticOverlaySnapshot(elements, appState);
-    const { fingerprint } = snapshot;
-    if (overlayFingerprintRef.current === fingerprint) return;
-    overlayFingerprintRef.current = fingerprint;
-    setOverlayScene({ elements: snapshot.elements, appState });
+    overlayStoreRef.current.publish({ ...snapshot, appState });
   }, []);
 
   const handleChange = useCallback((elements, appState, files) => {
@@ -1006,10 +1061,7 @@ function BoardEditor() {
         controls={nativeControls}
         onAction={handleNativeAction}
       />
-      <SemanticNodeOverlay
-        elements={overlayScene.elements}
-        appState={overlayScene.appState}
-      />
+      <SemanticOverlayHost store={overlayStoreRef.current} />
     </main>
   );
 }

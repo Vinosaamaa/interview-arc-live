@@ -202,6 +202,17 @@ struct ExcalidrawBoardEditorView: NSViewRepresentable {
             let boxKind: BoardNodeKind
             let controls: ExcalidrawBoardControls
             let isReadOnly: Bool
+
+            var state: ExcalidrawBoardState {
+                ExcalidrawBoardState(
+                    selectedID: selectedElementID?.rawValue,
+                    zoom: zoom,
+                    readOnly: isReadOnly,
+                    tool: tool.rawValue,
+                    boxKind: boxKind.rawValue,
+                    controls: controls
+                )
+            }
         }
 
         private weak var webView: WKWebView?
@@ -296,8 +307,15 @@ struct ExcalidrawBoardEditorView: NSViewRepresentable {
             snapshot = next
             guard isReady else { return }
             if lastLoadedDocument != document {
-                scheduleLoad(next)
-            } else if previous != next {
+                if lastLoadedDocument == nil {
+                    scheduleLoad(next)
+                } else {
+                    scheduleReconcile(next)
+                }
+            } else if ExcalidrawBoardUpdatePolicy.requiresStateUpdate(
+                previous: previous?.state,
+                next: next.state
+            ) {
                 if pendingReloadTask != nil {
                     scheduleLoad(next)
                 } else if pendingReconcileTask != nil {
@@ -473,8 +491,19 @@ struct ExcalidrawBoardEditorView: NSViewRepresentable {
                 // disruptive full scene load for every accepted drag or edit.
                 let previousLoadedDocument = lastLoadedDocument
                 lastLoadedDocument = decoded.document
+                let previousSnapshot = self.snapshot
+                self.snapshot = Snapshot(
+                    document: decoded.document,
+                    selectedElementID: decoded.selectedElementID,
+                    zoom: decoded.zoom ?? snapshot.zoom,
+                    tool: decoded.tool ?? snapshot.tool,
+                    boxKind: decoded.boxKind ?? snapshot.boxKind,
+                    controls: snapshot.controls,
+                    isReadOnly: snapshot.isReadOnly
+                )
                 guard onSceneChange(decoded) else {
                     lastLoadedDocument = previousLoadedDocument
+                    self.snapshot = previousSnapshot
                     onIssue("That canvas change could not be saved. The last valid Board remains available.")
                     scheduleLoad(snapshot)
                     return false
@@ -536,11 +565,6 @@ struct ExcalidrawBoardEditorView: NSViewRepresentable {
                 guard !Task.isCancelled, let self else { return }
                 self.pendingReconcileTask = nil
                 self.reconcile(snapshot)
-                // Geometry reconciliation deliberately preserves the live
-                // viewport/tool. Follow it with the newest authoritative
-                // state so a simultaneous native zoom or tool command is not
-                // lost while this task yields.
-                self.sendState(snapshot)
             }
         }
 

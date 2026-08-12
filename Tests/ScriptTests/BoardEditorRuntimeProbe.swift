@@ -225,6 +225,8 @@ private final class RuntimeProbe: NSObject,
                   const scene = JSON.parse(serialized);
                   const count = window.interviewArcLoad(serialized);
                   window.setTimeout(() => {
+                    const reconciledScene = structuredClone(scene);
+                    reconciledScene.elements[0].x = 450.14453125;
                     const currentState = JSON.stringify({
                       selectedID: "runtime-probe-box",
                       zoom: 1.25,
@@ -234,8 +236,17 @@ private final class RuntimeProbe: NSObject,
                       controls: scene.controls
                     });
                     window.interviewArcSetState(currentState);
-                    window.interviewArcReconcile(serialized);
-                    window.interviewArcSetState(currentState);
+                    window.interviewArcReconcile(JSON.stringify(reconciledScene));
+                    window.setTimeout(() => {
+                      const controlsOnlyState = JSON.parse(currentState);
+                      controlsOnlyState.controls = {
+                        ...controlsOnlyState.controls,
+                        revisionStatus: "Native sync confirmed"
+                      };
+                      window.interviewArcSetState(
+                        JSON.stringify(controlsOnlyState)
+                      );
+                    }, 100);
                   }, 250);
                   return count;
                 })()
@@ -438,10 +449,14 @@ private final class RuntimeProbe: NSObject,
                 && object["chromeActionableButtonsInViewport"] as? Bool == true
                 && object["chromeFitsWithoutOverlap"] as? Bool == true
                 && loadedElementCount == 3
-                && containsRuntimeProbeBox(object["snapshot"])
+                && containsMovedRuntimeProbeBox(object["snapshot"])
                 && containsBoundRuntimeProbeConnector(object["snapshot"])
                 && containsActiveHandTool(object["runtime"])
                 && containsZoom(object["runtime"], expected: 1.25)
+                && containsNativeSceneMutationCount(
+                    object["runtime"],
+                    expected: 3
+                )
                 && flushedCommands.contains("saveRevision")
                 && directCommands.contains("exportRevision")
                 && sceneEventsPreserveNativeDocument()
@@ -460,7 +475,7 @@ private final class RuntimeProbe: NSObject,
         }
     }
 
-    private func containsRuntimeProbeBox(_ rawSnapshot: Any?) -> Bool {
+    private func containsMovedRuntimeProbeBox(_ rawSnapshot: Any?) -> Bool {
         guard let snapshot = rawSnapshot as? [String: Any],
               let elements = snapshot["elements"] as? [[String: Any]] else {
             return false
@@ -469,6 +484,7 @@ private final class RuntimeProbe: NSObject,
             element["type"] as? String == "box"
                 && element["boardID"] as? String == "runtime-probe-box"
                 && element["label"] as? String == "API service"
+                && abs(((element["x"] as? NSNumber)?.doubleValue ?? 0) - 450.14453125) <= 0.000_1
         }
     }
 
@@ -522,6 +538,18 @@ private final class RuntimeProbe: NSObject,
                 && containsRuntimeProbeQueue(event)
                 && containsBoundRuntimeProbeConnector(event)
         }
+    }
+
+    private func containsNativeSceneMutationCount(
+        _ rawRuntime: Any?,
+        expected: Int
+    ) -> Bool {
+        guard let runtime = rawRuntime as? [String: Any],
+              let count = (runtime["nativeSceneMutationCount"] as? NSNumber)?
+                .intValue else {
+            return false
+        }
+        return count == expected
     }
 
     private func complete(success: Bool, detail: String) {

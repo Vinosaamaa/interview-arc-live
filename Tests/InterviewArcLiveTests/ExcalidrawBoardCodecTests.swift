@@ -103,7 +103,7 @@ final class ExcalidrawBoardCodecTests: XCTestCase {
         XCTAssertEqual(encoded[2]["nodeKind"] as? String, "queue")
     }
 
-    func testNewWebElementsReceiveStableBoardIDsBindingsAndBounds() throws {
+    func testNewWebElementsReceiveStableBoardIDsBindingsAndWorldSpaceGeometry() throws {
         let change: [String: Any] = [
             "event": "scene",
             "unsupportedElementCount": 0,
@@ -185,14 +185,14 @@ final class ExcalidrawBoardCodecTests: XCTestCase {
               case .stroke(let stroke) = result.document.elements[4] else {
             return XCTFail("Expected the full supported Board element set")
         }
-        XCTAssertEqual(first.frame.origin, BoardPoint(x: 0, y: 40))
-        XCTAssertEqual(second.frame.origin, BoardPoint(x: 1_104, y: 736))
+        XCTAssertEqual(first.frame.origin, BoardPoint(x: -20, y: 40))
+        XCTAssertEqual(second.frame.origin, BoardPoint(x: 1_160, y: 760))
         XCTAssertEqual(connector.start.elementID, first.id)
         XCTAssertEqual(connector.end.elementID, second.id)
         XCTAssertEqual(connector.start.anchorPolicy, .automatic)
-        XCTAssertEqual(label.origin, BoardPoint(x: 960, y: 768))
-        XCTAssertEqual(stroke.points.first, BoardPoint(x: 0, y: 410))
-        XCTAssertEqual(stroke.points.last, BoardPoint(x: 180, y: 800))
+        XCTAssertEqual(label.origin, BoardPoint(x: 1_190, y: 790))
+        XCTAssertEqual(stroke.points.first, BoardPoint(x: -4, y: 410))
+        XCTAssertEqual(stroke.points.last, BoardPoint(x: 180, y: 900))
     }
 
     func testExcalidrawDiamondAndEllipseBecomeCanonicalNodeKinds() throws {
@@ -333,7 +333,7 @@ final class ExcalidrawBoardCodecTests: XCTestCase {
         }
     }
 
-    func testExistingGeometryNormalizationRequiresVisibleReload() throws {
+    func testExistingWorldSpaceMoveDoesNotRequireVisibleReload() throws {
         let original = BoardBox(
             id: BoardElementID("box-owned"),
             frame: BoardRect(
@@ -355,8 +355,8 @@ final class ExcalidrawBoardCodecTests: XCTestCase {
                 box(
                     webID: "box-owned",
                     boardID: "box-owned",
-                    x: 1_190,
-                    y: 790,
+                    x: -140,
+                    y: -220,
                     label: "Owned",
                     kind: "service"
                 ),
@@ -367,12 +367,54 @@ final class ExcalidrawBoardCodecTests: XCTestCase {
             from: change,
             currentDocument: current
         )
-        XCTAssertTrue(result.requiresReload)
-        guard case .box(let normalized) = result.document.elements.first else {
-            return XCTFail("Expected normalized existing box")
+        XCTAssertFalse(result.requiresReload)
+        guard case .box(let moved) = result.document.elements.first else {
+            return XCTFail("Expected moved existing box")
         }
-        XCTAssertEqual(normalized.id, original.id)
-        XCTAssertEqual(normalized.frame.origin, BoardPoint(x: 1_104, y: 736))
+        XCTAssertEqual(moved.id, original.id)
+        XCTAssertEqual(moved.frame.origin, BoardPoint(x: -140, y: -220))
+    }
+
+    func testDocumentOnlyObservationDoesNotEchoStateIntoExcalidraw() {
+        let controls = ExcalidrawBoardControls(
+            revisionStatus: "Unsaved board",
+            notice: nil,
+            noticeIsError: false,
+            isInspecting: false,
+            canSave: true,
+            hasRevisions: false,
+            canAttach: false,
+            canExport: false,
+            isExporting: false
+        )
+        let state = ExcalidrawBoardState(
+            selectedID: "box-1",
+            zoom: 1,
+            readOnly: false,
+            tool: "select",
+            boxKind: "generic",
+            controls: controls
+        )
+
+        XCTAssertFalse(
+            ExcalidrawBoardUpdatePolicy.requiresStateUpdate(
+                previous: state,
+                next: state
+            )
+        )
+        XCTAssertTrue(
+            ExcalidrawBoardUpdatePolicy.requiresStateUpdate(
+                previous: state,
+                next: ExcalidrawBoardState(
+                    selectedID: "box-2",
+                    zoom: 1,
+                    readOnly: false,
+                    tool: "select",
+                    boxKind: "generic",
+                    controls: controls
+                )
+            )
+        )
     }
 
     func testOneShotCreationToolsReturnToNativeSelectAfterAcceptedCreation() {
