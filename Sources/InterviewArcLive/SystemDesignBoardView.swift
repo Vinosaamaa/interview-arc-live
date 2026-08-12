@@ -23,6 +23,13 @@ struct SystemDesignBoardView: View {
         model.enhancedBoardBridgeController
     }
 
+    private var showsNativeBoardRevisionControls: Bool {
+        BoardRailPresentation.showsNativeRevisionControls(
+            selectedWorkSurface: model.selectedWorkSurface,
+            enhancedEditorIsReady: enhancedEditorIsReady
+        )
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             revisionRail
@@ -149,11 +156,8 @@ struct SystemDesignBoardView: View {
                     workSurfaceStatus(compact: true)
                 }
                 Spacer(minLength: BoardRailWidthBudget.compactRevisionSpacerWidth)
-                if model.selectedWorkSurface == .board {
-                    revisionPrimaryAction(compact: true)
-                    revisionMenu(compact: true)
-                    attachRevisionButton(compact: true)
-                    exportRevisionButton(compact: true)
+                if showsNativeBoardRevisionControls {
+                    nativeRevisionControls(compact: true)
                 }
             } else {
                 Spacer(
@@ -163,12 +167,8 @@ struct SystemDesignBoardView: View {
                 if model.selectedWorkSurface == .board {
                     HStack(spacing: 18) {
                         revisionStatus(compact: false)
-                        if !enhancedEditorIsReady {
-                            revisionPrimaryAction(compact: false)
-                            revisionMenu(compact: false)
-                            railDivider
-                            attachRevisionButton(compact: false)
-                            exportRevisionButton(compact: false)
+                        if showsNativeBoardRevisionControls {
+                            nativeRevisionControls(compact: false)
                         }
                     }
                     .fixedSize()
@@ -191,6 +191,7 @@ struct SystemDesignBoardView: View {
     }
 
     private var compactRevisionActionCount: Int {
+        guard showsNativeBoardRevisionControls else { return 0 }
         var count = 2 // Attach and Export are always discoverable.
         if model.isInspectingBoardRevision || model.isBoardDraftDirty {
             count += 1
@@ -199,6 +200,17 @@ struct SystemDesignBoardView: View {
             count += 1
         }
         return count
+    }
+
+    @ViewBuilder
+    private func nativeRevisionControls(compact: Bool) -> some View {
+        revisionPrimaryAction(compact: compact)
+        revisionMenu(compact: compact)
+        if !compact {
+            railDivider
+        }
+        attachRevisionButton(compact: compact)
+        exportRevisionButton(compact: compact)
     }
 
     private func workSurfaceSwitcher(compact: Bool) -> some View {
@@ -2540,6 +2552,13 @@ enum BoardRailWidthBudget {
 }
 
 enum BoardRailPresentation {
+    static func showsNativeRevisionControls(
+        selectedWorkSurface: SystemDesignWorkSurfacePane,
+        enhancedEditorIsReady: Bool
+    ) -> Bool {
+        selectedWorkSurface == .board && !enhancedEditorIsReady
+    }
+
     static func compactRevisionStatus(
         _ status: BoardRevisionStatusPresentation
     ) -> String {
