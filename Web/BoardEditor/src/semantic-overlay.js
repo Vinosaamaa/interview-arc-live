@@ -10,12 +10,15 @@ const relevantElement = (element) =>
     || (element.type === "arrow" && element.customData?.iaLabel)
   );
 
+export const semanticOverlayElements = (elements) =>
+  (elements ?? []).filter(relevantElement);
+
 const append = (fingerprint, value) => {
   const text = String(value ?? "");
   return `${fingerprint}${text.length}:${text}`;
 };
 
-export const semanticOverlayFingerprint = (elements, appState) => {
+const fingerprintRelevantElements = (elements, appState) => {
   let fingerprint = "";
   fingerprint = append(fingerprint, number(appState?.zoom?.value ?? 1));
   fingerprint = append(fingerprint, number(appState?.scrollX));
@@ -23,8 +26,7 @@ export const semanticOverlayFingerprint = (elements, appState) => {
   fingerprint = append(fingerprint, number(appState?.offsetLeft));
   fingerprint = append(fingerprint, number(appState?.offsetTop));
 
-  for (const element of elements ?? []) {
-    if (!relevantElement(element)) continue;
+  for (const element of elements) {
     fingerprint = append(fingerprint, element.id);
     fingerprint = append(fingerprint, element.type);
     fingerprint = append(fingerprint, element.version);
@@ -43,4 +45,15 @@ export const semanticOverlayFingerprint = (elements, appState) => {
     }
   }
   return fingerprint;
+};
+
+export const semanticOverlayFingerprint = (elements, appState) =>
+  fingerprintRelevantElements(semanticOverlayElements(elements), appState);
+
+export const semanticOverlaySnapshot = (elements, appState) => {
+  const relevantElements = semanticOverlayElements(elements);
+  return {
+    elements: relevantElements,
+    fingerprint: fingerprintRelevantElements(relevantElements, appState),
+  };
 };

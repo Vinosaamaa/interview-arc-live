@@ -72,6 +72,7 @@ private final class RuntimeProbe: NSObject,
     private var failures: [String] = []
     private var isReady = false
     private var sceneEventCount = 0
+    private var loadedElementCount: Int?
 
     init(application: NSApplication) {
         self.application = application
@@ -96,9 +97,7 @@ private final class RuntimeProbe: NSObject,
         case "ready":
             guard !isReady else { return }
             isReady = true
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
-                self.finish()
-            }
+            loadNonEmptySceneFixture()
         case "failure":
             failures.append(
                 object["message"] as? String ?? "editor reported failure"
@@ -132,6 +131,62 @@ private final class RuntimeProbe: NSObject,
         finish()
     }
 
+    private func loadNonEmptySceneFixture() {
+        guard let webView else {
+            failures.append("WKWebView was released before scene loading")
+            finish()
+            return
+        }
+        let scene: [String: Any] = [
+            "elements": [[
+                "type": "box",
+                "boardID": "runtime-probe-box",
+                "x": 120.0,
+                "y": 140.0,
+                "width": 180.0,
+                "height": 112.0,
+                "label": "API service",
+                "nodeKind": "service",
+                "fill": "#ffffff",
+                "stroke": "#4b3abf",
+            ]],
+            "selectedID": "runtime-probe-box",
+            "zoom": 1.0,
+            "readOnly": false,
+            "tool": "select",
+            "boxKind": "service",
+        ]
+        do {
+            let data = try JSONSerialization.data(
+                withJSONObject: scene,
+                options: [.sortedKeys]
+            )
+            let json = String(decoding: data, as: UTF8.self)
+            let quotedData = try JSONEncoder().encode(json)
+            guard let quoted = String(data: quotedData, encoding: .utf8) else {
+                throw CocoaError(.fileReadInapplicableStringEncoding)
+            }
+            webView.evaluateJavaScript("window.interviewArcLoad(\(quoted))") {
+                [weak self] result, error in
+                guard let self else { return }
+                loadedElementCount = (result as? NSNumber)?.intValue
+                if let error {
+                    failures.append(
+                        "non-empty scene failed: \(error.localizedDescription)"
+                    )
+                }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                    self.finish()
+                }
+            }
+        } catch {
+            failures.append(
+                "non-empty scene fixture failed: \(error.localizedDescription)"
+            )
+            finish()
+        }
+    }
+
     private func finish() {
         guard !didFinish else { return }
         didFinish = true
@@ -143,7 +198,8 @@ private final class RuntimeProbe: NSObject,
         JSON.stringify({
           ready: document.documentElement.dataset.interviewArcBoardReady ?? null,
           rootChildren: document.getElementById("root")?.children.length ?? 0,
-          hasLoadBridge: typeof window.interviewArcLoad === "function"
+          hasLoadBridge: typeof window.interviewArcLoad === "function",
+          snapshot: window.interviewArcSnapshot?.() ?? null
         })
         """#
         webView.evaluateJavaScript(probe) { [weak self] result, error in
@@ -161,6 +217,8 @@ private final class RuntimeProbe: NSObject,
                 && object["ready"] as? String == "true"
                 && (object["rootChildren"] as? Int ?? 0) > 0
                 && object["hasLoadBridge"] as? Bool == true
+                && loadedElementCount == 1
+                && containsRuntimeProbeBox(object["snapshot"])
                 && sceneEventCount > 0
                 && sceneEventCount < 10
             complete(
@@ -170,6 +228,18 @@ private final class RuntimeProbe: NSObject,
                     : (failures + ["scene updates: \(sceneEventCount)"])
                         .joined(separator: "; ")
             )
+        }
+    }
+
+    private func containsRuntimeProbeBox(_ rawSnapshot: Any?) -> Bool {
+        guard let snapshot = rawSnapshot as? [String: Any],
+              let elements = snapshot["elements"] as? [[String: Any]] else {
+            return false
+        }
+        return elements.contains { element in
+            element["type"] as? String == "box"
+                && element["boardID"] as? String == "runtime-probe-box"
+                && element["label"] as? String == "API service"
         }
     }
 

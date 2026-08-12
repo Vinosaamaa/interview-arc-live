@@ -7,7 +7,7 @@ import {
 } from "@excalidraw/excalidraw";
 import {
   hasCanonicalBoardAngle,
-  semanticOverlayFingerprint,
+  semanticOverlaySnapshot,
 } from "./semantic-overlay.js";
 import "./style.css";
 
@@ -104,10 +104,9 @@ const SemanticNodeOverlay = ({ elements, appState }) => {
   const scrollY = Number(appState?.scrollY ?? 0);
   const offsetLeft = Number(appState?.offsetLeft ?? 0);
   const offsetTop = Number(appState?.offsetTop ?? 0);
-  const live = getNonDeletedElements(elements);
   const boxes = [];
   const connectors = [];
-  for (const element of live) {
+  for (const element of elements) {
     if (
       element.customData?.iaElementType === "box"
       && hasCanonicalBoardAngle(element)
@@ -217,7 +216,6 @@ const normalizeScene = (elements, appState, files, currentBoxKind) => {
       : null;
 
     if (customData.iaElementType === "label") {
-      const supportedIndex = supported.length;
       supported.push({
         type: "label",
         webID: element.id,
@@ -235,6 +233,7 @@ const normalizeScene = (elements, appState, files, currentBoxKind) => {
       || ((element.type === "diamond" || element.type === "ellipse")
         && customData.iaElementType === "box")
     ) {
+      const supportedIndex = supported.length;
       supported.push({
         type: "box",
         webID: element.id,
@@ -494,10 +493,11 @@ function BoardEditor() {
   }, []);
 
   const updateSemanticOverlay = useCallback((elements, appState) => {
-    const fingerprint = semanticOverlayFingerprint(elements, appState);
+    const snapshot = semanticOverlaySnapshot(elements, appState);
+    const { fingerprint } = snapshot;
     if (overlayFingerprintRef.current === fingerprint) return;
     overlayFingerprintRef.current = fingerprint;
-    setOverlayScene({ elements, appState });
+    setOverlayScene({ elements: snapshot.elements, appState });
   }, []);
 
   const handleChange = useCallback((elements, appState, files) => {
