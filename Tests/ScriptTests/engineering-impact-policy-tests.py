@@ -88,11 +88,13 @@ Adopted complete pull-request receipts and a curated Engineering record for the 
         workflow = WORKFLOW.read_text(encoding="utf-8")
         package_script = PACKAGE_SCRIPT.read_text(encoding="utf-8")
         self.assertNotIn("InterviewArcLivePackageDerivedData", workflow)
-        self.assertIn("INTERVIEW_ARC_LIVE_REUSE_BUILD_PRODUCTS: '1'", workflow)
+        self.assertNotIn("INTERVIEW_ARC_LIVE_REUSE_BUILD_PRODUCTS", workflow)
         self.assertEqual(workflow.count("${{ runner.temp }}/InterviewArcLiveDerivedData"), 3)
-        self.assertIn('"$GITHUB_SHA" > "$INTERVIEW_ARC_LIVE_DERIVED_DATA_PATH/InterviewArcLive.source-commit"', workflow)
-        self.assertIn('build_source_commit="$(<"$build_receipt")"', package_script)
-        self.assertIn('[[ "$build_source_commit" == "$source_commit" ]]', package_script)
+        self.assertIn("'source_commit=%s\\nconfiguration=%s\\n'", workflow)
+        self.assertIn('"$GITHUB_SHA" "Release"', workflow)
+        self.assertIn('expected_build_receipt="source_commit=$source_commit', package_script)
+        self.assertIn('configuration=$xcode_configuration', package_script)
+        self.assertIn('[[ -f "$build_receipt" && "$(<"$build_receipt")" == "$expected_build_receipt" ]]', package_script)
 
     def test_classification_examples_inside_markdown_fences_are_ignored(self):
         body = "- [x] Capability Dossier\n\n```markdown\n- [x] ADR\n```"

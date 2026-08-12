@@ -63,8 +63,9 @@ jobs:
             MACOSX_DEPLOYMENT_TARGET=14.0 \
             ENABLE_TESTABILITY=YES \
             CODE_SIGNING_ALLOWED=NO
-          printf '%s\n' \
-            "$GITHUB_SHA" > "$INTERVIEW_ARC_LIVE_DERIVED_DATA_PATH/InterviewArcLive.source-commit"
+          printf 'source_commit=%s\nconfiguration=%s\n' \
+            "$GITHUB_SHA" "Release" \
+            > "$INTERVIEW_ARC_LIVE_DERIVED_DATA_PATH/InterviewArcLive.source-commit"
       - name: Test package
         env:
           INTERVIEW_ARC_LIVE_DERIVED_DATA_PATH: ${{ runner.temp }}/InterviewArcLiveDerivedData
@@ -91,7 +92,6 @@ jobs:
       - name: Package exact source from a clean worktree
         env:
           INTERVIEW_ARC_LIVE_DERIVED_DATA_PATH: ${{ runner.temp }}/InterviewArcLiveDerivedData
-          INTERVIEW_ARC_LIVE_REUSE_BUILD_PRODUCTS: '1'
           PACKAGE_SOURCE: ${{ runner.temp }}/InterviewArcLivePackageSource
         run: |
           git worktree add --detach "$PACKAGE_SOURCE" "$GITHUB_SHA"
