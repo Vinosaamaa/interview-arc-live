@@ -32,7 +32,7 @@ struct LiveInterviewerSpeechDependencies {
 }
 
 enum BoardRevisionStatusPresentation: Equatable, Sendable {
-    case saving
+    case savingRevision
     case error(String)
     case draftNotSaved
     case unsaved
@@ -42,7 +42,7 @@ enum BoardRevisionStatusPresentation: Equatable, Sendable {
 
     var fullText: String {
         switch self {
-        case .saving: "Saving board…"
+        case .savingRevision: "Saving revision…"
         case .error(let message): message
         case .draftNotSaved: "Draft not saved"
         case .unsaved: "Unsaved board"
@@ -57,7 +57,7 @@ enum BoardRevisionStatusPresentation: Equatable, Sendable {
 
     var compactText: String {
         switch self {
-        case .saving: "Saving…"
+        case .savingRevision: "Saving revision…"
         case .error: "Board issue"
         case .draftNotSaved: "Draft unsaved"
         case .unsaved: "Unsaved"
@@ -132,6 +132,7 @@ final class SystemDesignRoomModel: ObservableObject {
     @Published private(set) var speechErrorMessage: String?
     @Published private(set) var boardEditor = BoardEditorState(document: .empty)
     @Published private(set) var isBoardSaving = false
+    @Published private(set) var isBoardRevisionSaving = false
     @Published private(set) var isBoardExporting = false
     @Published private(set) var boardErrorMessage: String?
     @Published private(set) var boardExportMessage: String?
@@ -596,11 +597,11 @@ final class SystemDesignRoomModel: ObservableObject {
     }
 
     var boardRevisionStatusPresentation: BoardRevisionStatusPresentation {
-        if isBoardSaving { return .saving }
         if let boardErrorMessage { return .error(boardErrorMessage) }
         if let inspectedBoardRevision {
             return .viewing(revision: inspectedBoardRevision.ordinal + 1)
         }
+        if isBoardRevisionSaving { return .savingRevision }
         guard let latestBoardRevision else {
             return boardEditor.document.elements.isEmpty
                 ? .draftNotSaved
@@ -647,7 +648,7 @@ final class SystemDesignRoomModel: ObservableObject {
             phase: snapshot?.phase,
             isWorking: isWorking,
             isInspectingRevision: isInspectingBoardRevision,
-            isSaving: hasPendingLocalPersistence,
+            isRevisionSaving: isBoardRevisionSaving,
             isExporting: isBoardExporting
         )
     }
@@ -657,7 +658,7 @@ final class SystemDesignRoomModel: ObservableObject {
         phase: InterviewRoomPhase?,
         isWorking: Bool,
         isInspectingRevision: Bool,
-        isSaving: Bool,
+        isRevisionSaving: Bool,
         isExporting: Bool
     ) -> Bool {
         coordinatorIsAvailable
@@ -665,7 +666,7 @@ final class SystemDesignRoomModel: ObservableObject {
             && phase != .completed
             && !isWorking
             && !isInspectingRevision
-            && !isSaving
+            && !isRevisionSaving
             && !isExporting
     }
 
@@ -758,12 +759,15 @@ final class SystemDesignRoomModel: ObservableObject {
     }
 
     func saveBoardRevision() async {
-        guard !hasPendingLocalPersistence,
-              canSaveBoardRevision,
+        guard canSaveBoardRevision,
               let coordinator else { return }
+        isBoardRevisionSaving = true
         beginBoardWork()
         boardErrorMessage = nil
-        defer { endBoardWork() }
+        defer {
+            endBoardWork()
+            isBoardRevisionSaving = false
+        }
 
         await waitForBoardPersistence()
         guard coordinator.snapshot.board.draft == boardEditor.document else {

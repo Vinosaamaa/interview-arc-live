@@ -313,7 +313,7 @@ struct SystemDesignBoardView: View {
 
     private var revisionStatusIcon: String {
         if model.boardErrorMessage != nil { return "exclamationmark.triangle.fill" }
-        if model.isBoardSaving { return "arrow.triangle.2.circlepath" }
+        if model.isBoardRevisionSaving { return "arrow.triangle.2.circlepath" }
         if model.isInspectingBoardRevision { return "lock.fill" }
         if model.isBoardDraftDirty { return "circle.dotted" }
         return "checkmark.circle.fill"
