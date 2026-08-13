@@ -40,6 +40,189 @@ enum ExcalidrawBoardStartupPolicy {
     static let readyTimeout: Duration = .seconds(8)
 }
 
+enum ExcalidrawBoardViewportPolicy {
+    static func resolvedSize(
+        current: NSSize,
+        proposed: NSSize,
+        isSettlingReparent: Bool = false
+    ) -> NSSize {
+        let hasUsableCurrentViewport = current.width > 0 && current.height > 0
+        let proposedViewportIsEmpty = proposed.width <= 0 || proposed.height <= 0
+        guard hasUsableCurrentViewport else { return proposed }
+        if proposedViewportIsEmpty { return current }
+        if isSettlingReparent,
+           abs(proposed.width / current.width - 2) < 0.01,
+           abs(proposed.height / current.height - 2) < 0.01 {
+            return current
+        }
+        return proposed
+    }
+}
+
+enum ExcalidrawBoardDiagnostics {
+    static let environmentKey = "INTERVIEW_ARC_BOARD_DIAGNOSTICS_PATH"
+
+    private static var logURL: URL? {
+        guard let path = ProcessInfo.processInfo.environment[environmentKey],
+              !path.isEmpty else { return nil }
+        return URL(fileURLWithPath: path)
+    }
+
+    static var isEnabled: Bool { logURL != nil }
+
+    @MainActor
+    static func record(
+        kind: String,
+        fields: [String: Any] = [:]
+    ) {
+        guard let logURL else { return }
+        var payload = fields
+        payload["kind"] = kind
+        payload["uptimeNanoseconds"] = DispatchTime.now().uptimeNanoseconds
+        guard JSONSerialization.isValidJSONObject(payload),
+              let json = try? JSONSerialization.data(withJSONObject: payload),
+              let newline = "\n".data(using: .utf8) else { return }
+        let data = json + newline
+        let fileManager = FileManager.default
+        if !fileManager.fileExists(atPath: logURL.path) {
+            fileManager.createFile(atPath: logURL.path, contents: nil)
+        }
+        guard let handle = try? FileHandle(forWritingTo: logURL) else { return }
+        defer { try? handle.close() }
+        do {
+            try handle.seekToEnd()
+            try handle.write(contentsOf: data)
+            try handle.synchronize()
+        } catch {
+            return
+        }
+    }
+}
+
+@MainActor
+private final class ExcalidrawBoardWebView: WKWebView {
+    override func setFrameSize(_ newSize: NSSize) {
+        ExcalidrawBoardDiagnostics.record(
+            kind: "native-frame",
+            fields: [
+                "currentWidth": frame.width,
+                "currentHeight": frame.height,
+                "proposedWidth": newSize.width,
+                "proposedHeight": newSize.height,
+                "resolvedWidth": newSize.width,
+                "resolvedHeight": newSize.height,
+                "hasSuperview": superview != nil,
+                "hasWindow": window != nil,
+            ]
+        )
+        super.setFrameSize(newSize)
+    }
+
+    override func viewDidMoveToSuperview() {
+        super.viewDidMoveToSuperview()
+        ExcalidrawBoardDiagnostics.record(
+            kind: "native-superview",
+            fields: [
+                "width": frame.width,
+                "height": frame.height,
+                "hasSuperview": superview != nil,
+                "superviewIdentity": superview.map {
+                    String(describing: ObjectIdentifier($0))
+                } ?? "none",
+                "hasWindow": window != nil,
+            ]
+        )
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        ExcalidrawBoardDiagnostics.record(
+            kind: "native-window",
+            fields: [
+                "width": frame.width,
+                "height": frame.height,
+                "hasSuperview": superview != nil,
+                "hasWindow": window != nil,
+            ]
+        )
+    }
+}
+
+@MainActor
+final class ExcalidrawBoardHostView: NSView {
+    let hostID = UUID()
+    var onAttachToWindow: ((ExcalidrawBoardHostView) -> Void)?
+    var onStableViewport: ((NSSize) -> Void)?
+
+    private weak var hostedWebView: WKWebView?
+    private var stableViewportSize = NSSize.zero
+    private var isSettlingReparent = false
+
+    func host(webView: WKWebView, stableViewportSize: NSSize) {
+        if webView.superview !== self {
+            webView.removeFromSuperview()
+            addSubview(webView)
+        }
+        hostedWebView = webView
+        self.stableViewportSize = stableViewportSize
+        isSettlingReparent = stableViewportSize.width > 0
+            && stableViewportSize.height > 0
+        needsLayout = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.isSettlingReparent = false
+            self.needsLayout = true
+        }
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        ExcalidrawBoardDiagnostics.record(
+            kind: "native-host-window",
+            fields: [
+                "hostID": hostID.uuidString,
+                "hasWindow": window != nil,
+                "width": bounds.width,
+                "height": bounds.height,
+            ]
+        )
+        if window != nil { onAttachToWindow?(self) }
+    }
+
+    override func layout() {
+        super.layout()
+        guard let hostedWebView else { return }
+        let proposed = bounds.size
+        let current = stableViewportSize.width > 0
+            && stableViewportSize.height > 0
+            ? stableViewportSize
+            : hostedWebView.frame.size
+        let resolved = ExcalidrawBoardViewportPolicy.resolvedSize(
+            current: current,
+            proposed: proposed,
+            isSettlingReparent: isSettlingReparent
+        )
+        hostedWebView.frame = NSRect(origin: .zero, size: resolved)
+        ExcalidrawBoardDiagnostics.record(
+            kind: "native-host-layout",
+            fields: [
+                "hostID": hostID.uuidString,
+                "proposedWidth": proposed.width,
+                "proposedHeight": proposed.height,
+                "resolvedWidth": resolved.width,
+                "resolvedHeight": resolved.height,
+                "isSettlingReparent": isSettlingReparent,
+            ]
+        )
+        if proposed.width > 0,
+           proposed.height > 0,
+           resolved == proposed {
+            stableViewportSize = proposed
+            onStableViewport?(proposed)
+        }
+    }
+}
+
 @MainActor
 protocol ExcalidrawBoardSceneFlushing: AnyObject {
     func flushPendingScene(
@@ -50,6 +233,7 @@ protocol ExcalidrawBoardSceneFlushing: AnyObject {
 @MainActor
 final class ExcalidrawBoardBridgeController: ObservableObject {
     private weak var flusher: (any ExcalidrawBoardSceneFlushing)?
+    private var editorCoordinator: ExcalidrawBoardEditorView.Coordinator?
 
     func attach(_ flusher: any ExcalidrawBoardSceneFlushing) {
         self.flusher = flusher
@@ -79,6 +263,20 @@ final class ExcalidrawBoardBridgeController: ObservableObject {
             operation()
         }
     }
+
+    func retainedEditorCoordinator(
+        create: () -> ExcalidrawBoardEditorView.Coordinator
+    ) -> ExcalidrawBoardEditorView.Coordinator {
+        if let editorCoordinator { return editorCoordinator }
+        let coordinator = create()
+        editorCoordinator = coordinator
+        return coordinator
+    }
+
+    func resetEditorSession() {
+        editorCoordinator?.invalidate()
+        editorCoordinator = nil
+    }
 }
 
 struct ExcalidrawBoardEditorView: NSViewRepresentable {
@@ -105,17 +303,34 @@ struct ExcalidrawBoardEditorView: NSViewRepresentable {
     let onFailure: @MainActor (String) -> Void
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(
-            onSceneChange: onSceneChange,
-            onCommand: onCommand,
-            onReady: onReady,
-            onIssue: onIssue,
-            onFailure: onFailure,
-            bridgeController: bridgeController
-        )
+        bridgeController.retainedEditorCoordinator {
+            Coordinator(
+                onSceneChange: onSceneChange,
+                onCommand: onCommand,
+                onReady: onReady,
+                onIssue: onIssue,
+                onFailure: onFailure,
+                bridgeController: bridgeController
+            )
+        }
     }
 
-    func makeNSView(context: Context) -> WKWebView {
+    func makeNSView(context: Context) -> ExcalidrawBoardHostView {
+        let hostView = ExcalidrawBoardHostView()
+        context.coordinator.prepare(hostView: hostView)
+
+        if let retainedWebView = context.coordinator.retainedWebView {
+            ExcalidrawBoardDiagnostics.record(
+                kind: "representable-reused-webview",
+                fields: [
+                    "webViewIdentity": String(
+                        describing: ObjectIdentifier(retainedWebView)
+                    ),
+                    "hostID": hostView.hostID.uuidString,
+                ]
+            )
+            return hostView
+        }
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = .nonPersistent()
         configuration.preferences.javaScriptCanOpenWindowsAutomatically = false
@@ -136,7 +351,10 @@ struct ExcalidrawBoardEditorView: NSViewRepresentable {
             )
         }
 
-        let webView = WKWebView(frame: .zero, configuration: configuration)
+        let webView = ExcalidrawBoardWebView(
+            frame: .zero,
+            configuration: configuration
+        )
         webView.navigationDelegate = context.coordinator
         webView.uiDelegate = context.coordinator
         webView.allowsMagnification = false
@@ -152,10 +370,21 @@ struct ExcalidrawBoardEditorView: NSViewRepresentable {
             isReadOnly: isReadOnly
         )
         context.coordinator.loadEditor()
-        return webView
+        ExcalidrawBoardDiagnostics.record(
+            kind: "representable-created-webview",
+            fields: [
+                "webViewIdentity": String(describing: ObjectIdentifier(webView)),
+                "hostID": hostView.hostID.uuidString,
+            ]
+        )
+        return hostView
     }
 
-    func updateNSView(_ webView: WKWebView, context: Context) {
+    func updateNSView(
+        _ hostView: ExcalidrawBoardHostView,
+        context: Context
+    ) {
+        context.coordinator.prepare(hostView: hostView)
         context.coordinator.updateCallbacks(
             onSceneChange: onSceneChange,
             onCommand: onCommand,
@@ -175,16 +404,22 @@ struct ExcalidrawBoardEditorView: NSViewRepresentable {
     }
 
     static func dismantleNSView(
-        _ webView: WKWebView,
+        _ hostView: ExcalidrawBoardHostView,
         coordinator: Coordinator
     ) {
-        webView.stopLoading()
-        webView.configuration.userContentController.removeScriptMessageHandler(
-            forName: "boardBridge"
+        ExcalidrawBoardDiagnostics.record(
+            kind: "representable-dismantle",
+            fields: [
+                "hostID": hostView.hostID.uuidString,
+                "webViewIdentity": coordinator.retainedWebView.map {
+                    String(describing: ObjectIdentifier($0))
+                } ?? "none",
+            ]
         )
-        webView.navigationDelegate = nil
-        webView.uiDelegate = nil
-        coordinator.detach()
+        // SwiftUI may transiently dismantle an NSViewRepresentable when an
+        // observed room value changes. The room-owned bridge retains this
+        // local editor session so ordinary Board edits do not reload the page.
+        // Intentional retry/surface transitions call resetEditorSession().
     }
 
     @MainActor
@@ -215,7 +450,9 @@ struct ExcalidrawBoardEditorView: NSViewRepresentable {
             }
         }
 
-        private weak var webView: WKWebView?
+        private var webView: WKWebView?
+        private weak var activeHostView: ExcalidrawBoardHostView?
+        private var stableViewportSize = NSSize.zero
         private var assetHandler: ExcalidrawBoardAssetHandler?
         private var snapshot: Snapshot?
         private var lastLoadedDocument: BoardDocument?
@@ -230,6 +467,8 @@ struct ExcalidrawBoardEditorView: NSViewRepresentable {
         private var onReady: @MainActor () -> Void
         private var onIssue: @MainActor (String) -> Void
         private var onFailure: @MainActor (String) -> Void
+
+        var retainedWebView: WKWebView? { webView }
 
         init(
             onSceneChange: @escaping @MainActor (ExcalidrawBoardDecodeResult) -> Bool,
@@ -267,11 +506,46 @@ struct ExcalidrawBoardEditorView: NSViewRepresentable {
             self.assetHandler = assetHandler
         }
 
-        func attach(webView: WKWebView) {
-            self.webView = webView
+        func prepare(hostView: ExcalidrawBoardHostView) {
+            hostView.onAttachToWindow = { [weak self] hostView in
+                self?.activate(hostView: hostView)
+            }
+            hostView.onStableViewport = { [weak self] size in
+                self?.stableViewportSize = size
+            }
+            if hostView.window != nil { activate(hostView: hostView) }
         }
 
-        func detach() {
+        private func activate(hostView: ExcalidrawBoardHostView) {
+            guard let webView else { return }
+            guard activeHostView !== hostView
+                    || webView.superview !== hostView else { return }
+            activeHostView = hostView
+            ExcalidrawBoardDiagnostics.record(
+                kind: "native-host-activate",
+                fields: [
+                    "hostID": hostView.hostID.uuidString,
+                    "stableWidth": stableViewportSize.width,
+                    "stableHeight": stableViewportSize.height,
+                ]
+            )
+            hostView.host(
+                webView: webView,
+                stableViewportSize: stableViewportSize
+            )
+        }
+
+        func attach(webView: WKWebView) {
+            self.webView = webView
+            if let activeHostView {
+                activeHostView.host(
+                    webView: webView,
+                    stableViewportSize: stableViewportSize
+                )
+            }
+        }
+
+        func invalidate() {
             readyDeadlineTask?.cancel()
             readyDeadlineTask = nil
             pendingReloadTask?.cancel()
@@ -279,7 +553,14 @@ struct ExcalidrawBoardEditorView: NSViewRepresentable {
             pendingReconcileTask?.cancel()
             pendingReconcileTask = nil
             bridgeController?.detach(self)
+            webView?.stopLoading()
+            webView?.configuration.userContentController
+                .removeScriptMessageHandler(forName: "boardBridge")
+            webView?.navigationDelegate = nil
+            webView?.uiDelegate = nil
             webView = nil
+            activeHostView = nil
+            stableViewportSize = .zero
             assetHandler = nil
             snapshot = nil
             isReady = false
@@ -312,15 +593,19 @@ struct ExcalidrawBoardEditorView: NSViewRepresentable {
                 } else {
                     scheduleReconcile(next)
                 }
-            } else if ExcalidrawBoardUpdatePolicy.requiresStateUpdate(
-                previous: previous?.state,
-                next: next.state
-            ) {
-                if pendingReloadTask != nil {
-                    scheduleLoad(next)
-                } else if pendingReconcileTask != nil {
-                    scheduleReconcile(next)
-                } else {
+            } else {
+                // A Board edit publishes from @Published.willSet before its
+                // new value is readable. The next observation contains the
+                // accepted document; cancel the stale reconcile queued by the
+                // pre-assignment observation before it can reset the canvas.
+                pendingReconcileTask?.cancel()
+                pendingReconcileTask = nil
+                pendingReloadTask?.cancel()
+                pendingReloadTask = nil
+                if ExcalidrawBoardUpdatePolicy.requiresStateUpdate(
+                    previous: previous?.state,
+                    next: next.state
+                ) {
                     sendState(next)
                 }
             }
@@ -360,9 +645,16 @@ struct ExcalidrawBoardEditorView: NSViewRepresentable {
                         return
                     }
                     webView.configuration.userContentController.add(ruleList)
-                    guard let url = URL(
-                        string: "\(ExcalidrawBoardWebSecurity.scheme)://editor/index.html"
-                    ) else {
+                    var components = URLComponents()
+                    components.scheme = ExcalidrawBoardWebSecurity.scheme
+                    components.host = "editor"
+                    components.path = "/index.html"
+                    if ExcalidrawBoardDiagnostics.isEnabled {
+                        components.queryItems = [
+                            URLQueryItem(name: "diagnostics", value: "1"),
+                        ]
+                    }
+                    guard let url = components.url else {
                         self.onFailure("The enhanced canvas address is invalid.")
                         return
                     }
@@ -407,6 +699,12 @@ struct ExcalidrawBoardEditorView: NSViewRepresentable {
                 let message = object["message"] as? String
                     ?? "The enhanced canvas stopped responding."
                 onFailure(message)
+
+            case "diagnostic":
+                ExcalidrawBoardDiagnostics.record(
+                    kind: "web-frame",
+                    fields: object
+                )
 
             default:
                 break

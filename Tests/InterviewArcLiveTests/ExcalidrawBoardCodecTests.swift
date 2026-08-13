@@ -509,6 +509,89 @@ final class ExcalidrawBoardCodecTests: XCTestCase {
         )
     }
 
+    @MainActor
+    func testRoomBridgeRetainsOneEditorCoordinatorAcrossSwiftUIReconstruction() {
+        let bridge = ExcalidrawBoardBridgeController()
+        let controls = ExcalidrawBoardControls(
+            revisionStatus: "Unsaved board",
+            notice: nil,
+            noticeIsError: false,
+            isInspecting: false,
+            canSave: true,
+            hasRevisions: false,
+            canAttach: false,
+            canExport: false,
+            isExporting: false
+        )
+        let makeView = {
+            ExcalidrawBoardEditorView(
+                document: .empty,
+                selectedElementID: nil,
+                zoom: 1,
+                tool: .select,
+                boxKind: .generic,
+                controls: controls,
+                isReadOnly: false,
+                bridgeController: bridge,
+                onSceneChange: { _ in true },
+                onCommand: { _ in },
+                onReady: {},
+                onIssue: { _ in },
+                onFailure: { _ in }
+            )
+        }
+
+        let first = makeView().makeCoordinator()
+        let reconstructed = makeView().makeCoordinator()
+        XCTAssertTrue(first === reconstructed)
+
+        bridge.resetEditorSession()
+        let retried = makeView().makeCoordinator()
+        XCTAssertFalse(first === retried)
+        bridge.resetEditorSession()
+    }
+
+    func testViewportPolicyRejectsTransientEmptyAndBackingScaleReparentSizes() {
+        let current = NSSize(width: 820, height: 540)
+
+        XCTAssertEqual(
+            ExcalidrawBoardViewportPolicy.resolvedSize(
+                current: current,
+                proposed: .zero
+            ),
+            current
+        )
+        XCTAssertEqual(
+            ExcalidrawBoardViewportPolicy.resolvedSize(
+                current: current,
+                proposed: NSSize(width: 1_640, height: 1_080),
+                isSettlingReparent: true
+            ),
+            current
+        )
+        XCTAssertEqual(
+            ExcalidrawBoardViewportPolicy.resolvedSize(
+                current: current,
+                proposed: NSSize(width: 1_640, height: 1_080)
+            ),
+            NSSize(width: 1_640, height: 1_080)
+        )
+        XCTAssertEqual(
+            ExcalidrawBoardViewportPolicy.resolvedSize(
+                current: current,
+                proposed: NSSize(width: 640, height: 420)
+            ),
+            NSSize(width: 640, height: 420)
+        )
+        XCTAssertEqual(
+            ExcalidrawBoardViewportPolicy.resolvedSize(
+                current: .zero,
+                proposed: .zero
+            ),
+            .zero
+        )
+    }
+
     private func box(
         webID: String,
         boardID: String? = nil,

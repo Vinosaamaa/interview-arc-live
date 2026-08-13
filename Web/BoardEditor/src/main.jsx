@@ -42,6 +42,172 @@ const post = (payload) => {
   bridge?.postMessage(payload);
 };
 
+const diagnosticsEnabled = new URLSearchParams(window.location.search)
+  .get("diagnostics") === "1";
+let diagnosticAnimationFrame = null;
+let diagnosticFrame = 0;
+let diagnosticFramesRemaining = 0;
+let previousLayoutDiagnostic = null;
+
+const describeDiagnosticElement = (element) => {
+  if (!element) return null;
+  const rect = element.getBoundingClientRect();
+  const style = window.getComputedStyle(element);
+  return {
+    x: rect.x,
+    y: rect.y,
+    width: rect.width,
+    height: rect.height,
+    display: style.display,
+    visibility: style.visibility,
+    opacity: style.opacity,
+  };
+};
+
+const reportInteractionDiagnostic = (
+  api,
+  phase,
+  nativeControls,
+  renderCount,
+) => {
+  if (!diagnosticsEnabled) return;
+  const appState = api?.getAppState?.() ?? {};
+  post({
+    event: "diagnostic",
+    diagnosticKind: "interaction-frame",
+    phase,
+    frame: diagnosticFrame,
+    renderCount,
+    topMenu: describeDiagnosticElement(
+      document.querySelector(".App-menu_top"),
+    ),
+    topToolbar: describeDiagnosticElement(
+      document.querySelector(".App-toolbar"),
+    ),
+    bottomMenu: describeDiagnosticElement(
+      document.querySelector(".App-menu_bottom"),
+    ),
+    bottomLeft: describeDiagnosticElement(
+      document.querySelector(".layer-ui__wrapper__footer-left"),
+    ),
+    productControls: describeDiagnosticElement(
+      document.querySelector(".interview-arc-board-controls"),
+    ),
+    shell: describeDiagnosticElement(document.querySelector(".board-shell")),
+    root: describeDiagnosticElement(document.querySelector("#root")),
+    viewport: {
+      width: window.innerWidth,
+      height: window.innerHeight,
+      visualWidth: window.visualViewport?.width ?? null,
+      visualHeight: window.visualViewport?.height ?? null,
+    },
+    controls: {
+      revisionStatus: nativeControls?.revisionStatus ?? null,
+      canSave: Boolean(nativeControls?.canSave),
+      isExporting: Boolean(nativeControls?.isExporting),
+      notice: nativeControls?.notice ?? null,
+    },
+    appState: {
+      tool: appState.activeTool?.type ?? null,
+      zoom: Number(appState.zoom?.value ?? 1),
+      selectedCount: Object.values(appState.selectedElementIds ?? {})
+        .filter(Boolean).length,
+      isDragging: Boolean(appState.draggingElement),
+      isResizing: Boolean(appState.resizingElement),
+      isEditing: Boolean(appState.editingElement),
+    },
+  });
+};
+
+const startInteractionDiagnostic = (getSnapshot) => {
+  if (!diagnosticsEnabled || diagnosticAnimationFrame !== null) return;
+  diagnosticFramesRemaining = Number.POSITIVE_INFINITY;
+  const sample = () => {
+    diagnosticFrame += 1;
+    const snapshot = getSnapshot();
+    reportInteractionDiagnostic(
+      snapshot.api,
+      snapshot.phase,
+      snapshot.nativeControls,
+      snapshot.renderCount,
+    );
+    if (diagnosticFramesRemaining !== Number.POSITIVE_INFINITY) {
+      diagnosticFramesRemaining -= 1;
+    }
+    if (diagnosticFramesRemaining > 0) {
+      diagnosticAnimationFrame = window.requestAnimationFrame(sample);
+    } else {
+      diagnosticAnimationFrame = null;
+    }
+  };
+  diagnosticAnimationFrame = window.requestAnimationFrame(sample);
+};
+
+const finishInteractionDiagnostic = () => {
+  if (!diagnosticsEnabled) return;
+  diagnosticFramesRemaining = 12;
+};
+
+const reportControlDiagnostic = (previous, next, renderCount) => {
+  if (!diagnosticsEnabled) return;
+  post({
+    event: "diagnostic",
+    diagnosticKind: "control-transition",
+    renderCount,
+    previous,
+    next,
+  });
+};
+
+const reportLayoutDiagnostic = (api, phase, force = false) => {
+  if (!diagnosticsEnabled) return;
+  window.requestAnimationFrame(() => {
+    const appState = api?.getAppState?.() ?? {};
+    const leftPanel = document.querySelector(".App-menu_left");
+    const topPanel = document.querySelector(".App-menu_top");
+    const shell = document.querySelector(".board-shell");
+    const root = document.querySelector("#root");
+    const describe = (element) => {
+      if (!element) return "missing";
+      const rect = element.getBoundingClientRect();
+      const style = window.getComputedStyle(element);
+      return [
+        Math.round(rect.x),
+        Math.round(rect.y),
+        Math.round(rect.width),
+        Math.round(rect.height),
+        style.display,
+        style.visibility,
+        style.opacity,
+      ].join(",");
+    };
+    const selectedCount = Object.values(appState.selectedElementIds ?? {})
+      .filter(Boolean).length;
+    const fingerprint = [
+      describe(leftPanel),
+      describe(topPanel),
+      describe(shell),
+      describe(root),
+      describe(document.body),
+      describe(document.documentElement),
+      `${window.innerWidth},${window.innerHeight}`,
+      `${Math.round(window.visualViewport?.width ?? -1)},${Math.round(window.visualViewport?.height ?? -1)}`,
+      String(Boolean(shell?.isConnected)),
+      appState.activeTool?.type ?? "unknown",
+      selectedCount,
+      Boolean(appState.draggingElement),
+      Boolean(appState.resizingElement),
+      Boolean(appState.editingElement),
+    ].join("|");
+    if (!force && fingerprint === previousLayoutDiagnostic) return;
+    previousLayoutDiagnostic = fingerprint;
+    post({
+      event: "diagnostic",
+      phase: `layout ${phase} ${fingerprint}`,
+    });
+  });
+};
+
 // Excalidraw has a smaller native shape vocabulary than BoardNodeVisual. Keep
 // these projections architecture-safe (a service must never look like a
 // decision diamond) and retain the canonical visual key for reload/export.
@@ -553,13 +719,27 @@ const installNativeWindowBridge = ({
   nativeControlsRef,
   previousActiveToolRef,
   publication,
+  renderCountRef,
   setNativeControls,
   setReadOnly,
   updateSemanticOverlay,
 }) => {
   const synchronizeControls = (controls) => {
+    const previous = nativeControlsRef.current;
     nativeControlsRef.current = controls ?? defaultNativeControls;
+    reportControlDiagnostic(
+      previous,
+      nativeControlsRef.current,
+      renderCountRef.current,
+    );
     setNativeControls(nativeControlsRef.current);
+    startInteractionDiagnostic(() => ({
+      api,
+      phase: "control-transition",
+      nativeControls: nativeControlsRef.current,
+      renderCount: renderCountRef.current,
+    }));
+    finishInteractionDiagnostic();
   };
   const readScene = () => ({
     elements: api.getSceneElements(),
@@ -861,6 +1041,8 @@ const BoardChromeControls = ({ controls, onAction }) => {
 };
 
 function BoardEditor() {
+  const renderCountRef = useRef(0);
+  renderCountRef.current += 1;
   const [readOnly, setReadOnly] = useState(false);
   const [nativeControls, setNativeControls] = useState(defaultNativeControls);
   const apiRef = useRef(null);
@@ -915,6 +1097,7 @@ function BoardEditor() {
       previousActiveToolRef.current = activeTool;
     }
     const scene = { elements, appState, files };
+    reportLayoutDiagnostic(apiRef.current, "change");
     if (nativeBridgeRef.current?.captureChange(scene)) return;
     updateSemanticOverlay(elements, appState);
     publicationRef.current.acceptScene(scene);
@@ -939,6 +1122,7 @@ function BoardEditor() {
       nativeControlsRef,
       previousActiveToolRef,
       publication: publicationRef.current,
+      renderCountRef,
       setNativeControls,
       setReadOnly,
       updateSemanticOverlay,
@@ -948,13 +1132,25 @@ function BoardEditor() {
     for (const unsubscribe of pointerSubscriptionsRef.current) unsubscribe();
     pointerSubscriptionsRef.current = [
       api.onPointerDown(() => {
+        reportLayoutDiagnostic(api, "pointer-down", true);
+        startInteractionDiagnostic(() => ({
+          api,
+          phase: "drag",
+          nativeControls: nativeControlsRef.current,
+          renderCount: renderCountRef.current,
+        }));
         nativeBridge.noteUserInput();
         publicationRef.current.beginPointerInteraction();
       }),
       api.onPointerUp(() => {
+        reportLayoutDiagnostic(api, "pointer-up", true);
+        window.requestAnimationFrame(() => {
+          reportLayoutDiagnostic(api, "pointer-up+2raf", true);
+        });
         nativeBridge.completePointerInteraction(
           publicationRef.current.endPointerInteraction(),
         );
+        finishInteractionDiagnostic();
       }),
     ];
 
@@ -1010,18 +1206,34 @@ function BoardEditor() {
       }
     };
     const noteTextInput = () => nativeBridgeRef.current?.noteUserInput();
+    const beginRawPointerDiagnostic = () => {
+      startInteractionDiagnostic(() => ({
+        api: apiRef.current,
+        phase: "raw-drag",
+        nativeControls: nativeControlsRef.current,
+        renderCount: renderCountRef.current,
+      }));
+    };
+    const finishRawPointerDiagnostic = () => {
+      finishInteractionDiagnostic();
+    };
     const cancelPointerInteraction = () => {
       nativeBridgeRef.current?.completePointerInteraction(
         publicationRef.current.cancelPointerInteraction(),
       );
+      finishRawPointerDiagnostic();
     };
     window.addEventListener("keydown", handleKeyDown, true);
     window.addEventListener("beforeinput", noteTextInput, true);
+    window.addEventListener("pointerdown", beginRawPointerDiagnostic, true);
+    window.addEventListener("pointerup", finishRawPointerDiagnostic, true);
     window.addEventListener("pointercancel", cancelPointerInteraction, true);
     window.addEventListener("blur", cancelPointerInteraction);
     return () => {
       window.removeEventListener("keydown", handleKeyDown, true);
       window.removeEventListener("beforeinput", noteTextInput, true);
+      window.removeEventListener("pointerdown", beginRawPointerDiagnostic, true);
+      window.removeEventListener("pointerup", finishRawPointerDiagnostic, true);
       window.removeEventListener("pointercancel", cancelPointerInteraction, true);
       window.removeEventListener("blur", cancelPointerInteraction);
       for (const unsubscribe of pointerSubscriptionsRef.current) unsubscribe();
