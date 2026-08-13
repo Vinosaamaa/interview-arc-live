@@ -2,14 +2,42 @@ name: Swift
 
 on:
   pull_request:
+    types: [opened, synchronize, reopened, edited]
   push:
     branches: [main]
 
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}-${{ github.event.action == 'edited' && 'metadata' || 'source' }}
+  cancel-in-progress: true
+
 jobs:
+  engineering-policy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+      - name: Test Engineering impact policy
+        run: python3 Tests/ScriptTests/engineering-impact-policy-tests.py
+      - name: Fetch exact Engineering impact comparison revisions
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          HEAD_REPO_URL: ${{ github.event.pull_request.head.repo.clone_url }}
+        run: |
+          git fetch --no-tags --depth=1 origin "$BASE_SHA"
+          git fetch --no-tags --depth=1 "$HEAD_REPO_URL" "$HEAD_SHA"
+      - name: Validate Engineering impact classification
+        if: github.event_name == 'pull_request'
+        run: python3 scripts/validate-engineering-impact.py "$GITHUB_EVENT_PATH"
+
   test:
+    if: github.event.action != 'edited'
+    needs: engineering-policy
     runs-on: macos-15
     timeout-minutes: 90
     env:
@@ -61,6 +89,27 @@ jobs:
             MACOSX_DEPLOYMENT_TARGET=14.0 \
             ENABLE_TESTABILITY=YES \
             CODE_SIGNING_ALLOWED=NO
+      - name: Prepare release-equivalent package products
+        env:
+          INTERVIEW_ARC_LIVE_DERIVED_DATA_PATH: ${{ runner.temp }}/InterviewArcLivePackageDerivedData
+        run: |
+          package_sdk=macosx
+          target_architecture="$(/usr/bin/uname -m)"
+          xcodebuild build \
+            -scheme InterviewArcLive-Package \
+            -configuration Release \
+            -destination "platform=macOS,arch=$target_architecture" \
+            -sdk "$package_sdk" \
+            -derivedDataPath "$INTERVIEW_ARC_LIVE_DERIVED_DATA_PATH" \
+            -disableAutomaticPackageResolution \
+            -onlyUsePackageVersionsFromResolvedFile \
+            MACOSX_DEPLOYMENT_TARGET=14.0 \
+            ENABLE_TESTABILITY=NO \
+            ARCHS="$target_architecture" \
+            ONLY_ACTIVE_ARCH=YES \
+            CODE_SIGNING_ALLOWED=NO
+          scripts/build-product-receipt.sh "$GITHUB_SHA" "InterviewArcLive-Package" "Release" "NO" "14.0" "NO" "$package_sdk" "$target_architecture" \
+            > "$INTERVIEW_ARC_LIVE_DERIVED_DATA_PATH/InterviewArcLive.build-candidate"
       - name: Test installer safety
         run: Tests/ScriptTests/install-app-tests.zsh
       - name: Test installed Codex smoke safety
@@ -71,17 +120,20 @@ jobs:
         run: Tests/ScriptTests/speech-smoke-tests.zsh
       - name: Test local Board editor and application icon
         run: Tests/ScriptTests/board-editor-assets-tests.zsh
-      - name: Package application
+      - name: Package exact source from a clean worktree
         env:
           INTERVIEW_ARC_LIVE_DERIVED_DATA_PATH: ${{ runner.temp }}/InterviewArcLivePackageDerivedData
-        run: scripts/package-app.sh release
+          PACKAGE_SOURCE: ${{ runner.temp }}/InterviewArcLivePackageSource
+        run: |
+          git worktree add --detach "$PACKAGE_SOURCE" "$GITHUB_SHA"
+          "$PACKAGE_SOURCE/scripts/package-app.sh" release
       - name: Upload merged application
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         uses: actions/upload-artifact@v4
         with:
           name: InterviewArcLive-${{ github.sha }}
           path: |
-            dist/Interview Arc Live.app
-            dist/InterviewArcLive.package-manifest.txt
+            ${{ runner.temp }}/InterviewArcLivePackageSource/dist/Interview Arc Live.app
+            ${{ runner.temp }}/InterviewArcLivePackageSource/dist/InterviewArcLive.package-manifest.txt
           if-no-files-found: error
           retention-days: 14

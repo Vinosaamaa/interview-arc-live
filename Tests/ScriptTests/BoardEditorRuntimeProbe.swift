@@ -71,7 +71,7 @@ private final class RuntimeProbe: NSObject,
     private var didFinish = false
     private var failures: [String] = []
     private var isReady = false
-    private var sceneEventCount = 0
+    private var sceneEvents: [[String: Any]] = []
     private var flushedCommands: [String] = []
     private var directCommands: [String] = []
     private var loadedElementCount: Int?
@@ -105,7 +105,7 @@ private final class RuntimeProbe: NSObject,
                 object["message"] as? String ?? "editor reported failure"
             )
         case "scene":
-            sceneEventCount += 1
+            sceneEvents.append(object)
         case "flushedCommand":
             if let command = object["command"] as? String {
                 flushedCommands.append(command)
@@ -408,13 +408,13 @@ private final class RuntimeProbe: NSObject,
                 && containsZoom(object["runtime"], expected: 1.25)
                 && flushedCommands.contains("saveRevision")
                 && directCommands.contains("exportRevision")
-                && sceneEventCount == 0
+                && sceneEventsPreserveNativeDocument()
             complete(
                 success: stable,
                 detail: stable
-                    ? "ready, stable React root, native bridge present, and no unsolicited scene updates"
+                    ? "ready, stable React root, native bridge present, and every scene update preserved the native document"
                     : (failures + [
-                        "scene updates: \(sceneEventCount)",
+                        "scene updates: \(sceneEvents.count)",
                         "flushed commands: \(flushedCommands)",
                         "direct commands: \(directCommands)",
                         "probe: \(object)",
@@ -433,6 +433,18 @@ private final class RuntimeProbe: NSObject,
             element["type"] as? String == "box"
                 && element["boardID"] as? String == "runtime-probe-box"
                 && element["label"] as? String == "API service"
+        }
+    }
+
+    private func containsRuntimeProbeQueue(_ rawSnapshot: Any?) -> Bool {
+        guard let snapshot = rawSnapshot as? [String: Any],
+              let elements = snapshot["elements"] as? [[String: Any]] else {
+            return false
+        }
+        return elements.contains { element in
+            element["type"] as? String == "box"
+                && element["boardID"] as? String == "runtime-probe-queue"
+                && element["label"] as? String == "Delivery queue"
         }
     }
 
@@ -460,6 +472,20 @@ private final class RuntimeProbe: NSObject,
             return false
         }
         return abs(zoom - expected) <= 0.000_1
+    }
+
+    private func sceneEventsPreserveNativeDocument() -> Bool {
+        sceneEvents.count < 10 && sceneEvents.allSatisfy { event in
+            guard let elements = event["elements"] as? [[String: Any]],
+                  elements.count == 3,
+                  (event["unsupportedElementCount"] as? NSNumber)?.intValue == 0
+            else {
+                return false
+            }
+            return containsRuntimeProbeBox(event)
+                && containsRuntimeProbeQueue(event)
+                && containsBoundRuntimeProbeConnector(event)
+        }
     }
 
     private func complete(success: Bool, detail: String) {
