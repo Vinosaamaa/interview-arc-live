@@ -6,7 +6,7 @@
 
 Select exactly one classification. If `None` is selected, replace the placeholder with a concrete reason.
 
-Add the compact receipt for this pull request at `docs/engineering/changes/pr-<number>.md`. Material changes also add or amend a rich record and link its exact `id@revision` from the receipt.
+Classify materiality during issue work. For material work, author or select the exact rich record before review. After this draft PR has a number, run `python3 scripts/new-engineering-receipt.py --help`, create its numbered receipt, and commit it before requesting review.
 
 - [ ] None — reason: REPLACE WITH A CONCRETE REASON
 - [ ] Change Note

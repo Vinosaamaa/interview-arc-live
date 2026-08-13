@@ -33,6 +33,34 @@ or any behavior that could silently lose or corrupt interview work.
 - Test through Module Interfaces. Use deterministic, public-safe fixtures.
 - Record changed behavior, verification, risks, rollback, and known limits.
 
+### Engineering record authorship
+
+Every pull request owns one compact Engineering receipt. This is implementation
+work, not a separate operation that the user must remember to request.
+
+1. During issue intake, classify the planned change as `none` or one material
+   Engineering record type from
+   [`docs/engineering/pull-request-history.md`](../engineering/pull-request-history.md).
+2. For material work, author its canonical public-safe rich Markdown record on
+   the implementation branch before its receipt refers to it, or select an
+   existing exact `id@revision` at the pull-request head whose reviewed cluster
+   genuinely covers the change. Author evidence-backed diagrams only when they
+   clarify verified structure or flow; CI never invents them.
+3. Push the first coherent public-safe commit and open a **draft pull request**
+   when its Live repository number is not yet known.
+4. Run `python3 scripts/new-engineering-receipt.py --pr <number> ...`, commit
+   exactly one `docs/engineering/changes/pr-<number>.md`, and select the matching
+   Engineering-impact checkbox. `None` requires a concrete reason of at least
+   12 characters.
+5. Request review only after the receipt, every required rich record/reference,
+   and the PR classification agree. CI validates canonical authorship. Arc's
+   build derives JSON, search, backlinks, Statistics, immutable links to
+   authored diagram assets, a portable static HTML export, and the website
+   projection; it does not create their narrative or diagram content.
+
+Run `python3 scripts/new-engineering-receipt.py --help` for exact examples.
+Automatic projection never means automatic narrative.
+
 ## Verification and release
 
 - Run focused tests locally and require clean hosted CI.
