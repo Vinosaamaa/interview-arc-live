@@ -75,6 +75,7 @@ public struct LiveOutboxRecord: Codable, Equatable, Sendable, Identifiable {
 public enum PrivateLiveOutboxStoreError: Error, Equatable, Sendable {
     case operationIdentityConflict
     case partitionMismatch
+    case dependencyCycle
 }
 
 public struct LiveOutboxSummary: Equatable, Sendable {
@@ -107,12 +108,38 @@ public actor PrivateLiveOutboxStore {
     public func records(
         credentialFingerprint: String
     ) throws -> [LiveOutboxRecord] {
-        try load(credentialFingerprint).records.sorted {
-            if $0.createdAt == $1.createdAt {
-                return $0.operationId < $1.operationId
+        let records = try load(credentialFingerprint).records
+        let recordIDs = Set(records.map(\.operationId))
+        var emitted = Set<String>()
+        var remaining = records
+        var ordered: [LiveOutboxRecord] = []
+
+        while !remaining.isEmpty {
+            let ready = remaining.filter { record in
+                guard let dependency = record.dependencyOperationId,
+                      recordIDs.contains(dependency) else { return true }
+                return emitted.contains(dependency)
+            }.sorted(by: Self.stableOrder)
+
+            guard !ready.isEmpty else {
+                throw PrivateLiveOutboxStoreError.dependencyCycle
             }
-            return $0.createdAt < $1.createdAt
+            let readyIDs = Set(ready.map(\.operationId))
+            ordered.append(contentsOf: ready)
+            emitted.formUnion(readyIDs)
+            remaining.removeAll { readyIDs.contains($0.operationId) }
         }
+        return ordered
+    }
+
+    private static func stableOrder(
+        _ lhs: LiveOutboxRecord,
+        _ rhs: LiveOutboxRecord
+    ) -> Bool {
+        if lhs.createdAt == rhs.createdAt {
+            return lhs.operationId < rhs.operationId
+        }
+        return lhs.createdAt < rhs.createdAt
     }
 
     public func summary(

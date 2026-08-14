@@ -71,6 +71,57 @@ final class PrivateLiveStoresTests: XCTestCase {
         XCTAssertTrue(replacementRecords.isEmpty)
     }
 
+    func testOutboxRecoveryOrderHonorsDependenciesBeforeTimestampAndIdentity() async throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = PrivateLiveOutboxStore(directoryURL: directory)
+        let parent = outboxRecord(
+            operationID: "z-parent",
+            dependencyOperationID: nil,
+            createdAt: 5
+        )
+        let child = outboxRecord(
+            operationID: "a-child",
+            dependencyOperationID: parent.operationId,
+            createdAt: 1
+        )
+
+        try await store.prepare(child)
+        try await store.prepare(parent)
+
+        let restored = try await store.records(
+            credentialFingerprint: fingerprint
+        )
+        XCTAssertEqual(restored.map(\.operationId), ["z-parent", "a-child"])
+    }
+
+    func testOutboxDependencyCycleFailsClosed() async throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = PrivateLiveOutboxStore(directoryURL: directory)
+        try await store.prepare(
+            outboxRecord(
+                operationID: "operation-a",
+                dependencyOperationID: "operation-b",
+                createdAt: 1
+            )
+        )
+        try await store.prepare(
+            outboxRecord(
+                operationID: "operation-b",
+                dependencyOperationID: "operation-a",
+                createdAt: 2
+            )
+        )
+
+        do {
+            _ = try await store.records(credentialFingerprint: fingerprint)
+            XCTFail("A cyclic outbox must stop automatic recovery")
+        } catch let error as PrivateLiveOutboxStoreError {
+            XCTAssertEqual(error, .dependencyCycle)
+        }
+    }
+
     func testClipStoreVerifiesExactPrivateBytesAndDetectsTampering() async throws {
         let directory = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -105,8 +156,22 @@ final class PrivateLiveStoresTests: XCTestCase {
     private var fingerprint: String { String(repeating: "a", count: 64) }
 
     private func outboxRecord(body: Data) -> LiveOutboxRecord {
+        outboxRecord(
+            operationID: "op-1",
+            dependencyOperationID: nil,
+            createdAt: 1,
+            body: body
+        )
+    }
+
+    private func outboxRecord(
+        operationID: String,
+        dependencyOperationID: String?,
+        createdAt: LiveEpochMilliseconds,
+        body: Data? = nil
+    ) -> LiveOutboxRecord {
         LiveOutboxRecord(
-            operationId: "op-1",
+            operationId: operationID,
             operation: "command.start",
             pathSuffix: "commands",
             activityId: "activity-1",
@@ -114,10 +179,10 @@ final class PrivateLiveStoresTests: XCTestCase {
             holderId: "00000000-0000-4000-8000-000000000001",
             holderSessionId: "room-1",
             fencingToken: 1,
-            dependencyOperationId: nil,
-            canonicalBody: body,
+            dependencyOperationId: dependencyOperationID,
+            canonicalBody: body ?? Data("{\"operationId\":\"(operationID)\"}".utf8),
             credentialFingerprint: fingerprint,
-            createdAt: 1
+            createdAt: createdAt
         )
     }
 

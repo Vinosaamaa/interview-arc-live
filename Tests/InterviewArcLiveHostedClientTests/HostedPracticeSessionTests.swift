@@ -57,6 +57,67 @@ final class HostedPracticeSessionTests: XCTestCase {
         XCTAssertEqual(commandBodies[0], commandBodies[1])
     }
 
+    func testRefreshCannotBecomeWritableBeforeAmbiguousReceiptRecovery() async throws {
+        let fixture = try HostedSessionFixture()
+        _ = await fixture.session.open()
+        await fixture.transport.failNextCommandTransport()
+
+        do {
+            try await fixture.session.start()
+            XCTFail("Expected ambiguous transport failure")
+        } catch let error as LiveV1ClientError {
+            XCTAssertEqual(error, .transportUnavailable)
+        }
+        await fixture.transport.rejectNextReceiptLookup()
+
+        do {
+            _ = try await fixture.session.refresh()
+            XCTFail("Refresh must stay fail-closed while receipt recovery is unresolved")
+        } catch let error as HostedPracticeSessionError {
+            XCTAssertEqual(error, .operationAlreadyPending)
+        }
+
+        let snapshot = await fixture.session.snapshot()
+        XCTAssertEqual(
+            snapshot.connection,
+            .recoveryRequired(code: "upstream_unavailable")
+        )
+        XCTAssertEqual(snapshot.pendingOperationCount, 1)
+        let paths = await fixture.transport.paths()
+        XCTAssertTrue(paths.last?.contains("/receipts/") == true)
+    }
+
+    func testReleaseLeaseRefusesToAbandonPendingOperation() async throws {
+        let fixture = try HostedSessionFixture()
+        _ = await fixture.session.open()
+        await fixture.transport.failNextCommandTransport()
+
+        do {
+            try await fixture.session.start()
+            XCTFail("Expected ambiguous transport failure")
+        } catch let error as LiveV1ClientError {
+            XCTAssertEqual(error, .transportUnavailable)
+        }
+        let pathsBeforeRelease = await fixture.transport.paths()
+
+        do {
+            try await fixture.session.releaseLease()
+            XCTFail("Lease release must wait for the durable outbox")
+        } catch let error as HostedPracticeSessionError {
+            XCTAssertEqual(error, .operationAlreadyPending)
+        }
+
+        let snapshot = await fixture.session.snapshot()
+        XCTAssertNotNil(snapshot.lease)
+        XCTAssertEqual(snapshot.pendingOperationCount, 1)
+        XCTAssertEqual(
+            snapshot.connection,
+            .recoveryRequired(code: "pending_operation")
+        )
+        let pathsAfterRelease = await fixture.transport.paths()
+        XCTAssertEqual(pathsAfterRelease, pathsBeforeRelease)
+    }
+
     func testRelaunchDoesNotRewriteOldSessionFenceWhenReceiptIsAbsent() async throws {
         let fixture = try HostedSessionFixture(holderSessionID: "fresh-room")
         let body = Data(
@@ -87,8 +148,158 @@ final class HostedPracticeSessionTests: XCTestCase {
         )
         XCTAssertEqual(snapshot.pendingOperationCount, 1)
         let paths = await fixture.transport.paths()
-        XCTAssertEqual(paths.count, 1)
-        XCTAssertTrue(paths[0].contains("/receipts/old-op"))
+        XCTAssertEqual(
+            paths,
+            [
+                "/live/v1/today",
+                "/live/v1/activities/activity-1",
+                "/live/v1/activities/activity-1/receipts/old-op",
+            ]
+        )
+    }
+
+    func testCredentialChangeQuarantineNeverAcquiresWritableLease() async throws {
+        let fixture = try HostedSessionFixture()
+        try await fixture.outbox.prepare(
+            LiveOutboxRecord(
+                operationId: "foreign-credential-op",
+                operation: "command.start",
+                pathSuffix: "commands",
+                activityId: "activity-1",
+                workbenchId: "workbench-1",
+                holderId: "00000000-0000-4000-8000-000000000001",
+                holderSessionId: "room-session-1",
+                fencingToken: 3,
+                dependencyOperationId: nil,
+                canonicalBody: Data("foreign credential record".utf8),
+                credentialFingerprint: String(repeating: "b", count: 64),
+                createdAt: 1
+            )
+        )
+
+        let snapshot = await fixture.session.open()
+
+        XCTAssertEqual(
+            snapshot.connection,
+            .recoveryRequired(code: "credential_changed")
+        )
+        XCTAssertTrue(snapshot.hasQuarantinedOperations)
+        XCTAssertNil(snapshot.lease)
+        let paths = await fixture.transport.paths()
+        XCTAssertEqual(
+            paths,
+            [
+                "/live/v1/today",
+                "/live/v1/activities/activity-1",
+            ]
+        )
+    }
+
+    func testTickRenewsAtThirtySecondsAndExpiresWithoutNetworkAtNinety() async throws {
+        let renewalFixture = try HostedSessionFixture()
+        _ = await renewalFixture.session.open()
+        renewalFixture.clock.set(1_031_000)
+
+        await renewalFixture.session.tick()
+
+        let renewed = await renewalFixture.session.snapshot()
+        XCTAssertEqual(renewed.connection, .writable)
+        XCTAssertEqual(renewed.lease?.expiresAt, 1_150_000)
+        let renewalPaths = await renewalFixture.transport.paths()
+        XCTAssertEqual(
+            renewalPaths.last,
+            "/live/v1/activities/activity-1/lease/renew"
+        )
+
+        let expiryFixture = try HostedSessionFixture()
+        _ = await expiryFixture.session.open()
+        let pathsBeforeExpiry = await expiryFixture.transport.paths()
+        expiryFixture.clock.set(1_090_000)
+
+        await expiryFixture.session.tick()
+
+        let expired = await expiryFixture.session.snapshot()
+        XCTAssertEqual(
+            expired.connection,
+            .recoveryRequired(code: "lease_expired")
+        )
+        XCTAssertNil(expired.lease)
+        let pathsAfterExpiry = await expiryFixture.transport.paths()
+        XCTAssertEqual(pathsAfterExpiry, pathsBeforeExpiry)
+    }
+
+    func testStaleFenceAndRevokedTokenRetainOutboxAndStopWrites() async throws {
+        let staleFixture = try HostedSessionFixture()
+        _ = await staleFixture.session.open()
+        await staleFixture.transport.rejectNextCommand(
+            code: "stale_fence",
+            retryable: false
+        )
+
+        do {
+            try await staleFixture.session.start()
+            XCTFail("Expected stale fence rejection")
+        } catch let error as LiveV1ClientError {
+            XCTAssertEqual(error.code, "stale_fence")
+        }
+        let stale = await staleFixture.session.snapshot()
+        XCTAssertEqual(
+            stale.connection,
+            .recoveryRequired(code: "stale_fence")
+        )
+        XCTAssertEqual(stale.pendingOperationCount, 1)
+
+        let revokedFixture = try HostedSessionFixture()
+        _ = await revokedFixture.session.open()
+        await revokedFixture.transport.rejectNextCommand(
+            code: "unauthorized",
+            retryable: false
+        )
+
+        do {
+            try await revokedFixture.session.start()
+            XCTFail("Expected revoked credential rejection")
+        } catch let error as LiveV1ClientError {
+            XCTAssertEqual(error.code, "unauthorized")
+        }
+        let revoked = await revokedFixture.session.snapshot()
+        XCTAssertEqual(revoked.connection, .signedOut)
+        XCTAssertEqual(revoked.pendingOperationCount, 1)
+    }
+
+    func testDefinitiveFinishGatesKeepCurrentActivityWithoutRecoveryDebt() async throws {
+        let fixture = try HostedSessionFixture()
+        _ = await fixture.session.open()
+        await fixture.transport.rejectNextCommand(
+            code: "candidate_evidence_required",
+            retryable: false
+        )
+
+        do {
+            try await fixture.session.finish()
+            XCTFail("Expected hosted evidence gate")
+        } catch let error as LiveV1ClientError {
+            XCTAssertEqual(error.code, "candidate_evidence_required")
+        }
+        var snapshot = await fixture.session.snapshot()
+        XCTAssertEqual(snapshot.activityID, "activity-1")
+        XCTAssertEqual(snapshot.connection, .writable)
+        XCTAssertEqual(snapshot.pendingOperationCount, 0)
+
+        await fixture.transport.rejectNextCommand(
+            code: "no_next_activity",
+            retryable: false
+        )
+        do {
+            try await fixture.session.finishNext(nextActivityID: "activity-2")
+            XCTFail("Expected no-next gate")
+        } catch let error as LiveV1ClientError {
+            XCTAssertEqual(error.code, "no_next_activity")
+        }
+        snapshot = await fixture.session.snapshot()
+        XCTAssertEqual(snapshot.activityID, "activity-1")
+        XCTAssertEqual(snapshot.connection, .writable)
+        XCTAssertEqual(snapshot.pendingOperationCount, 0)
     }
 
     func testTimerUsesServerOffsetWithoutPersistingLocalTicks() async throws {
@@ -161,8 +372,8 @@ final class HostedPracticeSessionTests: XCTestCase {
             Array(paths.suffix(4)),
             [
                 "/live/v1/today",
-                "/live/v1/activities/activity-1/lease/release",
                 "/live/v1/activities/activity-2",
+                "/live/v1/activities/activity-1/lease/release",
                 "/live/v1/activities/activity-2/lease/acquire",
             ]
         )
@@ -244,6 +455,7 @@ private final class HostedSessionFixture {
     let token: TestTokenReader
     let transport: HostedFixtureTransport
     let outbox: PrivateLiveOutboxStore
+    let clock: TestLiveClock
     let session: HostedPracticeSession
     private let root: URL
 
@@ -261,6 +473,7 @@ private final class HostedSessionFixture {
         outbox = PrivateLiveOutboxStore(
             directoryURL: root.appendingPathComponent("outbox")
         )
+        clock = TestLiveClock(now: 1_000_000)
         session = HostedPracticeSession(
             client: LiveV1Client(tokenReader: token, transport: transport),
             tokenReader: token,
@@ -271,7 +484,7 @@ private final class HostedSessionFixture {
             clipStore: PrivateLiveClipStore(
                 directoryURL: root.appendingPathComponent("clips")
             ),
-            clock: TestLiveClock(now: 1_000_000),
+            clock: clock,
             holderSessionID: holderSessionID
         )
     }
@@ -284,9 +497,19 @@ private actor TestTokenReader: LiveIntegrationTokenReading {
     func credentialFingerprint() -> String { String(repeating: "a", count: 64) }
 }
 
-private struct TestLiveClock: LiveClock {
-    let now: LiveEpochMilliseconds
-    func epochMilliseconds() -> LiveEpochMilliseconds { now }
+private final class TestLiveClock: LiveClock, @unchecked Sendable {
+    private let lock = NSLock()
+    private var now: LiveEpochMilliseconds
+
+    init(now: LiveEpochMilliseconds) { self.now = now }
+
+    func epochMilliseconds() -> LiveEpochMilliseconds {
+        lock.withLock { now }
+    }
+
+    func set(_ value: LiveEpochMilliseconds) {
+        lock.withLock { now = value }
+    }
 }
 
 private enum HostedFixtureTransportError: Error { case expectedFailure }
@@ -295,10 +518,17 @@ private actor HostedFixtureTransport: LiveV1Transport {
     private var recorded: [LiveV1Request] = []
     private var failCommand = false
     private var rejectLeaseAcquire = false
+    private var rejectReceiptLookup = false
+    private var commandRejection: (code: String, retryable: Bool)?
     private var useNextActivity = false
+    private var heldLease: LiveLeaseGrant?
 
     func failNextCommandTransport() { failCommand = true }
     func rejectNextLeaseAcquire() { rejectLeaseAcquire = true }
+    func rejectNextReceiptLookup() { rejectReceiptLookup = true }
+    func rejectNextCommand(code: String, retryable: Bool) {
+        commandRejection = (code, retryable)
+    }
     func selectNextActivity() { useNextActivity = true }
     func paths() -> [String] { recorded.map(\.path) }
     func commandBodies() -> [Data] {
@@ -315,12 +545,20 @@ private actor HostedFixtureTransport: LiveV1Transport {
             )
         }
         if request.path == "/live/v1/activities/activity-1" {
-            return response(HostedFixtures.activity)
+            return response(activityProjection(HostedFixtures.activity))
         }
         if request.path == "/live/v1/activities/activity-2" {
-            return response(HostedFixtures.nextActivity)
+            return response(activityProjection(HostedFixtures.nextActivity))
         }
         if request.path.contains("/receipts/") {
+            if rejectReceiptLookup {
+                rejectReceiptLookup = false
+                return errorResponse(
+                    status: 503,
+                    code: "upstream_unavailable",
+                    retryable: true
+                )
+            }
             return errorResponse(
                 status: 404,
                 code: "receipt_not_found",
@@ -336,6 +574,14 @@ private actor HostedFixtureTransport: LiveV1Transport {
             failCommand = false
             throw HostedFixtureTransportError.expectedFailure
         }
+        if request.path.hasSuffix("/commands"), let rejection = commandRejection {
+            commandRejection = nil
+            return errorResponse(
+                status: rejection.code == "unauthorized" ? 401 : 409,
+                code: rejection.code,
+                retryable: rejection.retryable
+            )
+        }
         if request.path.hasSuffix("/lease/acquire"), rejectLeaseAcquire {
             rejectLeaseAcquire = false
             return errorResponse(status: 409, code: "lease_held", retryable: false)
@@ -349,19 +595,35 @@ private actor HostedFixtureTransport: LiveV1Transport {
                 expiresAt: 1_090_000,
                 holderSessionId: object["holderSessionId"] as? String ?? ""
             )
+            heldLease = lease
+        } else if request.path.hasSuffix("/lease/renew") {
+            operation = "lease.renew"
+            lease = LiveLeaseGrant(
+                fencingToken: 7,
+                expiresAt: 1_150_000,
+                holderSessionId: object["holderSessionId"] as? String ?? ""
+            )
+            heldLease = lease
         } else if request.path.hasSuffix("/lease/release") {
             operation = "lease.release"
             lease = nil
+            heldLease = nil
         } else if request.path.hasSuffix("/commands") {
             operation = "command.\(object["command"] as? String ?? "")"
             lease = nil
+            if object["command"] as? String == "finish"
+                || object["command"] as? String == "finish-next" {
+                heldLease = nil
+            }
         } else {
             operation = "fixture"
             lease = nil
         }
-        let projectedActivity = request.path.contains("activity-2")
-            ? HostedFixtures.nextActivity
-            : HostedFixtures.activity
+        let projectedActivity = activityProjection(
+            request.path.contains("activity-2")
+                ? HostedFixtures.nextActivity
+                : HostedFixtures.activity
+        )
         let selectedNextActivityID = object["command"] as? String == "finish-next"
             ? "activity-2"
             : nil
@@ -391,6 +653,27 @@ private actor HostedFixtureTransport: LiveV1Transport {
         LiveV1HTTPResponse(
             statusCode: 200,
             body: try! JSONEncoder().encode(value)
+        )
+    }
+
+    private func activityProjection(
+        _ base: LiveActivityProjection
+    ) -> LiveActivityProjection {
+        LiveActivityProjection(
+            protocolVersion: base.protocolVersion,
+            serverTime: base.serverTime,
+            ownerRevision: base.ownerRevision,
+            workbench: base.workbench,
+            focus: base.focus,
+            session: base.session,
+            activity: base.activity,
+            lease: LiveLeaseSummary(
+                active: heldLease != nil,
+                holderPresent: heldLease != nil,
+                expiresAt: heldLease?.expiresAt
+            ),
+            pairs: base.pairs,
+            clips: base.clips
         )
     }
 

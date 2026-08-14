@@ -194,15 +194,16 @@ struct SystemDesignRoomView: View {
     private func roomStatusMenu(
         presentation: FullRoomHeaderStatusPresentation
     ) -> some View {
-        Menu {
+        let endpointPresentation = model.endpointHandoffPresentation
+        return Menu {
             Picker("Turn-taking", selection: turnModeRawSelection) {
                 ForEach(model.availableTurnModes, id: \.rawValue) { mode in
                     Text(model.turnModeTitle(mode)).tag(mode.rawValue)
                 }
             }
             Divider()
-            Text(model.endpointShadowPresentation.title)
-            Text(model.endpointShadowPresentation.detail)
+            Text(endpointPresentation.title)
+            Text(endpointPresentation.detail)
             if model.usesHostedAuthority {
                 Divider()
                 Text(model.hostedConnectionTitle)
@@ -900,39 +901,79 @@ struct SystemDesignRoomView: View {
     }
 
     private var floorRail: some View {
+        ViewThatFits(in: .horizontal) {
+            floorRailContent(compact: false)
+                .fixedSize(horizontal: true, vertical: false)
+            floorRailContent(compact: true)
+        }
+        .foregroundStyle(LivePalette.navy)
+        .frame(minHeight: FullRoomLayout.floorRailHeight)
+        .background(LivePalette.paper)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier(FullRoomAccessibility.floorRail)
+        .overlay {
+            RoundedRectangle(cornerRadius: 13, style: .continuous)
+                .stroke(LivePalette.line, lineWidth: 1)
+                .padding(
+                    .horizontal,
+                    FullRoomLayout.floorOutlineHorizontalInset
+                )
+                .padding(.vertical, FullRoomLayout.floorOutlineVerticalInset)
+        }
+    }
+
+    private func floorRailContent(compact: Bool) -> some View {
         let floorState = model.floorStatePresentation
 
-        return HStack(spacing: 14) {
+        return HStack(
+            spacing: compact ? FullRoomLayout.floorCompactSpacing : 14
+        ) {
             VStack(alignment: .leading, spacing: 3) {
                 Text(floorState.full.label.uppercased())
                     .font(.system(.callout, design: .rounded, weight: .bold))
                     .foregroundStyle(LivePalette.violet)
                     .lineLimit(1)
                     .minimumScaleFactor(0.8)
-                Text(floorState.full.detail)
-                    .font(.system(.caption, design: .rounded, weight: .medium))
-                    .foregroundStyle(LivePalette.muted)
-                    .lineLimit(1)
+                if !compact {
+                    Text(floorState.full.detail)
+                        .font(.system(.caption, design: .rounded, weight: .medium))
+                        .foregroundStyle(LivePalette.muted)
+                        .lineLimit(1)
+                }
             }
-            .frame(width: FullRoomLayout.floorStatusWidth, alignment: .leading)
+            .frame(
+                width: compact
+                    ? FullRoomLayout.floorCompactStatusWidth
+                    : FullRoomLayout.floorStatusWidth,
+                alignment: .leading
+            )
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(floorState.full.label)
+            .accessibilityValue(floorState.full.detail)
 
             LiveWaveform(isActive: model.canStopRecording)
-                .frame(minWidth: 140, maxWidth: .infinity)
+                .frame(
+                    minWidth: compact
+                        ? FullRoomLayout.floorCompactWaveformWidth
+                        : 140,
+                    maxWidth: .infinity
+                )
                 .frame(height: FullRoomLayout.minimumActionHitTarget)
 
             if model.usesHostedAuthority {
                 Button {
                     Task { await model.toggleHostedTimer() }
                 } label: {
-                    Label(
+                    floorActionLabel(
                         model.hostedElapsedText
                             ?? (model.hostedTimerIsRunning ? "Pause" : "Start"),
                         systemImage: model.hostedTimerIsRunning
                             ? "pause.circle.fill"
-                            : "play.circle.fill"
+                            : "play.circle.fill",
+                        compact: compact,
+                        wideMinimumWidth: 76
                     )
                     .monospacedDigit()
-                    .frame(minHeight: FullRoomLayout.minimumActionHitTarget)
                 }
                 .buttonStyle(.bordered)
                 .disabled(!model.isHostedWritable)
@@ -963,57 +1004,96 @@ struct SystemDesignRoomView: View {
                         }
                     }
                 } label: {
-                    Label(hostedResultTitle, systemImage: "checkmark.seal")
-                        .frame(minHeight: FullRoomLayout.minimumActionHitTarget)
+                    floorActionLabel(
+                        hostedResultTitle,
+                        systemImage: "checkmark.seal",
+                        compact: compact,
+                        wideMinimumWidth: 88
+                    )
                 }
                 .menuStyle(.borderlessButton)
                 .disabled(!model.isHostedWritable)
+                .accessibilityLabel("Hosted result: \(hostedResultTitle)")
+                .help("Set the hosted activity result")
+            }
+
+            if model.activeEndpointGrace != nil {
+                Button {
+                    Task { await model.keepMyFloor() }
+                } label: {
+                    floorActionLabel(
+                        "Keep my floor",
+                        systemImage: "hand.raised.fill",
+                        compact: compact,
+                        wideMinimumWidth: 112
+                    )
+                }
+                .buttonStyle(RoomChromeButtonStyle())
+                .foregroundStyle(LivePalette.violet)
+                .disabled(!model.canKeepFloor)
+                .keyboardShortcut(.escape, modifiers: [])
+                .accessibilityIdentifier(FullRoomAccessibility.keepFloorAction)
+                .accessibilityLabel("Keep my floor")
+                .accessibilityHint("Cancels the pending automatic Hand off without changing saved answer evidence")
+                .help("Cancel automatic Hand off")
             }
 
             Button {
                 Task { await model.performPrimaryAction() }
             } label: {
-                Label(model.actionTitle, systemImage: model.actionIcon)
-                    .font(.system(.body, design: .rounded, weight: .semibold))
-                    .frame(
-                        minWidth: 132,
-                        minHeight: FullRoomLayout.minimumActionHitTarget
-                    )
+                floorActionLabel(
+                    model.actionTitle,
+                    systemImage: model.actionIcon,
+                    compact: compact,
+                    wideMinimumWidth: 132
+                )
             }
             .buttonStyle(RoomPrimaryActionButtonStyle())
             .disabled(!model.canAct)
             .keyboardShortcut(.return, modifiers: [.command])
             .accessibilityIdentifier(FullRoomAccessibility.primaryAction)
+            .accessibilityLabel(model.actionTitle)
             .accessibilityHint(floorState.primaryActionHint)
+            .help(model.actionTitle)
 
             if model.canStopRecording {
                 headerDivider
                 Button {
                     Task { await model.stopRecording() }
                 } label: {
-                    Label("Pause", systemImage: "pause.fill")
-                        .font(.system(.body, design: .rounded, weight: .semibold))
-                        .frame(minWidth: 86, minHeight: FullRoomLayout.minimumActionHitTarget)
+                    floorActionLabel(
+                        "Pause",
+                        systemImage: "pause.fill",
+                        compact: compact,
+                        wideMinimumWidth: 86
+                    )
                 }
                 .buttonStyle(RoomChromeButtonStyle())
                 .foregroundStyle(LivePalette.navy)
                 .disabled(model.isWorking)
                 .keyboardShortcut(.space, modifiers: [.command])
                 .accessibilityIdentifier(FullRoomAccessibility.recordingAction)
+                .accessibilityLabel("Pause recording")
+                .help("Pause recording")
             } else if model.showsRecordControl {
                 headerDivider
                 Button {
                     Task { await model.recordSegment() }
                 } label: {
-                    Label("Record", systemImage: "record.circle")
-                        .font(.system(.body, design: .rounded, weight: .semibold))
-                        .frame(minWidth: 86, minHeight: FullRoomLayout.minimumActionHitTarget)
+                    floorActionLabel(
+                        "Record",
+                        systemImage: "record.circle",
+                        compact: compact,
+                        wideMinimumWidth: 86
+                    )
                 }
                 .buttonStyle(RoomChromeButtonStyle())
                 .foregroundStyle(LivePalette.navy)
                 .disabled(!model.canRecordSegment)
                 .keyboardShortcut(.space, modifiers: [.command])
                 .accessibilityIdentifier(FullRoomAccessibility.recordingAction)
+                .accessibilityLabel("Record answer segment")
+                .help("Record answer segment")
             }
 
             headerDivider
@@ -1022,17 +1102,20 @@ struct SystemDesignRoomView: View {
                 Button {
                     Task { _ = await model.finishAndOpenNextInterview() }
                 } label: {
-                    Label("Finish & next", systemImage: "forward.end.fill")
-                        .font(.system(.body, design: .rounded, weight: .medium))
-                        .frame(
-                            minWidth: 112,
-                            minHeight: FullRoomLayout.minimumActionHitTarget
-                        )
+                    floorActionLabel(
+                        "Finish & next",
+                        systemImage: "forward.end.fill",
+                        compact: compact,
+                        wideMinimumWidth: 112,
+                        weight: .medium
+                    )
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(LivePalette.violet)
                 .disabled(model.isWorking || !model.isHostedWritable)
                 .accessibilityIdentifier(FullRoomAccessibility.finishNextAction)
+                .accessibilityLabel("Finish and open next interview")
+                .help("Finish and open next interview")
 
                 headerDivider
             }
@@ -1040,28 +1123,52 @@ struct SystemDesignRoomView: View {
             Button {
                 Task { _ = await model.finishInterview() }
             } label: {
-                Label("End", systemImage: "stop.fill")
-                    .font(.system(.body, design: .rounded, weight: .medium))
-                    .frame(minWidth: 70, minHeight: FullRoomLayout.minimumActionHitTarget)
+                floorActionLabel(
+                    "End",
+                    systemImage: "stop.fill",
+                    compact: compact,
+                    wideMinimumWidth: 70,
+                    weight: .medium
+                )
             }
             .buttonStyle(RoomChromeButtonStyle(tint: LivePalette.warning))
             .foregroundStyle(LivePalette.warning)
             .accessibilityIdentifier(FullRoomAccessibility.endAction)
+            .accessibilityLabel("End interview")
+            .help("End interview")
         }
-        .foregroundStyle(LivePalette.navy)
-        .padding(.horizontal, FullRoomLayout.floorContentHorizontalPadding)
-        .frame(minHeight: FullRoomLayout.floorRailHeight)
-        .background(LivePalette.paper)
-        .accessibilityElement(children: .contain)
-        .accessibilityIdentifier(FullRoomAccessibility.floorRail)
-        .overlay {
-            RoundedRectangle(cornerRadius: 13, style: .continuous)
-                .stroke(LivePalette.line, lineWidth: 1)
-                .padding(
-                    .horizontal,
-                    FullRoomLayout.floorOutlineHorizontalInset
+        .padding(
+            .horizontal,
+            compact
+                ? FullRoomLayout.floorCompactHorizontalPadding
+                : FullRoomLayout.floorContentHorizontalPadding
+        )
+    }
+
+    @ViewBuilder
+    private func floorActionLabel(
+        _ title: String,
+        systemImage: String,
+        compact: Bool,
+        wideMinimumWidth: CGFloat,
+        weight: Font.Weight = .semibold
+    ) -> some View {
+        if compact {
+            Image(systemName: systemImage)
+                .font(.system(.body, design: .rounded, weight: weight))
+                .frame(
+                    minWidth: FullRoomLayout.minimumActionHitTarget,
+                    minHeight: FullRoomLayout.minimumActionHitTarget
                 )
-                .padding(.vertical, FullRoomLayout.floorOutlineVerticalInset)
+                .accessibilityHidden(true)
+        } else {
+            Label(title, systemImage: systemImage)
+                .font(.system(.body, design: .rounded, weight: weight))
+                .lineLimit(1)
+                .frame(
+                    minWidth: wideMinimumWidth,
+                    minHeight: FullRoomLayout.minimumActionHitTarget
+                )
         }
     }
 
@@ -1281,6 +1388,10 @@ enum FullRoomLayout {
     static let boardMinimumWidth: CGFloat = 483
     static let floorRailHeight: CGFloat = 55
     static let floorStatusWidth: CGFloat = 144
+    static let floorCompactStatusWidth: CGFloat = 112
+    static let floorCompactWaveformWidth: CGFloat = 80
+    static let floorCompactSpacing: CGFloat = 8
+    static let floorCompactHorizontalPadding: CGFloat = 16
     static let floorContentHorizontalPadding: CGFloat = 24
     static let floorOutlineHorizontalInset: CGFloat = 16
     static let floorOutlineVerticalInset: CGFloat = 4
@@ -1288,6 +1399,15 @@ enum FullRoomLayout {
     static let requiredWorkspaceHeight: CGFloat = 320
     static let requiredTurnlineHeight: CGFloat = 200
     static let minimumWindowHeight: CGFloat = 500
+
+    static var floorCompactMaximumRequiredWidth: CGFloat {
+        floorCompactStatusWidth
+            + floorCompactWaveformWidth
+            + 7 * minimumActionHitTarget
+            + 3 * workspaceVisualDividerWidth
+            + 11 * floorCompactSpacing
+            + 2 * floorCompactHorizontalPadding
+    }
 
     static var questionBandMaximumHeight: CGFloat {
         questionBandHeight(forLineCount: questionLineLimit)
@@ -1583,6 +1703,7 @@ enum FullRoomAccessibility {
     static let board = "full-room-board"
     static let floorRail = "full-room-floor-rail"
     static let primaryAction = "full-room-primary-action"
+    static let keepFloorAction = "full-room-keep-floor-action"
     static let recordingAction = "full-room-recording-action"
     static let endAction = "full-room-end-action"
     static let finishNextAction = "full-room-finish-next-action"

@@ -146,32 +146,47 @@ public actor HostedPracticeSession {
             let quarantined = try await outbox.hasQuarantinedPartitions(
                 excluding: fingerprint
             )
-            if !pending.isEmpty {
-                state = copy(
-                    connection: .recoveryRequired(code: "pending_operation"),
-                    pendingOperationCount: pending.count,
-                    hasQuarantinedOperations: quarantined
-                )
-                await recoverPendingOperations()
-                if case .recoveryRequired = state.connection { return state }
-            }
+            var authority = try await readAuthority()
+            state = HostedPracticeSnapshot(
+                connection: .loading,
+                today: authority.today,
+                activity: authority.activity,
+                pendingOperationCount: pending.count,
+                hasQuarantinedOperations: quarantined,
+                localToServerOffsetMilliseconds: authority.serverTime
+                    - clock.epochMilliseconds()
+            )
 
-            let today = try await client.today()
-            guard let summary = today.selectedSystemDesignActivity else {
-                state = HostedPracticeSnapshot(
-                    connection: .noOpenSystemDesignActivity,
-                    today: today,
-                    pendingOperationCount: 0,
-                    hasQuarantinedOperations: quarantined,
-                    localToServerOffsetMilliseconds:
-                        today.serverTime - clock.epochMilliseconds()
+            guard !quarantined else {
+                state = copy(
+                    connection: .recoveryRequired(code: "credential_changed")
                 )
                 return state
             }
-            let activity = try await client.activity(summary.id)
+            if !pending.isEmpty {
+                state = copy(
+                    connection: .recoveryRequired(code: "pending_operation"),
+                    pendingOperationCount: pending.count
+                )
+                await recoverPendingOperations()
+                if case .recoveryRequired = state.connection { return state }
+                authority = try await readAuthority()
+            }
+
+            guard let activity = authority.activity else {
+                state = HostedPracticeSnapshot(
+                    connection: .noOpenSystemDesignActivity,
+                    today: authority.today,
+                    pendingOperationCount: 0,
+                    hasQuarantinedOperations: quarantined,
+                    localToServerOffsetMilliseconds:
+                        authority.serverTime - clock.epochMilliseconds()
+                )
+                return state
+            }
             state = HostedPracticeSnapshot(
                 connection: .readOnly(reason: "Acquiring writer lease"),
-                today: today,
+                today: authority.today,
                 activity: activity,
                 pendingOperationCount: 0,
                 hasQuarantinedOperations: quarantined,
@@ -196,29 +211,49 @@ public actor HostedPracticeSession {
 
     @discardableResult
     public func refresh() async throws -> HostedPracticeSnapshot {
-        let today = try await client.today()
-        guard let selectedID = today.selectedSystemDesignActivity?.id else {
+        let previousActivityID = state.activityID
+        var authority = try await readAuthority()
+        guard !state.hasQuarantinedOperations else {
+            state = HostedPracticeSnapshot(
+                connection: .recoveryRequired(code: "credential_changed"),
+                today: authority.today,
+                activity: authority.activity,
+                pendingOperationCount: try await pendingCount(),
+                hasQuarantinedOperations: true,
+                lastLiveInvalidationRevision: state.lastLiveInvalidationRevision,
+                localToServerOffsetMilliseconds:
+                    authority.serverTime - clock.epochMilliseconds()
+            )
+            throw HostedPracticeSessionError.recoveryRequired(
+                "credential_changed"
+            )
+        }
+        if try await recoverPendingOperationsAfterAuthorityRead() {
+            authority = try await readAuthority()
+        }
+
+        guard let selectedID = authority.today.selectedSystemDesignActivity?.id,
+              let activity = authority.activity else {
             if state.lease != nil { try await releaseLease() }
             state = HostedPracticeSnapshot(
                 connection: .noOpenSystemDesignActivity,
-                today: today,
+                today: authority.today,
                 hasQuarantinedOperations: state.hasQuarantinedOperations,
                 localToServerOffsetMilliseconds:
-                    today.serverTime - clock.epochMilliseconds()
+                    authority.serverTime - clock.epochMilliseconds()
             )
             return state
         }
 
-        let selectionChanged = state.activityID != selectedID
+        let selectionChanged = previousActivityID != selectedID
         if selectionChanged, state.lease != nil {
             try await releaseLease()
         }
 
-        let activity = try await client.activity(selectedID)
         if selectionChanged {
             state = HostedPracticeSnapshot(
                 connection: .readOnly(reason: "Acquiring selected activity writer lease"),
-                today: today,
+                today: authority.today,
                 activity: activity,
                 pendingOperationCount: try await pendingCount(),
                 hasQuarantinedOperations: state.hasQuarantinedOperations,
@@ -233,12 +268,12 @@ public actor HostedPracticeSession {
             return state
         }
 
-        let writable = leaseIsCurrent(at: activity.serverTime)
+        let writable = leaseIsCurrent(in: activity)
         state = HostedPracticeSnapshot(
             connection: writable
                 ? .writable
                 : .readOnly(reason: "Writer lease required"),
-            today: today,
+            today: authority.today,
             activity: activity,
             lease: writable ? state.lease : nil,
             pendingOperationCount: try await pendingCount(),
@@ -338,6 +373,14 @@ public actor HostedPracticeSession {
     }
 
     public func releaseLease() async throws {
+        let pending = try await pendingCount()
+        guard pending == 0 else {
+            state = copy(
+                connection: .recoveryRequired(code: "pending_operation"),
+                pendingOperationCount: pending
+            )
+            throw HostedPracticeSessionError.operationAlreadyPending
+        }
         _ = try await fencedMutation(
             operation: "lease.release",
             pathSuffix: "lease/release"
@@ -488,6 +531,34 @@ public actor HostedPracticeSession {
         }
     }
 
+    private func recoverPendingOperationsAfterAuthorityRead() async throws -> Bool {
+        let pending = try await pendingCount()
+        guard pending > 0 else { return false }
+
+        state = copy(
+            connection: .recoveryRequired(code: "pending_operation"),
+            pendingOperationCount: pending
+        )
+        await recoverPendingOperations()
+
+        let remaining = try await pendingCount()
+        guard remaining == 0 else {
+            throw HostedPracticeSessionError.operationAlreadyPending
+        }
+        return true
+    }
+
+    private func readAuthority() async throws -> HostedAuthorityRead {
+        let today = try await client.today()
+        guard let selectedID = today.selectedSystemDesignActivity?.id else {
+            return HostedAuthorityRead(today: today, activity: nil)
+        }
+        return HostedAuthorityRead(
+            today: today,
+            activity: try await client.activity(selectedID)
+        )
+    }
+
     private func recover(
         _ record: LiveOutboxRecord,
         credentialFingerprint: String
@@ -506,6 +577,7 @@ public actor HostedPracticeSession {
                 operationID: record.operationId,
                 credentialFingerprint: credentialFingerprint
             )
+            applyRecoveredReceipt(record)
             return true
         } catch let error as LiveV1ClientError {
             guard error.code == "receipt_not_found" else {
@@ -533,11 +605,13 @@ public actor HostedPracticeSession {
             if record.method == .put {
                 try await replayClipUpload(record)
             } else {
-                _ = try await client.mutation(
+                let response = try await client.mutation(
                     activityID: record.activityId,
                     suffix: record.pathSuffix,
                     canonicalBody: record.canonicalBody
                 )
+                apply(response)
+                applyRecoveredReceipt(record)
             }
             try await outbox.remove(
                 operationID: record.operationId,
@@ -941,10 +1015,23 @@ public actor HostedPracticeSession {
         clock.epochMilliseconds() + state.localToServerOffsetMilliseconds
     }
 
-    private func leaseIsCurrent(at serverTime: LiveEpochMilliseconds) -> Bool {
+    private func leaseIsCurrent(in activity: LiveActivityProjection) -> Bool {
         guard let lease = state.lease else { return false }
         return lease.holderSessionId == holderSessionID
-            && lease.expiresAt > serverTime
+            && lease.expiresAt > activity.serverTime
+            && activity.lease.active
+            && activity.lease.holderPresent
+            && activity.lease.expiresAt == lease.expiresAt
+    }
+
+    private func applyRecoveredReceipt(_ record: LiveOutboxRecord) {
+        guard record.operation == "lease.release"
+                || record.operation == "command.finish"
+                || record.operation == "command.finish-next" else { return }
+        state = copy(
+            connection: .readOnly(reason: "Hosted activity finished or released"),
+            clearLease: true
+        )
     }
 
     private func operationID(_ prefix: String) -> String {
@@ -1032,6 +1119,15 @@ public actor HostedPracticeSession {
             localToServerOffsetMilliseconds: localToServerOffsetMilliseconds
                 ?? state.localToServerOffsetMilliseconds
         )
+    }
+}
+
+private struct HostedAuthorityRead {
+    let today: LiveTodayProjection
+    let activity: LiveActivityProjection?
+
+    var serverTime: LiveEpochMilliseconds {
+        activity?.serverTime ?? today.serverTime
     }
 }
 

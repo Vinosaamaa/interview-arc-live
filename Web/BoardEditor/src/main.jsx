@@ -1,6 +1,7 @@
 import React, {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useRef,
   useState,
 } from "react";
@@ -23,6 +24,8 @@ import {
 } from "./tool-mapping.js";
 import {
   boardChromeActionConfigurations,
+  boardChromeLayout,
+  createBoardToolbarGeometryAdapter,
 } from "./board-chrome.js";
 import "./style.css";
 
@@ -729,12 +732,59 @@ const BoardActionIcon = ({ name }) => {
 
 const BoardChromeControls = ({ controls, onAction }) => {
   const actions = boardChromeActionConfigurations(controls);
+  const controlsRef = useRef(null);
+  const [layout, setLayout] = useState({ mode: "stacked", right: 12, top: 72 });
+
+  useLayoutEffect(() => {
+    const controlsElement = controlsRef.current;
+    const shell = controlsElement?.closest(".board-shell");
+    if (!controlsElement || !shell) return undefined;
+
+    let frame = 0;
+    let toolbarAdapter;
+    const updateLayout = () => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => {
+        const shellRect = shell.getBoundingClientRect();
+        const next = boardChromeLayout({
+          viewportWidth: shellRect.width,
+          toolbar: toolbarAdapter?.bounds(shell) ?? null,
+          controlsWidth: controlsElement.getBoundingClientRect().width,
+        });
+        setLayout((current) => (
+          current.mode === next.mode
+            && current.right === next.right
+            && current.top === next.top
+            ? current
+            : next
+        ));
+      });
+    };
+
+    const resizeObserver = new ResizeObserver(updateLayout);
+    resizeObserver.observe(shell);
+    resizeObserver.observe(controlsElement);
+    toolbarAdapter = createBoardToolbarGeometryAdapter({
+      root: shell,
+      onChange: updateLayout,
+    });
+    updateLayout();
+
+    return () => {
+      cancelAnimationFrame(frame);
+      resizeObserver.disconnect();
+      toolbarAdapter.disconnect();
+    };
+  }, []);
 
   return (
     <div
       aria-label="Board revisions and export"
       className="interview-arc-board-controls"
+      data-placement={layout.mode}
+      ref={controlsRef}
       role="toolbar"
+      style={{ right: layout.right, top: layout.top }}
     >
       {actions.map((action) => (
         <button
@@ -937,12 +987,6 @@ function BoardEditor() {
         viewModeEnabled={readOnly}
         theme="light"
         onChange={handleChange}
-        renderTopRightUI={() => (
-          <BoardChromeControls
-            controls={nativeControls}
-            onAction={handleNativeAction}
-          />
-        )}
         validateEmbeddable={() => false}
         renderEmbeddable={() => null}
         onLinkOpen={(_element, event) => event.preventDefault()}
@@ -957,6 +1001,10 @@ function BoardEditor() {
             toggleTheme: false,
           },
         }}
+      />
+      <BoardChromeControls
+        controls={nativeControls}
+        onAction={handleNativeAction}
       />
       <SemanticNodeOverlay
         elements={overlayScene.elements}

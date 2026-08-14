@@ -474,21 +474,39 @@ final class SystemDesignRoomModel: ObservableObject {
         case .manual:
             return "Manual"
         case .patientAuto:
-            return "Patient Auto · Shadow"
+            return "Patient Auto"
         case .cueOnly:
             return "Cue Only"
         }
     }
 
-    var endpointShadowPresentation: EndpointShadowPresentation {
+    var activeEndpointGrace: EndpointGrace? {
+        snapshot?.endpointGraces.last { $0.lifecycle == .pending }
+    }
+
+    var canKeepFloor: Bool {
+        canKeepFloor(pendingGrace: activeEndpointGrace)
+    }
+
+    func canKeepFloor(pendingGrace: EndpointGrace?) -> Bool {
+        pendingGrace != nil
+            && !isWorking
+            && !hasPendingLocalPersistence
+    }
+
+    var endpointHandoffPresentation: EndpointHandoffPresentation {
         guard let snapshot else {
-            return EndpointShadowPresentation.make(
-                turnMode: .manual,
-                phase: nil,
-                currentEvaluation: nil,
-                hasSelectedDraft: false,
-                hasUnresolvedDraft: false,
-                hasStaleEvaluation: false
+            return EndpointHandoffPresentation.make(
+                input: EndpointHandoffPresentation.Input(
+                    turnMode: .manual,
+                    phase: nil,
+                    currentEvaluation: nil,
+                    endpointGrace: nil,
+                    canAutomaticallyHandOff: false,
+                    hasSelectedDraft: false,
+                    hasUnresolvedDraft: false,
+                    hasStaleEvaluation: false
+                )
             )
         }
 
@@ -509,21 +527,28 @@ final class SystemDesignRoomModel: ObservableObject {
             return interviewer.id
         }.first
         let latestEvaluation = snapshot.endpointEvaluations.last
-        let currentEvaluation = EndpointShadowPresentation.currentEvaluation(
+        let currentEvaluation = EndpointHandoffPresentation.currentEvaluation(
             in: snapshot.endpointEvaluations,
             selectedCandidateIDs: selectedCandidateIDs,
             questionTurnID: questionTurnID,
             hasUnresolvedDraft: hasUnresolvedDraft
         )
+        let currentGrace = currentEvaluation.flatMap { evaluation in
+            snapshot.endpointGraces.last { $0.evaluationID == evaluation.id }
+        }
 
-        return EndpointShadowPresentation.make(
-            turnMode: snapshot.turnMode,
-            phase: snapshot.phase,
-            currentEvaluation: currentEvaluation,
-            hasSelectedDraft: !selectedCandidateIDs.isEmpty,
-            hasUnresolvedDraft: hasUnresolvedDraft,
-            hasStaleEvaluation: latestEvaluation != nil
-                && currentEvaluation == nil
+        return EndpointHandoffPresentation.make(
+            input: EndpointHandoffPresentation.Input(
+                turnMode: snapshot.turnMode,
+                phase: snapshot.phase,
+                currentEvaluation: currentEvaluation,
+                endpointGrace: currentGrace,
+                canAutomaticallyHandOff: boardAttachmentForHandOff != nil,
+                hasSelectedDraft: !selectedCandidateIDs.isEmpty,
+                hasUnresolvedDraft: hasUnresolvedDraft,
+                hasStaleEvaluation: latestEvaluation != nil
+                    && currentEvaluation == nil
+            )
         )
     }
 
@@ -606,14 +631,14 @@ final class SystemDesignRoomModel: ObservableObject {
             }
             return .revision(inspectedBoardRevisionID)
         }
-        if boardEditor.document.elements.isEmpty {
-            return .noBoard
-        }
-        guard let latestBoardRevision,
-              latestBoardRevision.document == boardEditor.document else {
-            return nil
-        }
-        return .revision(latestBoardRevision.id)
+        guard let snapshot else { return nil }
+        let board = BoardWorkspace(
+            draft: boardEditor.document,
+            revisions: snapshot.board.revisions,
+            selectedRevisionID: snapshot.board.selectedRevisionID,
+            exports: snapshot.board.exports
+        )
+        return BoardHandoffAttachmentPolicy.currentDraftAttachment(in: board)
     }
 
     var canSaveBoardRevision: Bool {
@@ -1500,6 +1525,30 @@ final class SystemDesignRoomModel: ObservableObject {
         }
     }
 
+    func keepMyFloor() async {
+        guard let coordinator,
+              let grace = activeEndpointGrace,
+              canKeepFloor else { return }
+
+        isWorking = true
+        errorMessage = nil
+        defer {
+            isWorking = false
+            statusMessage = status(for: snapshot)
+        }
+
+        do {
+            let updated = try await coordinator.cancelEndpointGrace(
+                graceID: grace.id,
+                commandID: commandID("keep-floor")
+            )
+            publish(updated)
+        } catch {
+            publish(coordinator.snapshot)
+            errorMessage = "Automatic Hand off could not be cancelled. Begin recording or retry Keep my floor."
+        }
+    }
+
     func performPrimaryAction() async {
         guard let coordinator, let snapshot else { return }
         if snapshot.phase == .candidateFloor,
@@ -2243,6 +2292,10 @@ final class SystemDesignRoomModel: ObservableObject {
     private func status(for snapshot: InterviewRoomSnapshot?) -> String {
         guard let snapshot else { return "Restoring local session…" }
         let draft = snapshot.segments.filter { $0.committedTurnID == nil }
+
+        if snapshot.endpointGraces.contains(where: { $0.lifecycle == .pending }) {
+            return "Handing off in 4 seconds · Keep my floor to cancel"
+        }
 
         if draft.contains(where: { $0.lifecycle == .captureAuthorized }) {
             return "Preparing microphone"

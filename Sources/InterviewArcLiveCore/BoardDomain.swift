@@ -745,3 +745,21 @@ public struct BoardWorkspace: Codable, Sendable, Equatable {
         BoardWorkspace(draft: .empty)
     }
 }
+
+/// Canonical policy for attaching the current Board during Hand off. A
+/// nonempty dirty draft cannot be attached because it has no immutable
+/// Revision identity; both explicit and automatic Hand off use this policy.
+public enum BoardHandoffAttachmentPolicy {
+    public static func currentDraftAttachment(
+        in workspace: BoardWorkspace
+    ) -> CandidateTurnBoardAttachment? {
+        if workspace.draft.elements.isEmpty {
+            return .noBoard
+        }
+        guard let latest = workspace.revisions.last,
+              latest.document == workspace.draft else {
+            return nil
+        }
+        return .revision(latest.id)
+    }
+}
