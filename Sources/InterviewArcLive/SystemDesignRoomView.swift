@@ -488,10 +488,10 @@ struct SystemDesignRoomView: View {
                         if snapshot.phase == .candidateFloor {
                             candidateFloorEntry
                         } else if snapshot.turns.isEmpty {
-                            preparingEmptyState
+                            emptyTurnlineState
                         }
                     } else {
-                        preparingEmptyState
+                        emptyTurnlineState
                     }
                 }
                 .padding(.top, 26)
@@ -564,16 +564,24 @@ struct SystemDesignRoomView: View {
         }
     }
 
-    private var preparingEmptyState: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("PREPARING ROOM")
+    private var emptyTurnlineState: some View {
+        let presentation = model.floorStatePresentation
+
+        return VStack(alignment: .leading, spacing: 10) {
+            Text(presentation.full.label.uppercased())
                 .font(.system(.caption, design: .monospaced, weight: .bold))
-                .foregroundStyle(LivePalette.interviewer)
-            Text("Restoring the latest complete local session.")
+                .foregroundStyle(
+                    presentation.tone == .warning
+                        ? LivePalette.warning
+                        : LivePalette.interviewer
+                )
+            Text(presentation.full.detail)
                 .font(.system(.body, design: .rounded))
                 .foregroundStyle(LivePalette.muted)
         }
         .padding(28)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(presentation.full.accessibilityValue)
     }
 
     private var candidateFloorEntry: some View {

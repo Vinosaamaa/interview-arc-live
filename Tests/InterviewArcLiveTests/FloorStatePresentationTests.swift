@@ -197,6 +197,10 @@ final class FloorStatePresentationTests: XCTestCase {
             XCTAssertEqual(presentation.tone, .warning)
             XCTAssertEqual(presentation.full.label, item.fullLabel)
             XCTAssertEqual(presentation.full.detail, item.status)
+            XCTAssertEqual(
+                presentation.full.accessibilityValue,
+                "\(item.fullLabel). \(item.status)"
+            )
             XCTAssertEqual(presentation.compact.label, item.compactLabel)
             XCTAssertEqual(presentation.compact.detail, item.status)
             XCTAssertFalse(presentation.full.accessibilityValue.contains("Restoring"))
