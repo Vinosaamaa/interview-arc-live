@@ -28,12 +28,12 @@ struct InterviewArcLiveEndpointSmoke {
     }
 
     let stateRoot = workingDirectory.appendingPathComponent(
-      "shadow-state-\(UUID().uuidString)",
+      "patient-auto-state-\(UUID().uuidString)",
       isDirectory: true
     )
     defer { try? FileManager.default.removeItem(at: stateRoot) }
 
-    let sessionID = SessionID("installed-endpoint-shadow")
+    let sessionID = SessionID("installed-patient-auto")
     let store = FileSessionManifestStore(directoryURL: stateRoot)
     let credentialStore = LiveGroqCredentialStore()
     let productionClassifier = GroqEndpointClassifier(
@@ -74,7 +74,7 @@ struct InterviewArcLiveEndpointSmoke {
       )
       let coordinator = try await SegmentSpeechCoordinator.open(
         sessionID: sessionID,
-        activityID: "installed-endpoint-shadow",
+        activityID: "installed-patient-auto",
         activityPrompt: prompt,
         turnMode: .patientAuto,
         manifestStore: store,
@@ -85,15 +85,20 @@ struct InterviewArcLiveEndpointSmoke {
         semanticEndpointClassifier: classifier
       )
       _ = try await coordinator.giveCandidateFloor(
-        commandID: CommandID("installed-shadow-floor")
+        commandID: CommandID("installed-patient-auto-floor")
       )
       _ = try await coordinator.beginSegment(
-        commandID: CommandID("installed-shadow-begin")
+        commandID: CommandID("installed-patient-auto-begin")
       )
-      let completed = try await coordinator.finishSegment(
-        commandID: CommandID("installed-shadow-finish"),
-        transcriptionCommandID: CommandID("installed-shadow-transcribe")
+      let pending = try await coordinator.finishSegment(
+        commandID: CommandID("installed-patient-auto-finish"),
+        transcriptionCommandID: CommandID("installed-patient-auto-transcribe")
       )
+
+      try await Task.sleep(
+        for: .milliseconds(EndpointGrace.durationMilliseconds + 1_000)
+      )
+      let completed = coordinator.snapshot
 
       let persisted = try await store.load(sessionID: sessionID)
       let classifierCalls = await classifier.invocationCount()
@@ -101,24 +106,35 @@ struct InterviewArcLiveEndpointSmoke {
       let transcriberCalls = await transcriber.invocationCount()
       let interviewerCalls = await interviewer.invocationCount()
       guard
+        pending.turnMode == .patientAuto,
+        pending.phase == .candidateFloor,
+        pending.turns.isEmpty,
+        pending.endpointGraces.count == 1,
+        pending.endpointGraces.first?.lifecycle == .pending,
         completed.turnMode == .patientAuto,
-        completed.phase == .candidateFloor,
-        completed.turns.isEmpty,
+        completed.phase == .interviewerTurn,
+        completed.turns.count == 2,
         completed.segments.count == 1,
         completed.segments.first?.selectedCandidate?.body == transcript,
+        completed.segments.first?.committedTurnID != nil,
         completed.endpointEvaluations.count == 1,
         completed.endpointEvaluations.first?.lifecycle == .proposalStored,
-        completed.endpointEvaluations.first?.proposal != nil,
+        completed.endpointEvaluations.first?.proposal?.decision == .likelyEnd,
         completed.endpointEvaluations.first?.failure == nil,
+        completed.endpointGraces.count == 1,
+        completed.endpointGraces.first?.lifecycle == .completed,
+        completed.endpointGraces.first?.completedCandidateTurnID
+          == completed.segments.first?.committedTurnID,
         persisted?.endpointEvaluations == completed.endpointEvaluations,
-        persisted?.phase == .candidateFloor,
-        persisted?.turns.isEmpty == true,
+        persisted?.endpointGraces == completed.endpointGraces,
+        persisted?.phase == .interviewerTurn,
+        persisted?.turns == completed.turns,
         classifierCalls == 1,
         durableAtEntry,
         recorder.beginCount == 1,
         recorder.finishCount == 1,
         transcriberCalls == 1,
-        interviewerCalls == 0
+        interviewerCalls == 1
       else {
         if completed.endpointEvaluations.first?.failure?.reason == .missingCredential {
           fail(
@@ -126,16 +142,16 @@ struct InterviewArcLiveEndpointSmoke {
             code: 70
           )
         }
-        fail("Endpoint smoke failed: the Shadow invariants were not satisfied.", code: 70)
+        fail("Endpoint smoke failed: functional Patient Auto invariants were not satisfied.", code: 70)
       }
-      print("Installed Patient Auto Groq endpoint shadow smoke passed.")
+      print("Installed Patient Auto Groq endpoint and automatic Hand off smoke passed.")
     } catch SegmentSpeechCoordinatorError.credentialUnavailable {
       fail(
         "Endpoint smoke failed: Interview Arc Live has no readable Groq credential.",
         code: 70
       )
     } catch {
-      fail("Endpoint smoke failed before durable Shadow verification completed.", code: 70)
+      fail("Endpoint smoke failed before durable Patient Auto verification completed.", code: 70)
     }
   }
 
@@ -207,7 +223,7 @@ private final class DeterministicSegmentRecorder: SegmentRecording {
   init() throws {
     capture = CapturedAudioSegment(
       audioIdentity: try SegmentAudioIdentity(
-        validating: "installed-shadow-segment.m4a"
+        validating: "installed-patient-auto-segment.m4a"
       ),
       startedAtMilliseconds: 1_000,
       endedAtMilliseconds: 2_000,
@@ -275,8 +291,8 @@ private actor CountingInterviewerRuntime: InterviewerRuntime {
   ) -> CanonicalInterviewerResponse {
     calls += 1
     return CanonicalInterviewerResponse(
-      displayMarkdown: "This response must remain unreachable.",
-      spokenText: "This response must remain unreachable."
+      displayMarkdown: "What trade-off would you evaluate next?",
+      spokenText: "What trade-off would you evaluate next?"
     )
   }
 

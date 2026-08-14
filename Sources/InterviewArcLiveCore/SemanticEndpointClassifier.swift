@@ -229,6 +229,112 @@ public struct EndpointEvaluation: Codable, Sendable, Equatable {
   }
 }
 
+public struct EndpointGraceID:
+  RawRepresentable, Codable, Hashable, Sendable, CustomStringConvertible
+{
+  public let rawValue: String
+
+  public init(rawValue: String) {
+    self.rawValue = rawValue
+  }
+
+  public init(_ rawValue: String) {
+    self.rawValue = rawValue
+  }
+
+  public var description: String { rawValue }
+}
+
+public enum EndpointGraceLifecycle: String, Codable, Sendable, Equatable {
+  case pending
+  case cancelled
+  case completed
+}
+
+public enum EndpointGraceCancellationReason: String, Codable, Sendable, Equatable {
+  case keptFloor = "kept_floor"
+  case resumedSpeech = "resumed_speech"
+  case turnModeChanged = "turn_mode_changed"
+  case boardActivity = "board_activity"
+  case notesActivity = "notes_activity"
+  case manualHandOff = "manual_hand_off"
+  case sessionFinished = "session_finished"
+  case interrupted
+}
+
+/// One durable, cancellable wait between a current likely-end proposal and
+/// automatic Hand off. It retains only stable evidence identities and bounded
+/// policy state; transcript, prompt, Board, and provider bodies remain owned
+/// by their canonical Session fields.
+public struct EndpointGrace: Codable, Sendable, Equatable {
+  public static let durationMilliseconds = 4_000
+
+  public let id: EndpointGraceID
+  public let activationCommandID: CommandID
+  public let evaluationID: EndpointEvaluationID
+  public let selectedCandidateIDs: [TranscriptCandidateID]
+  public let lifecycle: EndpointGraceLifecycle
+  public let cancellationReason: EndpointGraceCancellationReason?
+  public let completedCandidateTurnID: TurnID?
+
+  internal init(
+    id: EndpointGraceID,
+    activationCommandID: CommandID,
+    evaluationID: EndpointEvaluationID,
+    selectedCandidateIDs: [TranscriptCandidateID],
+    lifecycle: EndpointGraceLifecycle,
+    cancellationReason: EndpointGraceCancellationReason? = nil,
+    completedCandidateTurnID: TurnID? = nil
+  ) {
+    self.id = id
+    self.activationCommandID = activationCommandID
+    self.evaluationID = evaluationID
+    self.selectedCandidateIDs = selectedCandidateIDs
+    self.lifecycle = lifecycle
+    self.cancellationReason = cancellationReason
+    self.completedCandidateTurnID = completedCandidateTurnID
+  }
+
+  public static func pending(
+    id: EndpointGraceID,
+    activationCommandID: CommandID,
+    evaluationID: EndpointEvaluationID,
+    selectedCandidateIDs: [TranscriptCandidateID]
+  ) -> EndpointGrace {
+    EndpointGrace(
+      id: id,
+      activationCommandID: activationCommandID,
+      evaluationID: evaluationID,
+      selectedCandidateIDs: selectedCandidateIDs,
+      lifecycle: .pending
+    )
+  }
+
+  public func cancelling(
+    reason: EndpointGraceCancellationReason
+  ) -> EndpointGrace {
+    EndpointGrace(
+      id: id,
+      activationCommandID: activationCommandID,
+      evaluationID: evaluationID,
+      selectedCandidateIDs: selectedCandidateIDs,
+      lifecycle: .cancelled,
+      cancellationReason: reason
+    )
+  }
+
+  public func completing(candidateTurnID: TurnID) -> EndpointGrace {
+    EndpointGrace(
+      id: id,
+      activationCommandID: activationCommandID,
+      evaluationID: evaluationID,
+      selectedCandidateIDs: selectedCandidateIDs,
+      lifecycle: .completed,
+      completedCandidateTurnID: candidateTurnID
+    )
+  }
+}
+
 /// A deterministic Adapter used by fixtures and tests at the same Seam as the
 /// production Groq Adapter.
 public struct DeterministicSemanticEndpointClassifier: SemanticEndpointClassifying {

@@ -3,6 +3,7 @@ import InterviewArcLiveCore
 enum CompactRoomAction: String, CaseIterable, Hashable {
     case recordSegment
     case stopRecording
+    case keepFloor
     case primaryPhaseAction
     case stopSpeech
     case toggleSpeechMute
@@ -39,6 +40,8 @@ struct CompactRoomPresentation: Equatable {
         var showsRecordControl: Bool
         var canRecordSegment: Bool
         var recordTitle: String
+        var showsKeepFloor: Bool
+        var canKeepFloor: Bool
         var phaseActionTitle: String
         var phaseActionSystemImage: String
         var canPerformPhaseAction: Bool
@@ -61,6 +64,8 @@ struct CompactRoomPresentation: Equatable {
             showsRecordControl: Bool = false,
             canRecordSegment: Bool = false,
             recordTitle: String = "Record segment",
+            showsKeepFloor: Bool = false,
+            canKeepFloor: Bool = false,
             phaseActionTitle: String = "Hand off",
             phaseActionSystemImage: String = "arrowshape.right.circle.fill",
             canPerformPhaseAction: Bool = false,
@@ -82,6 +87,8 @@ struct CompactRoomPresentation: Equatable {
             self.showsRecordControl = showsRecordControl
             self.canRecordSegment = canRecordSegment
             self.recordTitle = recordTitle
+            self.showsKeepFloor = showsKeepFloor
+            self.canKeepFloor = canKeepFloor
             self.phaseActionTitle = phaseActionTitle
             self.phaseActionSystemImage = phaseActionSystemImage
             self.canPerformPhaseAction = canPerformPhaseAction
@@ -107,6 +114,10 @@ struct CompactRoomPresentation: Equatable {
 
     var phaseControl: CompactRoomControl? {
         controls.first { $0.action == .primaryPhaseAction }
+    }
+
+    var keepFloorControl: CompactRoomControl? {
+        controls.first { $0.action == .keepFloor }
     }
 
     var speechControls: [CompactRoomControl] {
@@ -159,6 +170,19 @@ struct CompactRoomPresentation: Equatable {
                         isEnabled: input.canRecordSegment,
                         accessibilityHint: "Starts the existing candidate Segment capture path.",
                         accessibilityValue: nil
+                    )
+                )
+            }
+
+            if input.showsKeepFloor {
+                controls.append(
+                    CompactRoomControl(
+                        action: .keepFloor,
+                        title: "Keep my floor",
+                        systemImage: "hand.raised.fill",
+                        isEnabled: input.canKeepFloor,
+                        accessibilityHint: "Cancels the pending automatic Hand off without changing saved answer evidence.",
+                        accessibilityValue: "Automatic Hand off pending"
                     )
                 )
             }
@@ -252,6 +276,8 @@ extension SystemDesignRoomModel {
                 showsRecordControl: showsRecordControl,
                 canRecordSegment: canRecordSegment,
                 recordTitle: recordActionTitle,
+                showsKeepFloor: activeEndpointGrace != nil,
+                canKeepFloor: canKeepFloor,
                 phaseActionTitle: actionTitle,
                 phaseActionSystemImage: actionIcon,
                 canPerformPhaseAction: canAct,

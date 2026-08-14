@@ -25,8 +25,10 @@ public final class SegmentSpeechCoordinator {
     private let transcriber: any SegmentTranscribing
     private let credentialReader: any GroqCredentialReading
     private let semanticEndpointClassifier: any SemanticEndpointClassifying
+    private let endpointGraceScheduler: any EndpointGraceScheduling
     private var snapshotHandler: (@MainActor @Sendable (InterviewRoomSnapshot) -> Void)?
     private var isFinalizing = false
+    private var endpointGraceTask: Task<Void, Never>?
 
     private init(
         session: InterviewRoomSession,
@@ -34,13 +36,15 @@ public final class SegmentSpeechCoordinator {
         recording: any SegmentRecording,
         transcriber: any SegmentTranscribing,
         credentialReader: any GroqCredentialReading,
-        semanticEndpointClassifier: (any SemanticEndpointClassifying)?
+        semanticEndpointClassifier: (any SemanticEndpointClassifying)?,
+        endpointGraceScheduler: any EndpointGraceScheduling
     ) {
         self.session = session
         snapshot = initialSnapshot
         self.recording = recording
         self.transcriber = transcriber
         self.credentialReader = credentialReader
+        self.endpointGraceScheduler = endpointGraceScheduler
         if let semanticEndpointClassifier {
             self.semanticEndpointClassifier = semanticEndpointClassifier
         } else {
@@ -73,7 +77,8 @@ public final class SegmentSpeechCoordinator {
         recording: any SegmentRecording,
         transcriber: any SegmentTranscribing,
         credentialReader: any GroqCredentialReading,
-        semanticEndpointClassifier: (any SemanticEndpointClassifying)? = nil
+        semanticEndpointClassifier: (any SemanticEndpointClassifying)? = nil,
+        endpointGraceScheduler: any EndpointGraceScheduling = ContinuousEndpointGraceScheduler()
     ) async throws -> SegmentSpeechCoordinator {
         let session: InterviewRoomSession
         if try await manifestStore.load(sessionID: sessionID) == nil {
@@ -99,7 +104,8 @@ public final class SegmentSpeechCoordinator {
             recording: recording,
             transcriber: transcriber,
             credentialReader: credentialReader,
-            semanticEndpointClassifier: semanticEndpointClassifier
+            semanticEndpointClassifier: semanticEndpointClassifier,
+            endpointGraceScheduler: endpointGraceScheduler
         )
     }
 
@@ -114,7 +120,8 @@ public final class SegmentSpeechCoordinator {
         recording: any SegmentRecording,
         transcriber: any SegmentTranscribing,
         credentialReader: any GroqCredentialReading,
-        semanticEndpointClassifier: (any SemanticEndpointClassifying)? = nil
+        semanticEndpointClassifier: (any SemanticEndpointClassifying)? = nil,
+        endpointGraceScheduler: any EndpointGraceScheduling = ContinuousEndpointGraceScheduler()
     ) async throws -> SegmentSpeechCoordinator {
         try await open(
             sessionID: sessionID,
@@ -126,7 +133,8 @@ public final class SegmentSpeechCoordinator {
             recording: recording,
             transcriber: transcriber,
             credentialReader: credentialReader,
-            semanticEndpointClassifier: semanticEndpointClassifier
+            semanticEndpointClassifier: semanticEndpointClassifier,
+            endpointGraceScheduler: endpointGraceScheduler
         )
     }
 
@@ -142,7 +150,11 @@ public final class SegmentSpeechCoordinator {
         _ mode: TurnMode,
         commandID: CommandID
     ) async throws -> InterviewRoomSnapshot {
-        try await applyAndPublish(.setTurnMode(commandID: commandID, mode: mode)).snapshot
+        let next = try await applyAndPublish(
+            .setTurnMode(commandID: commandID, mode: mode)
+        ).snapshot
+        cancelScheduledGraceIfInactive()
+        return next
     }
 
     @discardableResult
@@ -150,9 +162,11 @@ public final class SegmentSpeechCoordinator {
         _ notes: CandidateNotes,
         commandID: CommandID
     ) async throws -> InterviewRoomSnapshot {
-        try await applyAndPublish(
+        let next = try await applyAndPublish(
             .updateCandidateNotes(commandID: commandID, notes: notes)
         ).snapshot
+        cancelScheduledGraceIfInactive()
+        return next
     }
 
     @discardableResult
@@ -167,6 +181,7 @@ public final class SegmentSpeechCoordinator {
         commandID: CommandID
     ) async throws -> InterviewRoomSnapshot {
         let application = try await applyAndPublish(.beginSegment(commandID: commandID))
+        cancelScheduledGraceIfInactive()
         guard application.disposition == .accepted else {
             return application.snapshot
         }
@@ -299,9 +314,11 @@ public final class SegmentSpeechCoordinator {
         _ document: BoardDocument,
         commandID: CommandID
     ) async throws -> InterviewRoomSnapshot {
-        try await applyAndPublish(
+        let next = try await applyAndPublish(
             .updateBoardDraft(commandID: commandID, document: document)
         ).snapshot
+        cancelScheduledGraceIfInactive()
+        return next
     }
 
     @discardableResult
@@ -375,19 +392,39 @@ public final class SegmentSpeechCoordinator {
         commandID: CommandID,
         boardAttachment: CandidateTurnBoardAttachment = .noBoard
     ) async throws -> InterviewRoomSnapshot {
-        try await applyAndPublish(
+        let next = try await applyAndPublish(
             .handOffSegmentsWithBoard(
                 commandID: commandID,
                 boardAttachment: boardAttachment
             )
         ).snapshot
+        cancelScheduledGrace()
+        return next
+    }
+
+    @discardableResult
+    public func cancelEndpointGrace(
+        graceID: EndpointGraceID,
+        commandID: CommandID
+    ) async throws -> InterviewRoomSnapshot {
+        let next = try await applyAndPublish(
+            .cancelEndpointGrace(
+                commandID: commandID,
+                graceID: graceID,
+                reason: .keptFloor
+            )
+        ).snapshot
+        cancelScheduledGrace()
+        return next
     }
 
     @discardableResult
     public func finishSession(
         commandID: CommandID
     ) async throws -> InterviewRoomSnapshot {
-        try await applyAndPublish(.finish(commandID: commandID)).snapshot
+        let next = try await applyAndPublish(.finish(commandID: commandID)).snapshot
+        cancelScheduledGrace()
+        return next
     }
 
     public func playbackURL(segmentID: SegmentID) async throws -> URL {
@@ -407,6 +444,22 @@ public final class SegmentSpeechCoordinator {
     @discardableResult
     public func resumePendingWork() async throws -> InterviewRoomSnapshot {
         publish(await session.snapshot())
+
+        cancelScheduledGrace()
+        let interruptedGraces = snapshot.endpointGraces.filter {
+            $0.lifecycle == .pending
+        }
+        for grace in interruptedGraces {
+            _ = try await applyAndPublish(
+                .reconcileInterruptedEndpointGrace(
+                    commandID: InterviewRoomSession.derivedCommandID(
+                        source: grace.activationCommandID,
+                        operation: "interrupted-endpoint-grace"
+                    ),
+                    graceID: grace.id
+                )
+            )
+        }
 
         let interruptedAttempts = snapshot.segments.compactMap { segment in
             segment.transcriptionAttempts.first(where: { $0.state == .authorized }).map {
@@ -698,9 +751,10 @@ public final class SegmentSpeechCoordinator {
         )
     }
 
-    /// Patient Auto is intentionally a Shadow policy in this slice. It stores
-    /// one proposal at an explicit transcript boundary but never commits a
-    /// Candidate Turn, starts grace, or invokes the interviewer runtime.
+    /// Patient Auto evaluates one explicit completed-Segment boundary. A
+    /// current likely-end proposal may start the durable Endpoint Grace; only
+    /// grace completion can commit the Candidate Turn and invoke the
+    /// interviewer runtime.
     private func evaluateEndpointIfNeeded(
         triggerSegmentID: SegmentID,
         sourceCommandID: CommandID
@@ -769,8 +823,9 @@ public final class SegmentSpeechCoordinator {
                 questionTurnID: questionTurnID
             )
         } catch {
-            // Shadow work is advisory. The selected transcript is already
-            // durable and remains the successful result of this operation.
+            // Semantic evaluation is subordinate to transcription. The
+            // selected transcript is already durable and remains the
+            // successful result of this operation.
             return snapshot
         }
         let authorizationCommandID = InterviewRoomSession.derivedCommandID(
@@ -810,22 +865,147 @@ public final class SegmentSpeechCoordinator {
             outcome = .failed(Self.endpointFailure(for: error))
         }
         do {
-            return try await applyAndPublish(
+            let outcomeCommandID = InterviewRoomSession.derivedCommandID(
+                source: authorizationCommandID,
+                operation: "endpoint-evaluation-outcome"
+            )
+            let recorded = try await applyAndPublish(
                 .recordEndpointEvaluationOutcome(
-                    commandID: InterviewRoomSession.derivedCommandID(
-                        source: authorizationCommandID,
-                        operation: "endpoint-evaluation-outcome"
-                    ),
+                    commandID: outcomeCommandID,
                     evaluationID: evaluation.id,
                     outcome: outcome
                 )
             ).snapshot
+            guard case .proposal(let proposal) = outcome,
+                  proposal.decision == .likelyEnd,
+                  recorded.endpointEvaluations.first(where: {
+                      $0.id == evaluation.id
+                  })?.lifecycle == .proposalStored else {
+                return recorded
+            }
+            return await activateEndpointGraceIfEligible(
+                evaluationID: evaluation.id,
+                sourceCommandID: outcomeCommandID
+            )
         } catch {
             return await reconcileEndpointEvaluation(
                 evaluation,
                 authorizationCommandID: authorizationCommandID
             )
         }
+    }
+
+    private func activateEndpointGraceIfEligible(
+        evaluationID: EndpointEvaluationID,
+        sourceCommandID: CommandID
+    ) async -> InterviewRoomSnapshot {
+        guard BoardHandoffAttachmentPolicy.currentDraftAttachment(
+            in: snapshot.board
+        ) != nil else {
+            return snapshot
+        }
+        let activationCommandID = InterviewRoomSession.derivedCommandID(
+            source: sourceCommandID,
+            operation: "endpoint-grace-activation"
+        )
+        do {
+            let application = try await applyAndPublish(
+                .activateEndpointGrace(
+                    commandID: activationCommandID,
+                    evaluationID: evaluationID
+                )
+            )
+            guard application.disposition == .accepted,
+                  let grace = application.snapshot.endpointGraces.first(where: {
+                      $0.activationCommandID == activationCommandID
+                  }),
+                  grace.lifecycle == .pending else {
+                return application.snapshot
+            }
+            schedule(grace)
+            return application.snapshot
+        } catch {
+            publish(await session.snapshot())
+            return snapshot
+        }
+    }
+
+    private func schedule(_ grace: EndpointGrace) {
+        cancelScheduledGrace()
+        endpointGraceTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                try await endpointGraceScheduler.waitForGrace()
+            } catch {
+                return
+            }
+            await completeScheduledGrace(grace.id)
+        }
+    }
+
+    private func completeScheduledGrace(_ graceID: EndpointGraceID) async {
+        guard let grace = snapshot.endpointGraces.first(where: {
+            $0.id == graceID && $0.lifecycle == .pending
+        }) else {
+            cancelScheduledGraceIfInactive()
+            return
+        }
+        guard let boardAttachment = BoardHandoffAttachmentPolicy.currentDraftAttachment(
+            in: snapshot.board
+        ) else {
+            _ = try? await applyAndPublish(
+                .cancelEndpointGrace(
+                    commandID: InterviewRoomSession.derivedCommandID(
+                        source: grace.activationCommandID,
+                        operation: "endpoint-grace-board-ineligible"
+                    ),
+                    graceID: graceID,
+                    reason: .boardActivity
+                )
+            )
+            cancelScheduledGrace()
+            return
+        }
+        do {
+            _ = try await applyAndPublish(
+                .completeEndpointGrace(
+                    commandID: InterviewRoomSession.derivedCommandID(
+                        source: grace.activationCommandID,
+                        operation: "endpoint-grace-complete"
+                    ),
+                    graceID: graceID,
+                    boardAttachment: boardAttachment
+                )
+            )
+        } catch {
+            publish(await session.snapshot())
+            if snapshot.endpointGraces.contains(where: {
+                $0.id == graceID && $0.lifecycle == .pending
+            }) {
+                _ = try? await applyAndPublish(
+                    .reconcileInterruptedEndpointGrace(
+                        commandID: InterviewRoomSession.derivedCommandID(
+                            source: grace.activationCommandID,
+                            operation: "endpoint-grace-completion-interrupted"
+                        ),
+                        graceID: graceID
+                    )
+                )
+            }
+        }
+        cancelScheduledGrace()
+    }
+
+    private func cancelScheduledGraceIfInactive() {
+        guard !snapshot.endpointGraces.contains(where: {
+            $0.lifecycle == .pending
+        }) else { return }
+        cancelScheduledGrace()
+    }
+
+    private func cancelScheduledGrace() {
+        endpointGraceTask?.cancel()
+        endpointGraceTask = nil
     }
 
     /// Once provider work was durably authorized, an outcome-write failure is

@@ -8,7 +8,7 @@ Current product design: [specialty room concepts](docs/design/specialty-rooms.md
 Interview Arc Live is a standalone Swift package with a locally durable
 system-design room. One process-owned room model is retained across its full
 window and nonactivating compact controls. It records and recovers candidate
-segments, transcribes through Groq, keeps semantic endpointing advisory,
+segments, transcribes through Groq, supports durable Patient Auto Hand off,
 obtains canonical written interviewer turns through the locally authenticated
 Codex App Server, and can explicitly generate or replay a private local
 interviewer voice. Its full System Design room follows the checked-in issue #1
@@ -73,8 +73,12 @@ npm run bundle
 The preview keeps its Session Manifest and source recordings under Live's local
 Application Support root. Manual Hand off joins selected Groq transcripts and
 uses the exactly preflighted, locally authenticated Codex App Server for one
-canonical interviewer response. Automatic endpoint handoff and hosted
-Interview Arc state remain later slices.
+canonical interviewer response. Patient Auto classifies the accumulated answer
+after a newly completed Segment and, for a durable `likely_end`, starts one
+durable four-second Endpoint Grace before the same canonical Hand off. Keep my
+floor, resumed recording, Board or Notes activity, and a Turn Mode change cancel
+that grace. Acoustic VAD boundaries and hosted Interview Arc state remain later
+slices.
 
 Interviewer speech is optional and never runs for historical turns
 automatically. The app discloses and downloads only the pinned

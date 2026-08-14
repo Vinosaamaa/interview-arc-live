@@ -94,7 +94,7 @@ final class SystemDesignRoomModelTests: XCTestCase {
         }
     }
 
-    func testTurnModeSurfaceOffersOnlyManualAndPatientAutoShadow() {
+    func testTurnModeSurfaceOffersFunctionalPatientAuto() {
         let model = SystemDesignRoomModel(
             codexRuntime: CodexRuntimeFixture(readiness: .ready)
         )
@@ -103,9 +103,9 @@ final class SystemDesignRoomModelTests: XCTestCase {
         XCTAssertFalse(model.availableTurnModes.contains(.cueOnly))
         XCTAssertEqual(model.turnMode, .manual)
         XCTAssertEqual(model.turnModeTitle(.manual), "Manual")
-        XCTAssertEqual(model.turnModeTitle(.patientAuto), "Patient Auto · Shadow")
+        XCTAssertEqual(model.turnModeTitle(.patientAuto), "Patient Auto")
         XCTAssertEqual(
-            model.endpointShadowPresentation.detail,
+            model.endpointHandoffPresentation.detail,
             "Semantic endpoint calls are off. Hand off remains explicit."
         )
     }
@@ -132,7 +132,7 @@ final class SystemDesignRoomModelTests: XCTestCase {
         XCTAssertNotNil(model.speechErrorMessage)
     }
 
-    func testLikelyEndShadowCopyRemainsExplicitlyAdvisory() {
+    func testLikelyEndCopyPreparesAutomaticHandOff() {
         let evaluation = endpointEvaluation(
             selectedCandidateIDs: [TranscriptCandidateID("candidate-a")],
             lifecycle: .proposalStored,
@@ -142,22 +142,52 @@ final class SystemDesignRoomModelTests: XCTestCase {
             )
         )
 
-        let presentation = EndpointShadowPresentation.make(
+        let presentation = EndpointHandoffPresentation.make(
             turnMode: .patientAuto,
             phase: .candidateFloor,
             currentEvaluation: evaluation,
+            endpointGrace: nil,
+            canAutomaticallyHandOff: true,
             hasSelectedDraft: true,
             hasUnresolvedDraft: false,
             hasStaleEvaluation: false
         )
 
-        XCTAssertEqual(presentation.title, "Shadow: likely complete")
-        XCTAssertTrue(presentation.detail.contains("advisory only"))
-        XCTAssertTrue(presentation.detail.contains("choose Hand off"))
+        XCTAssertEqual(presentation.title, "Preparing automatic Hand off")
+        XCTAssertTrue(presentation.detail.contains("completion signal is saved"))
         XCTAssertEqual(presentation.tone, .advisory)
     }
 
-    func testShadowFailureCopyDoesNotExposeProviderStatus() {
+    func testLikelyEndRequiresAnAttachableBoardBeforeGrace() {
+        let evaluation = endpointEvaluation(
+            selectedCandidateIDs: [TranscriptCandidateID("candidate-a")],
+            lifecycle: .proposalStored,
+            proposal: SemanticEndpointProposal(
+                decision: .likelyEnd,
+                reasonCode: .answerResolvesQuestion
+            )
+        )
+
+        let presentation = EndpointHandoffPresentation.make(
+            turnMode: .patientAuto,
+            phase: .candidateFloor,
+            currentEvaluation: evaluation,
+            endpointGrace: nil,
+            canAutomaticallyHandOff: false,
+            hasSelectedDraft: true,
+            hasUnresolvedDraft: false,
+            hasStaleEvaluation: false
+        )
+
+        XCTAssertEqual(
+            presentation.title,
+            "Save the Board before automatic Hand off"
+        )
+        XCTAssertTrue(presentation.detail.contains("Save this Board draft"))
+        XCTAssertEqual(presentation.tone, .warning)
+    }
+
+    func testPatientAutoFailureCopyDoesNotExposeProviderStatus() {
         let privateProviderStatus = 599
         let evaluation = endpointEvaluation(
             selectedCandidateIDs: [TranscriptCandidateID("candidate-a")],
@@ -168,16 +198,18 @@ final class SystemDesignRoomModelTests: XCTestCase {
             )
         )
 
-        let presentation = EndpointShadowPresentation.make(
+        let presentation = EndpointHandoffPresentation.make(
             turnMode: .patientAuto,
             phase: .candidateFloor,
             currentEvaluation: evaluation,
+            endpointGrace: nil,
+            canAutomaticallyHandOff: true,
             hasSelectedDraft: true,
             hasUnresolvedDraft: false,
             hasStaleEvaluation: false
         )
 
-        XCTAssertEqual(presentation.title, "Shadow request rejected")
+        XCTAssertEqual(presentation.title, "Patient Auto request rejected")
         XCTAssertTrue(presentation.detail.contains("transcript is saved"))
         XCTAssertFalse(presentation.detail.contains(String(privateProviderStatus)))
         XCTAssertEqual(presentation.tone, .warning)
@@ -205,7 +237,7 @@ final class SystemDesignRoomModelTests: XCTestCase {
             )
         )
 
-        let stale = EndpointShadowPresentation.currentEvaluation(
+        let stale = EndpointHandoffPresentation.currentEvaluation(
             in: [olderMatching, latestChanged],
             selectedCandidateIDs: [candidateA],
             questionTurnID: nil,
@@ -213,18 +245,20 @@ final class SystemDesignRoomModelTests: XCTestCase {
         )
         XCTAssertNil(stale)
 
-        let presentation = EndpointShadowPresentation.make(
+        let presentation = EndpointHandoffPresentation.make(
             turnMode: .patientAuto,
             phase: .candidateFloor,
             currentEvaluation: stale,
+            endpointGrace: nil,
+            canAutomaticallyHandOff: true,
             hasSelectedDraft: true,
             hasUnresolvedDraft: false,
             hasStaleEvaluation: true
         )
-        XCTAssertEqual(presentation.title, "Evidence changed · Shadow waiting")
+        XCTAssertEqual(presentation.title, "Evidence changed · Patient Auto waiting")
         XCTAssertFalse(presentation.detail.contains("likely complete"))
 
-        let current = EndpointShadowPresentation.currentEvaluation(
+        let current = EndpointHandoffPresentation.currentEvaluation(
             in: [olderMatching, latestChanged],
             selectedCandidateIDs: [candidateA, candidateB],
             questionTurnID: nil,
@@ -234,19 +268,21 @@ final class SystemDesignRoomModelTests: XCTestCase {
     }
 
     func testFreshFloorWithHistoryWaitsForFirstNewTranscript() {
-        let presentation = EndpointShadowPresentation.make(
+        let presentation = EndpointHandoffPresentation.make(
             turnMode: .patientAuto,
             phase: .candidateFloor,
             currentEvaluation: nil,
+            endpointGrace: nil,
+            canAutomaticallyHandOff: true,
             hasSelectedDraft: false,
             hasUnresolvedDraft: false,
             hasStaleEvaluation: false
         )
 
-        XCTAssertEqual(presentation.title, "Shadow waiting for a transcript")
+        XCTAssertEqual(presentation.title, "Patient Auto waiting for a transcript")
         XCTAssertEqual(
             presentation.detail,
-            "It checks only after a new selected transcript is saved."
+            "It checks after a new selected transcript is saved."
         )
     }
 
@@ -260,7 +296,7 @@ final class SystemDesignRoomModelTests: XCTestCase {
             )
         )
         let evaluations = [latestEvaluation]
-        let currentEvaluation = EndpointShadowPresentation.currentEvaluation(
+        let currentEvaluation = EndpointHandoffPresentation.currentEvaluation(
             in: evaluations,
             selectedCandidateIDs: [],
             questionTurnID: nil,
@@ -268,18 +304,84 @@ final class SystemDesignRoomModelTests: XCTestCase {
         )
 
         XCTAssertNil(currentEvaluation)
-        let presentation = EndpointShadowPresentation.make(
+        let presentation = EndpointHandoffPresentation.make(
             turnMode: .patientAuto,
             phase: .candidateFloor,
             currentEvaluation: currentEvaluation,
+            endpointGrace: nil,
+            canAutomaticallyHandOff: true,
             hasSelectedDraft: false,
             hasUnresolvedDraft: false,
             hasStaleEvaluation: evaluations.last != nil
                 && currentEvaluation == nil
         )
 
-        XCTAssertEqual(presentation.title, "Evidence changed · Shadow waiting")
+        XCTAssertEqual(presentation.title, "Evidence changed · Patient Auto waiting")
         XCTAssertFalse(presentation.detail.contains("likely complete"))
+    }
+
+    func testPendingGraceExposesBoundedCancellationCopy() {
+        let evaluation = endpointEvaluation(
+            selectedCandidateIDs: [TranscriptCandidateID("candidate-a")],
+            lifecycle: .proposalStored,
+            proposal: SemanticEndpointProposal(
+                decision: .likelyEnd,
+                reasonCode: .answerResolvesQuestion
+            )
+        )
+        let grace = EndpointGrace.pending(
+            id: EndpointGraceID("grace-a"),
+            activationCommandID: CommandID("activate-grace-a"),
+            evaluationID: evaluation.id,
+            selectedCandidateIDs: evaluation.selectedCandidateIDs
+        )
+
+        let presentation = EndpointHandoffPresentation.make(
+            turnMode: .patientAuto,
+            phase: .candidateFloor,
+            currentEvaluation: evaluation,
+            endpointGrace: grace,
+            canAutomaticallyHandOff: true,
+            hasSelectedDraft: true,
+            hasUnresolvedDraft: false,
+            hasStaleEvaluation: false
+        )
+
+        XCTAssertEqual(presentation.title, "Handing off in 4 seconds")
+        XCTAssertTrue(presentation.detail.contains("Keep my floor"))
+        XCTAssertEqual(presentation.tone, .working)
+    }
+
+    func testKeptFloorGraceDoesNotPretendAutomaticHandOffIsStillPending() {
+        let evaluation = endpointEvaluation(
+            selectedCandidateIDs: [TranscriptCandidateID("candidate-a")],
+            lifecycle: .proposalStored,
+            proposal: SemanticEndpointProposal(
+                decision: .likelyEnd,
+                reasonCode: .answerResolvesQuestion
+            )
+        )
+        let grace = EndpointGrace.pending(
+            id: EndpointGraceID("grace-kept"),
+            activationCommandID: CommandID("activate-grace-kept"),
+            evaluationID: evaluation.id,
+            selectedCandidateIDs: evaluation.selectedCandidateIDs
+        ).cancelling(reason: .keptFloor)
+
+        let presentation = EndpointHandoffPresentation.make(
+            turnMode: .patientAuto,
+            phase: .candidateFloor,
+            currentEvaluation: evaluation,
+            endpointGrace: grace,
+            canAutomaticallyHandOff: true,
+            hasSelectedDraft: true,
+            hasUnresolvedDraft: false,
+            hasStaleEvaluation: false
+        )
+
+        XCTAssertEqual(presentation.title, "Your floor is staying open")
+        XCTAssertTrue(presentation.detail.contains("new completed Segment"))
+        XCTAssertFalse(presentation.title.contains("4 seconds"))
     }
 
     private func endpointEvaluation(

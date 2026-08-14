@@ -171,6 +171,9 @@ struct CompactSystemDesignRoomView: View {
       if let candidateControl = presentation.candidateControl {
         utilityButton(candidateControl)
       }
+      if let keepFloorControl = presentation.keepFloorControl {
+        utilityButton(keepFloorControl)
+      }
       if let phaseControl = presentation.phaseControl {
         conversationButton(phaseControl)
       }
@@ -239,7 +242,7 @@ struct CompactSystemDesignRoomView: View {
       button
         .buttonStyle(.borderedProminent)
         .tint(CompactMockupPalette.stop)
-    case .recordSegment, .primaryPhaseAction:
+    case .recordSegment, .keepFloor, .primaryPhaseAction:
       button
         .buttonStyle(.bordered)
         .tint(CompactMockupPalette.violet)
@@ -264,6 +267,7 @@ struct CompactSystemDesignRoomView: View {
   ) -> Double {
     switch action {
     case .recordSegment, .stopRecording: return 50
+    case .keepFloor: return 45
     case .primaryPhaseAction: return 40
     case .stopSpeech: return 30
     case .toggleSpeechMute: return 20
@@ -277,6 +281,8 @@ struct CompactSystemDesignRoomView: View {
       Task { await model.recordSegment() }
     case .stopRecording:
       Task { await model.stopRecording() }
+    case .keepFloor:
+      Task { await model.keepMyFloor() }
     case .primaryPhaseAction:
       Task { await model.performPrimaryAction() }
     case .stopSpeech:

@@ -193,8 +193,8 @@ struct SystemDesignRoomView: View {
                 }
             }
             Divider()
-            Text(model.endpointShadowPresentation.title)
-            Text(model.endpointShadowPresentation.detail)
+            Text(model.endpointHandoffPresentation.title)
+            Text(model.endpointHandoffPresentation.detail)
             if model.needsGroqCredential {
                 Button("Add Groq key") { model.presentCredentialSetup() }
             }
@@ -818,6 +818,28 @@ struct SystemDesignRoomView: View {
                 .frame(minWidth: 140, maxWidth: .infinity)
                 .frame(height: FullRoomLayout.minimumActionHitTarget)
 
+            if model.activeEndpointGrace != nil {
+                Button {
+                    Task { await model.keepMyFloor() }
+                } label: {
+                    ViewThatFits(in: .horizontal) {
+                        Label("Keep my floor", systemImage: "hand.raised.fill")
+                            .font(.system(.body, design: .rounded, weight: .semibold))
+                        Image(systemName: "hand.raised.fill")
+                            .accessibilityHidden(true)
+                    }
+                    .frame(minWidth: 44, minHeight: FullRoomLayout.minimumActionHitTarget)
+                }
+                .buttonStyle(RoomChromeButtonStyle())
+                .foregroundStyle(LivePalette.violet)
+                .disabled(!model.canKeepFloor)
+                .keyboardShortcut(.escape, modifiers: [])
+                .accessibilityIdentifier(FullRoomAccessibility.keepFloorAction)
+                .accessibilityLabel("Keep my floor")
+                .accessibilityHint("Cancels the pending automatic Hand off without changing saved answer evidence")
+                .help("Cancel automatic Hand off")
+            }
+
             Button {
                 Task { await model.performPrimaryAction() }
             } label: {
@@ -1398,6 +1420,7 @@ enum FullRoomAccessibility {
     static let board = "full-room-board"
     static let floorRail = "full-room-floor-rail"
     static let primaryAction = "full-room-primary-action"
+    static let keepFloorAction = "full-room-keep-floor-action"
     static let recordingAction = "full-room-recording-action"
     static let endAction = "full-room-end-action"
     static let collapse = "full-room-collapse"

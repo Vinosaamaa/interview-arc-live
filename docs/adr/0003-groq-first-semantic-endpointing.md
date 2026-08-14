@@ -19,8 +19,13 @@ activity. Its strict result is `likely_continue`, `likely_end`, or `ambiguous`
 with a reason code; generated confidence is not treated as calibrated.
 
 SmartTurn and OpenAI Realtime are excluded from the first implementation.
-`Hand off` remains available, resumed speech cancels an Endpoint Proposal, and
-Patient Auto begins as an experimental/shadow-tested mode.
+`Hand off` remains available. A current durable `likely_end` Evaluation may
+start one durable four-second Endpoint Grace. Keep my floor, resumed speech,
+Turn Mode changes, and Board or Notes activity cancel that grace; relaunch
+reconciles a pending grace as interrupted instead of replaying it. Completion
+uses the same canonical at-most-once Hand off transition as the explicit
+action. Patient Auto is therefore functional at an explicit completed-Segment
+boundary, while acoustic VAD boundary creation remains a following slice.
 
 ## Consequences
 
