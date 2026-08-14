@@ -36,6 +36,25 @@ public enum InterviewRoomCommand: Codable, Sendable, Equatable {
         evaluationID: EndpointEvaluationID,
         outcome: EndpointEvaluationOutcome
     )
+    case activateEndpointGrace(
+        commandID: CommandID,
+        evaluationID: EndpointEvaluationID,
+        expectedBoardAttachment: CandidateTurnBoardAttachment
+    )
+    case cancelEndpointGrace(
+        commandID: CommandID,
+        graceID: EndpointGraceID,
+        reason: EndpointGraceCancellationReason
+    )
+    case completeEndpointGrace(
+        commandID: CommandID,
+        graceID: EndpointGraceID,
+        boardAttachment: CandidateTurnBoardAttachment
+    )
+    case reconcileInterruptedEndpointGrace(
+        commandID: CommandID,
+        graceID: EndpointGraceID
+    )
     case reconcileInterruptedEndpointEvaluation(
         commandID: CommandID,
         evaluationID: EndpointEvaluationID
@@ -107,6 +126,10 @@ public enum InterviewRoomCommand: Codable, Sendable, Equatable {
              .recordSegmentTranscriptionOutcome(let commandID, _, _, _),
              .authorizeEndpointEvaluation(let commandID, _, _, _, _),
              .recordEndpointEvaluationOutcome(let commandID, _, _),
+             .activateEndpointGrace(let commandID, _, _),
+             .cancelEndpointGrace(let commandID, _, _),
+             .completeEndpointGrace(let commandID, _, _),
+             .reconcileInterruptedEndpointGrace(let commandID, _),
              .reconcileInterruptedEndpointEvaluation(let commandID, _),
              .backfillInterviewerUtterances(let commandID),
              .authorizeInterviewerSynthesis(let commandID, _, _, _),
@@ -189,6 +212,14 @@ public enum InterviewRoomSessionError: Error, Sendable, Equatable {
         evaluationID: EndpointEvaluationID,
         lifecycle: EndpointEvaluationLifecycle
     )
+    case endpointGraceNotFound(EndpointGraceID)
+    case endpointGraceAlreadyPending(EndpointGraceID)
+    case endpointGraceAlreadyExists(EndpointEvaluationID)
+    case invalidEndpointGraceTransition(
+        graceID: EndpointGraceID,
+        lifecycle: EndpointGraceLifecycle
+    )
+    case endpointGraceEvidenceMismatch
     case interviewerUtteranceNotFound(InterviewerUtteranceID)
     case synthesisAttemptNotFound(SynthesisAttemptID)
     case synthesisAlreadyInProgress(SynthesisAttemptID)
@@ -362,6 +393,10 @@ public actor InterviewRoomSession {
                 transcript: transcript,
                 segmentIDs: [],
                 boardAttachment: .noBoard,
+                endpointGraces: Self.cancellingPendingEndpointGrace(
+                    manifest.endpointGraces,
+                    reason: .manualHandOff
+                ),
                 fingerprint: fingerprint
             )
 
@@ -375,6 +410,10 @@ public actor InterviewRoomSession {
                 transcript: transcript,
                 segmentIDs: [],
                 boardAttachment: boardAttachment,
+                endpointGraces: Self.cancellingPendingEndpointGrace(
+                    manifest.endpointGraces,
+                    reason: .manualHandOff
+                ),
                 fingerprint: fingerprint
             )
 
@@ -382,12 +421,32 @@ public actor InterviewRoomSession {
             snapshot = try await handOffSegments(
                 commandID: commandID,
                 boardAttachment: .noBoard,
+                endpointGraces: Self.cancellingPendingEndpointGrace(
+                    manifest.endpointGraces,
+                    reason: .manualHandOff
+                ),
                 fingerprint: fingerprint
             )
 
         case .handOffSegmentsWithBoard(let commandID, let boardAttachment):
             snapshot = try await handOffSegments(
                 commandID: commandID,
+                boardAttachment: boardAttachment,
+                endpointGraces: Self.cancellingPendingEndpointGrace(
+                    manifest.endpointGraces,
+                    reason: .manualHandOff
+                ),
+                fingerprint: fingerprint
+            )
+
+        case .completeEndpointGrace(
+            let commandID,
+            let graceID,
+            let boardAttachment
+        ):
+            snapshot = try await completeEndpointGrace(
+                commandID: commandID,
+                graceID: graceID,
                 boardAttachment: boardAttachment,
                 fingerprint: fingerprint
             )
@@ -418,6 +477,7 @@ public actor InterviewRoomSession {
         var mode = manifest.turnMode
         var segments = manifest.segments
         var endpointEvaluations = manifest.endpointEvaluations
+        var endpointGraces = manifest.endpointGraces
         var interviewerUtterances = manifest.interviewerUtterances
         var board = manifest.board
         var candidateNotes = manifest.candidateNotes
@@ -433,11 +493,23 @@ public actor InterviewRoomSession {
             guard phase != .completed else {
                 throw invalidTransition("setTurnMode")
             }
+            if mode != selectedMode {
+                endpointGraces = Self.cancellingPendingEndpointGrace(
+                    endpointGraces,
+                    reason: .turnModeChanged
+                )
+            }
             mode = selectedMode
 
         case .updateCandidateNotes(_, let notes):
             guard phase != .completed else {
                 throw invalidTransition("updateCandidateNotes")
+            }
+            if candidateNotes != notes {
+                endpointGraces = Self.cancellingPendingEndpointGrace(
+                    endpointGraces,
+                    reason: .notesActivity
+                )
             }
             candidateNotes = notes
 
@@ -445,6 +517,10 @@ public actor InterviewRoomSession {
             guard phase == .candidateFloor else {
                 throw invalidTransition("beginSegment")
             }
+            endpointGraces = Self.cancellingPendingEndpointGrace(
+                endpointGraces,
+                reason: .resumedSpeech
+            )
             if let active = segments.first(where: Self.isActiveSegment) {
                 throw InterviewRoomSessionError.segmentAlreadyActive(active.id)
             }
@@ -638,6 +714,76 @@ public actor InterviewRoomSession {
                 for: endpointEvaluations[index]
             )
 
+        case .activateEndpointGrace(
+            let commandID,
+            let evaluationID,
+            let expectedBoardAttachment
+        ):
+            guard phase == .candidateFloor, mode == .patientAuto else {
+                throw invalidTransition("activateEndpointGrace")
+            }
+            if let pendingGrace = endpointGraces.first(where: {
+                $0.lifecycle == .pending
+            }) {
+                throw InterviewRoomSessionError.endpointGraceAlreadyPending(
+                    pendingGrace.id
+                )
+            }
+            if endpointGraces.contains(where: { $0.evaluationID == evaluationID }) {
+                throw InterviewRoomSessionError.endpointGraceAlreadyExists(evaluationID)
+            }
+            guard let evaluation = endpointEvaluations.first(where: {
+                $0.id == evaluationID
+            }),
+            evaluation.lifecycle == .proposalStored,
+            evaluation.proposal?.decision == .likelyEnd,
+            Self.isCurrentEndpointEvaluation(
+                evaluation,
+                phase: phase,
+                mode: mode,
+                turns: manifest.turns,
+                segments: segments
+            ) else {
+                throw InterviewRoomSessionError.endpointGraceEvidenceMismatch
+            }
+            guard BoardHandoffAttachmentPolicy.currentDraftAttachment(in: board)
+                == expectedBoardAttachment else {
+                throw InterviewRoomSessionError.endpointGraceEvidenceMismatch
+            }
+            endpointGraces.append(
+                .pending(
+                    id: Self.endpointGraceID(
+                        sessionID: manifest.sessionID,
+                        commandID: commandID
+                    ),
+                    activationCommandID: commandID,
+                    evaluationID: evaluationID,
+                    selectedCandidateIDs: evaluation.selectedCandidateIDs
+                )
+            )
+
+        case .cancelEndpointGrace(_, let graceID, let reason):
+            let index = try endpointGraceIndex(graceID, in: endpointGraces)
+            guard endpointGraces[index].lifecycle == .pending else {
+                throw InterviewRoomSessionError.invalidEndpointGraceTransition(
+                    graceID: graceID,
+                    lifecycle: endpointGraces[index].lifecycle
+                )
+            }
+            endpointGraces[index] = endpointGraces[index].cancelling(reason: reason)
+
+        case .reconcileInterruptedEndpointGrace(_, let graceID):
+            let index = try endpointGraceIndex(graceID, in: endpointGraces)
+            guard endpointGraces[index].lifecycle == .pending else {
+                throw InterviewRoomSessionError.invalidEndpointGraceTransition(
+                    graceID: graceID,
+                    lifecycle: endpointGraces[index].lifecycle
+                )
+            }
+            endpointGraces[index] = endpointGraces[index].cancelling(
+                reason: .interrupted
+            )
+
         case .reconcileInterruptedEndpointEvaluation(_, let evaluationID):
             let index = try endpointEvaluationIndex(
                 evaluationID,
@@ -782,6 +928,12 @@ public actor InterviewRoomSession {
             guard phase != .completed else {
                 throw invalidTransition("updateBoardDraft")
             }
+            if board.draft != document {
+                endpointGraces = Self.cancellingPendingEndpointGrace(
+                    endpointGraces,
+                    reason: .boardActivity
+                )
+            }
             board = BoardWorkspace(
                 draft: document,
                 revisions: board.revisions,
@@ -857,6 +1009,7 @@ public actor InterviewRoomSession {
                 turns: turns,
                 segments: segments,
                 endpointEvaluations: endpointEvaluations,
+                endpointGraces: endpointGraces,
                 interviewerUtterances: interviewerUtterances,
                 board: board
             )
@@ -931,6 +1084,7 @@ public actor InterviewRoomSession {
              .handOffWithBoard,
              .handOffSegments,
              .handOffSegmentsWithBoard,
+             .completeEndpointGrace,
              .retryInterviewerResponse:
             preconditionFailure("Provider commands use their durable two-stage paths")
 
@@ -938,6 +1092,10 @@ public actor InterviewRoomSession {
             guard phase == .ready || phase == .interviewerTurn else {
                 throw invalidTransition("finish")
             }
+            endpointGraces = Self.cancellingPendingEndpointGrace(
+                endpointGraces,
+                reason: .sessionFinished
+            )
             phase = .completed
         }
 
@@ -949,6 +1107,7 @@ public actor InterviewRoomSession {
             turns: manifest.turns,
             segments: segments,
             endpointEvaluations: endpointEvaluations,
+            endpointGraces: endpointGraces,
             interviewerUtterances: interviewerUtterances,
             board: board,
             candidateNotes: candidateNotes
@@ -1060,6 +1219,7 @@ public actor InterviewRoomSession {
     private func handOffSegments(
         commandID: CommandID,
         boardAttachment: CandidateTurnBoardAttachment,
+        endpointGraces: [EndpointGrace]? = nil,
         fingerprint: String
     ) async throws -> InterviewRoomSnapshot {
         guard manifest.phase == .candidateFloor else {
@@ -1122,6 +1282,60 @@ public actor InterviewRoomSession {
                 .sorted { $0.ordinal < $1.ordinal }
                 .map(\.id),
             boardAttachment: boardAttachment,
+            endpointGraces: endpointGraces,
+            fingerprint: fingerprint
+        )
+    }
+
+    private func completeEndpointGrace(
+        commandID: CommandID,
+        graceID: EndpointGraceID,
+        boardAttachment: CandidateTurnBoardAttachment,
+        fingerprint: String
+    ) async throws -> InterviewRoomSnapshot {
+        guard manifest.phase == .candidateFloor,
+              manifest.turnMode == .patientAuto,
+              let graceIndex = manifest.endpointGraces.firstIndex(where: {
+                  $0.id == graceID
+              }) else {
+            throw InterviewRoomSessionError.endpointGraceNotFound(graceID)
+        }
+        let grace = manifest.endpointGraces[graceIndex]
+        guard grace.lifecycle == .pending else {
+            throw InterviewRoomSessionError.invalidEndpointGraceTransition(
+                graceID: graceID,
+                lifecycle: grace.lifecycle
+            )
+        }
+        guard let evaluation = manifest.endpointEvaluations.first(where: {
+            $0.id == grace.evaluationID
+        }),
+        evaluation.lifecycle == .proposalStored,
+        evaluation.proposal?.decision == .likelyEnd,
+        evaluation.selectedCandidateIDs == grace.selectedCandidateIDs,
+        Self.isCurrentEndpointEvaluation(
+            evaluation,
+            phase: manifest.phase,
+            mode: manifest.turnMode,
+            turns: manifest.turns,
+            segments: manifest.segments
+        ) else {
+            throw InterviewRoomSessionError.endpointGraceEvidenceMismatch
+        }
+
+        let candidateTurnID = Self.turnID(
+            sessionID: manifest.sessionID,
+            commandID: commandID,
+            role: "candidate"
+        )
+        var completedGraces = manifest.endpointGraces
+        completedGraces[graceIndex] = grace.completing(
+            candidateTurnID: candidateTurnID
+        )
+        return try await handOffSegments(
+            commandID: commandID,
+            boardAttachment: boardAttachment,
+            endpointGraces: completedGraces,
             fingerprint: fingerprint
         )
     }
@@ -1133,6 +1347,7 @@ public actor InterviewRoomSession {
         transcript: CandidateTranscript,
         segmentIDs: [SegmentID],
         boardAttachment: CandidateTurnBoardAttachment,
+        endpointGraces: [EndpointGrace]? = nil,
         fingerprint: String
     ) async throws -> InterviewRoomSnapshot {
         guard manifest.phase == .candidateFloor else {
@@ -1189,6 +1404,7 @@ public actor InterviewRoomSession {
             turns: manifest.turns + [.candidate(candidate)],
             segments: segments,
             endpointEvaluations: manifest.endpointEvaluations,
+            endpointGraces: endpointGraces ?? manifest.endpointGraces,
             interviewerUtterances: manifest.interviewerUtterances,
             board: manifest.board,
             candidateNotes: manifest.candidateNotes,
@@ -1222,6 +1438,7 @@ public actor InterviewRoomSession {
             turns: manifest.turns,
             segments: manifest.segments,
             endpointEvaluations: manifest.endpointEvaluations,
+            endpointGraces: manifest.endpointGraces,
             interviewerUtterances: manifest.interviewerUtterances,
             board: manifest.board,
             candidateNotes: manifest.candidateNotes,
@@ -1280,6 +1497,7 @@ public actor InterviewRoomSession {
             turns: manifest.turns + [.interviewer(interviewer)],
             segments: manifest.segments,
             endpointEvaluations: manifest.endpointEvaluations,
+            endpointGraces: manifest.endpointGraces,
             interviewerUtterances: manifest.interviewerUtterances + [utterance],
             board: manifest.board,
             candidateNotes: manifest.candidateNotes,
@@ -1298,6 +1516,7 @@ public actor InterviewRoomSession {
         turns: [InterviewTurn],
         segments: [CandidateSegment],
         endpointEvaluations: [EndpointEvaluation],
+        endpointGraces: [EndpointGrace]? = nil,
         interviewerUtterances: [InterviewerUtterance]? = nil,
         board: BoardWorkspace? = nil,
         candidateNotes: CandidateNotes? = nil
@@ -1317,6 +1536,7 @@ public actor InterviewRoomSession {
             turns: turns,
             segments: segments,
             endpointEvaluations: endpointEvaluations,
+            endpointGraces: endpointGraces ?? manifest.endpointGraces,
             interviewerUtterances: interviewerUtterances ?? manifest.interviewerUtterances,
             board: board ?? manifest.board,
             candidateNotes: candidateNotes ?? manifest.candidateNotes,
@@ -1348,6 +1568,28 @@ public actor InterviewRoomSession {
             throw InterviewRoomSessionError.endpointEvaluationNotFound(evaluationID)
         }
         return index
+    }
+
+    private func endpointGraceIndex(
+        _ graceID: EndpointGraceID,
+        in graces: [EndpointGrace]
+    ) throws -> Int {
+        guard let index = graces.firstIndex(where: { $0.id == graceID }) else {
+            throw InterviewRoomSessionError.endpointGraceNotFound(graceID)
+        }
+        return index
+    }
+
+    private static func cancellingPendingEndpointGrace(
+        _ graces: [EndpointGrace],
+        reason: EndpointGraceCancellationReason
+    ) -> [EndpointGrace] {
+        guard let index = graces.firstIndex(where: { $0.lifecycle == .pending }) else {
+            return graces
+        }
+        var updated = graces
+        updated[index] = updated[index].cancelling(reason: reason)
+        return updated
     }
 
     private static func interviewerUtteranceIndex(
@@ -1489,7 +1731,7 @@ public actor InterviewRoomSession {
     }
 
     /// Revalidates the durable authorization against the exact current draft
-    /// immediately before a classifier proposal becomes canonical Shadow
+    /// immediately before a classifier proposal becomes canonical evaluation
     /// state. This check stays in the Session Module so phase, evidence, and
     /// question identity are observed atomically with outcome persistence.
     private static func isCurrentEndpointEvaluation(
@@ -1770,6 +2012,16 @@ public actor InterviewRoomSession {
     ) -> EndpointEvaluationID {
         EndpointEvaluationID(stableIdentity(
             namespace: "endpoint-evaluation",
+            fields: [sessionID.rawValue, commandID.rawValue]
+        ))
+    }
+
+    private static func endpointGraceID(
+        sessionID: SessionID,
+        commandID: CommandID
+    ) -> EndpointGraceID {
+        EndpointGraceID(stableIdentity(
+            namespace: "endpoint-grace",
             fields: [sessionID.rawValue, commandID.rawValue]
         ))
     }
@@ -2298,6 +2550,78 @@ public actor InterviewRoomSession {
                 } catch {
                     throw InterviewRoomSessionError.invalidManifest(
                         reason: "stored endpoint failure is invalid"
+                    )
+                }
+            }
+        }
+
+        let evaluationByID = Dictionary(
+            uniqueKeysWithValues: manifest.endpointEvaluations.map { ($0.id, $0) }
+        )
+        let graceIDs = manifest.endpointGraces.map(\.id)
+        let graceActivationIDs = manifest.endpointGraces.map(\.activationCommandID)
+        let graceEvaluationIDs = manifest.endpointGraces.map(\.evaluationID)
+        guard Set(graceIDs).count == graceIDs.count,
+              Set(graceActivationIDs).count == graceActivationIDs.count,
+              Set(graceEvaluationIDs).count == graceEvaluationIDs.count,
+              manifest.endpointGraces.filter({ $0.lifecycle == .pending }).count <= 1 else {
+            throw InterviewRoomSessionError.invalidManifest(
+                reason: "invalid Endpoint Grace history"
+            )
+        }
+        for grace in manifest.endpointGraces {
+            guard grace.id == endpointGraceID(
+                sessionID: manifest.sessionID,
+                commandID: grace.activationCommandID
+            ),
+            commandIDSet.contains(grace.activationCommandID),
+            let evaluation = evaluationByID[grace.evaluationID],
+            evaluation.lifecycle == .proposalStored,
+            evaluation.proposal?.decision == .likelyEnd,
+            evaluation.selectedCandidateIDs == grace.selectedCandidateIDs else {
+                throw InterviewRoomSessionError.invalidManifest(
+                    reason: "Endpoint Grace evidence is inconsistent"
+                )
+            }
+
+            switch grace.lifecycle {
+            case .pending:
+                guard grace.cancellationReason == nil,
+                      grace.completedCandidateTurnID == nil,
+                      manifest.phase == .candidateFloor,
+                      manifest.turnMode == .patientAuto,
+                      isCurrentEndpointEvaluation(
+                          evaluation,
+                          phase: manifest.phase,
+                          mode: manifest.turnMode,
+                          turns: manifest.turns,
+                          segments: manifest.segments
+                      ) else {
+                    throw InterviewRoomSessionError.invalidManifest(
+                        reason: "pending Endpoint Grace is not current"
+                    )
+                }
+            case .cancelled:
+                guard grace.cancellationReason != nil,
+                      grace.completedCandidateTurnID == nil else {
+                    throw InterviewRoomSessionError.invalidManifest(
+                        reason: "cancelled Endpoint Grace is incomplete"
+                    )
+                }
+            case .completed:
+                guard grace.cancellationReason == nil,
+                      let turnID = grace.completedCandidateTurnID,
+                      let candidate = turnByID[turnID] else {
+                    throw InterviewRoomSessionError.invalidManifest(
+                        reason: "completed Endpoint Grace has no Candidate Turn"
+                    )
+                }
+                let turnCandidateIDs = candidate.segmentIDs.compactMap { segmentID in
+                    segmentByID[segmentID]?.selectedCandidateID
+                }
+                guard turnCandidateIDs == grace.selectedCandidateIDs else {
+                    throw InterviewRoomSessionError.invalidManifest(
+                        reason: "completed Endpoint Grace Turn evidence is inconsistent"
                     )
                 }
             }

@@ -1702,6 +1702,500 @@ final class SegmentLifecycleTests: XCTestCase {
         }
     }
 
+    func testEndpointGraceCompletesThroughOneCanonicalHandOff() async throws {
+        let store = InMemorySessionManifestStore()
+        let runtime = CountingInterviewerRuntime()
+        let session = try await InterviewRoomSession.start(
+            sessionID: SessionID("grace-completion-session"),
+            activityID: "grace-completion-activity",
+            activityPrompt: try fixtureActivityPrompt(),
+            turnMode: .patientAuto,
+            manifestStore: store,
+            interviewerRuntime: runtime
+        )
+        _ = try await session.execute(
+            .giveCandidateFloor(commandID: CommandID("grace-completion-floor"))
+        )
+        let grace = try await makePendingEndpointGrace(
+            session: session,
+            commandStem: "grace-completion"
+        )
+
+        let completed = try await session.execute(
+            .completeEndpointGrace(
+                commandID: CommandID("grace-completion-hand-off"),
+                graceID: grace.id,
+                boardAttachment: .noBoard
+            )
+        )
+
+        XCTAssertEqual(completed.phase, .interviewerTurn)
+        XCTAssertEqual(completed.turns.count, 2)
+        XCTAssertEqual(completed.endpointGraces.first?.lifecycle, .completed)
+        guard case .candidate(let candidate) = completed.turns.first else {
+            return XCTFail("Expected one Candidate Turn")
+        }
+        XCTAssertEqual(
+            completed.endpointGraces.first?.completedCandidateTurnID,
+            candidate.id
+        )
+        let firstInvocationCount = await runtime.invocationCount()
+        XCTAssertEqual(firstInvocationCount, 1)
+
+        let replay = try await session.apply(
+            .completeEndpointGrace(
+                commandID: CommandID("grace-completion-hand-off"),
+                graceID: grace.id,
+                boardAttachment: .noBoard
+            )
+        )
+        XCTAssertEqual(replay.disposition, .alreadyApplied)
+        let replayInvocationCount = await runtime.invocationCount()
+        XCTAssertEqual(replayInvocationCount, 1)
+    }
+
+    func testResumedSpeechCancelsEndpointGraceBeforeCaptureAuthorization() async throws {
+        let session = try await makeCandidateFloorSession(
+            store: InMemorySessionManifestStore(),
+            turnMode: .patientAuto
+        )
+        _ = try await makePendingEndpointGrace(
+            session: session,
+            commandStem: "grace-resumed-speech"
+        )
+
+        let resumed = try await session.execute(
+            .beginSegment(commandID: CommandID("grace-resumed-speech-next"))
+        )
+
+        XCTAssertEqual(resumed.phase, .candidateFloor)
+        XCTAssertEqual(resumed.endpointGraces.last?.lifecycle, .cancelled)
+        XCTAssertEqual(
+            resumed.endpointGraces.last?.cancellationReason,
+            .resumedSpeech
+        )
+        XCTAssertEqual(resumed.segments.last?.lifecycle, .captureAuthorized)
+        XCTAssertTrue(resumed.turns.isEmpty)
+    }
+
+    func testEndpointGraceActivationRejectsBoardChangeEvenAfterRevisionSave() async throws {
+        let session = try await makeCandidateFloorSession(
+            store: InMemorySessionManifestStore(),
+            turnMode: .patientAuto
+        )
+        let evaluation = try await makeLikelyEndEndpointEvaluation(
+            session: session,
+            commandStem: "grace-board-race"
+        )
+        _ = try await session.execute(
+            .updateBoardDraft(
+                commandID: CommandID("grace-board-race-update"),
+                document: BoardDocument(
+                    canvas: BoardCanvas(size: BoardSize(width: 1_200, height: 800)),
+                    elements: [
+                        .label(
+                            BoardLabel(
+                                id: BoardElementID("grace-board-race-label"),
+                                origin: BoardPoint(x: 40, y: 40),
+                                text: "Queue"
+                            )
+                        )
+                    ]
+                )
+            )
+        )
+        _ = try await session.execute(
+            .saveBoardRevision(commandID: CommandID("grace-board-race-save"))
+        )
+
+        do {
+            _ = try await session.execute(
+                .activateEndpointGrace(
+                    commandID: CommandID("grace-board-race-activation"),
+                    evaluationID: evaluation.id,
+                    expectedBoardAttachment: .noBoard
+                )
+            )
+            XCTFail("Expected the changed Board identity to reject grace activation")
+        } catch let error as InterviewRoomSessionError {
+            XCTAssertEqual(error, .endpointGraceEvidenceMismatch)
+        }
+        let snapshot = await session.snapshot()
+        XCTAssertTrue(snapshot.endpointGraces.isEmpty)
+    }
+
+    func testEndpointGraceCancelsForBoardNotesModeAndExplicitKeepFloor() async throws {
+        let cases: [EndpointGraceCancellationCase] = [
+            EndpointGraceCancellationCase(
+                name: "board",
+                operation: { session, _ in
+                    try await session.execute(
+                        .updateBoardDraft(
+                            commandID: CommandID("grace-board-change"),
+                            document: BoardDocument(
+                                canvas: BoardCanvas(
+                                    size: BoardSize(width: 1_200, height: 800)
+                                ),
+                                elements: [
+                                    .label(
+                                        BoardLabel(
+                                            id: BoardElementID("grace-board-label"),
+                                            origin: BoardPoint(x: 40, y: 40),
+                                            text: "Public fixture"
+                                        )
+                                    )
+                                ]
+                            )
+                        )
+                    )
+                },
+                expectedReason: .boardActivity
+            ),
+            EndpointGraceCancellationCase(
+                name: "notes",
+                operation: { session, _ in
+                    try await session.execute(
+                        .updateCandidateNotes(
+                            commandID: CommandID("grace-notes-change"),
+                            notes: try CandidateNotes(body: "Verify idempotency")
+                        )
+                    )
+                },
+                expectedReason: .notesActivity
+            ),
+            EndpointGraceCancellationCase(
+                name: "mode",
+                operation: { session, _ in
+                    try await session.execute(
+                        .setTurnMode(
+                            commandID: CommandID("grace-mode-change"),
+                            mode: .manual
+                        )
+                    )
+                },
+                expectedReason: .turnModeChanged
+            ),
+            EndpointGraceCancellationCase(
+                name: "keep-floor",
+                operation: { session, grace in
+                    try await session.execute(
+                        .cancelEndpointGrace(
+                            commandID: CommandID("grace-keep-floor"),
+                            graceID: grace.id,
+                            reason: .keptFloor
+                        )
+                    )
+                },
+                expectedReason: .keptFloor
+            ),
+        ]
+
+        for testCase in cases {
+            let session = try await makeCandidateFloorSession(
+                store: InMemorySessionManifestStore(),
+                turnMode: .patientAuto
+            )
+            let grace = try await makePendingEndpointGrace(
+                session: session,
+                commandStem: "grace-cancel-\(testCase.name)"
+            )
+            let cancelled = try await testCase.operation(session, grace)
+            XCTAssertEqual(cancelled.endpointGraces.last?.lifecycle, .cancelled)
+            XCTAssertEqual(
+                cancelled.endpointGraces.last?.cancellationReason,
+                testCase.expectedReason,
+                testCase.name
+            )
+            XCTAssertEqual(cancelled.phase, .candidateFloor, testCase.name)
+            XCTAssertTrue(cancelled.turns.isEmpty, testCase.name)
+        }
+    }
+
+    func testRestoreCancelsPendingEndpointGraceWithoutHandOff() async throws {
+        let store = InMemorySessionManifestStore()
+        let runtime = CountingInterviewerRuntime()
+        let session = try await InterviewRoomSession.start(
+            sessionID: SessionID("grace-restore-session"),
+            activityID: "grace-restore-activity",
+            activityPrompt: try fixtureActivityPrompt(),
+            turnMode: .patientAuto,
+            manifestStore: store,
+            interviewerRuntime: runtime
+        )
+        _ = try await session.execute(
+            .giveCandidateFloor(commandID: CommandID("grace-restore-floor"))
+        )
+        _ = try await makePendingEndpointGrace(
+            session: session,
+            commandStem: "grace-restore"
+        )
+
+        let coordinator = try await SegmentSpeechCoordinator.open(
+            sessionID: SessionID("grace-restore-session"),
+            activityID: "grace-restore-activity",
+            activityPrompt: try fixtureActivityPrompt(),
+            turnMode: .patientAuto,
+            manifestStore: store,
+            interviewerRuntime: runtime,
+            recording: StubSegmentRecorder(
+                capture: try capturedAudio(fileName: "grace-restore-unused.m4a")
+            ),
+            transcriber: SequencedSegmentTranscriber(results: []),
+            credentialReader: FixedCredentialReader(value: "credential")
+        )
+        let reconciled = try await coordinator.resumePendingWork()
+
+        XCTAssertEqual(reconciled.endpointGraces.last?.lifecycle, .cancelled)
+        XCTAssertEqual(
+            reconciled.endpointGraces.last?.cancellationReason,
+            .interrupted
+        )
+        XCTAssertEqual(reconciled.phase, .candidateFloor)
+        XCTAssertTrue(reconciled.turns.isEmpty)
+        let restoreInvocationCount = await runtime.invocationCount()
+        XCTAssertEqual(restoreInvocationCount, 0)
+    }
+
+    func testCoordinatorSchedulesOnlyAfterDurableGraceAndStaleWakeIsHarmless() async throws {
+        let scheduler = ControlledEndpointGraceScheduler()
+        let runtime = CountingInterviewerRuntime()
+        let coordinator = try await makePatientAutoCoordinator(
+            commandStem: "grace-scheduler",
+            store: InMemorySessionManifestStore(),
+            runtime: runtime,
+            scheduler: scheduler
+        )
+        _ = try await coordinator.giveCandidateFloor(
+            commandID: CommandID("grace-scheduler-floor")
+        )
+        _ = try await coordinator.beginSegment(
+            commandID: CommandID("grace-scheduler-begin")
+        )
+        let pending = try await coordinator.finishSegment(
+            commandID: CommandID("grace-scheduler-finish"),
+            transcriptionCommandID: CommandID("grace-scheduler-transcribe")
+        )
+        XCTAssertEqual(pending.endpointGraces.last?.lifecycle, .pending)
+        await scheduler.waitUntilWaiting()
+
+        _ = try await coordinator.beginSegment(
+            commandID: CommandID("grace-scheduler-resume")
+        )
+        await scheduler.release()
+        await Task.yield()
+        await Task.yield()
+
+        XCTAssertEqual(coordinator.snapshot.phase, .candidateFloor)
+        XCTAssertEqual(coordinator.snapshot.endpointGraces.last?.lifecycle, .cancelled)
+        XCTAssertEqual(coordinator.snapshot.turns.count, 0)
+        let staleWakeInvocationCount = await runtime.invocationCount()
+        XCTAssertEqual(staleWakeInvocationCount, 0)
+    }
+
+    func testCoordinatorCompletesAutomaticHandOffAfterGraceRelease() async throws {
+        let scheduler = ControlledEndpointGraceScheduler()
+        let runtime = CountingInterviewerRuntime()
+        let coordinator = try await makePatientAutoCoordinator(
+            commandStem: "grace-automatic",
+            store: InMemorySessionManifestStore(),
+            runtime: runtime,
+            scheduler: scheduler
+        )
+        _ = try await coordinator.giveCandidateFloor(
+            commandID: CommandID("grace-automatic-floor")
+        )
+        _ = try await coordinator.beginSegment(
+            commandID: CommandID("grace-automatic-begin")
+        )
+        let pending = try await coordinator.finishSegment(
+            commandID: CommandID("grace-automatic-finish"),
+            transcriptionCommandID: CommandID("grace-automatic-transcribe")
+        )
+        XCTAssertEqual(pending.endpointGraces.last?.lifecycle, .pending)
+        await scheduler.waitUntilWaiting()
+
+        await scheduler.release()
+        for _ in 0..<100 where coordinator.snapshot.phase == .candidateFloor {
+            await Task.yield()
+        }
+
+        XCTAssertEqual(coordinator.snapshot.phase, .interviewerTurn)
+        XCTAssertEqual(coordinator.snapshot.endpointGraces.last?.lifecycle, .completed)
+        XCTAssertEqual(coordinator.snapshot.turns.count, 2)
+        let invocationCount = await runtime.invocationCount()
+        XCTAssertEqual(invocationCount, 1)
+    }
+
+    func testAutomaticHandOffWriteFailureCancelsPendingGrace() async throws {
+        let scheduler = ControlledEndpointGraceScheduler()
+        let runtime = CountingInterviewerRuntime()
+        let coordinator = try await makePatientAutoCoordinator(
+            commandStem: "grace-write-failure",
+            store: EndpointWriteFailingSessionManifestStore(
+                failurePoint: .graceCompletion
+            ),
+            runtime: runtime,
+            scheduler: scheduler,
+            transcript: "The answer remains durable after a failed Hand off write."
+        )
+        _ = try await coordinator.giveCandidateFloor(
+            commandID: CommandID("grace-write-failure-floor")
+        )
+        _ = try await coordinator.beginSegment(
+            commandID: CommandID("grace-write-failure-begin")
+        )
+        _ = try await coordinator.finishSegment(
+            commandID: CommandID("grace-write-failure-finish"),
+            transcriptionCommandID: CommandID("grace-write-failure-transcribe")
+        )
+        await scheduler.waitUntilWaiting()
+
+        await scheduler.release()
+        for _ in 0..<100 where coordinator.snapshot.endpointGraces.last?.lifecycle == .pending {
+            await Task.yield()
+        }
+
+        XCTAssertEqual(coordinator.snapshot.phase, .candidateFloor)
+        XCTAssertEqual(coordinator.snapshot.endpointGraces.last?.lifecycle, .cancelled)
+        XCTAssertEqual(
+            coordinator.snapshot.endpointGraces.last?.cancellationReason,
+            .interrupted
+        )
+        XCTAssertTrue(coordinator.snapshot.turns.isEmpty)
+        let invocationCount = await runtime.invocationCount()
+        XCTAssertEqual(invocationCount, 0)
+    }
+
+    private struct EndpointGraceCancellationCase {
+        let name: String
+        let operation: (
+            InterviewRoomSession,
+            EndpointGrace
+        ) async throws -> InterviewRoomSnapshot
+        let expectedReason: EndpointGraceCancellationReason
+    }
+
+    private func makePatientAutoCoordinator(
+        commandStem: String,
+        store: any SessionManifestStore,
+        runtime: CountingInterviewerRuntime,
+        scheduler: ControlledEndpointGraceScheduler,
+        transcript: String = "The design resolves delivery reliability."
+    ) async throws -> SegmentSpeechCoordinator {
+        try await SegmentSpeechCoordinator.open(
+            sessionID: SessionID("\(commandStem)-session"),
+            activityID: "\(commandStem)-activity",
+            activityPrompt: try fixtureActivityPrompt(),
+            turnMode: .patientAuto,
+            manifestStore: store,
+            interviewerRuntime: runtime,
+            recording: StubSegmentRecorder(
+                capture: try capturedAudio(fileName: "\(commandStem).m4a")
+            ),
+            transcriber: SequencedSegmentTranscriber(
+                results: [
+                    .success(
+                        SegmentTranscriptionResult(
+                            body: transcript,
+                            quality: .verified
+                        )
+                    )
+                ]
+            ),
+            credentialReader: FixedCredentialReader(value: "credential"),
+            semanticEndpointClassifier: RecordingSemanticEndpointClassifier(
+                results: [
+                    .success(
+                        SemanticEndpointProposal(
+                            decision: .likelyEnd,
+                            reasonCode: .answerResolvesQuestion
+                        )
+                    )
+                ]
+            ),
+            endpointGraceScheduler: scheduler
+        )
+    }
+
+    private func makePendingEndpointGrace(
+        session: InterviewRoomSession,
+        commandStem: String
+    ) async throws -> EndpointGrace {
+        let evaluation = try await makeLikelyEndEndpointEvaluation(
+            session: session,
+            commandStem: commandStem
+        )
+        let snapshot = await session.snapshot()
+        let expectedBoardAttachment = try XCTUnwrap(
+            BoardHandoffAttachmentPolicy.currentDraftAttachment(in: snapshot.board)
+        )
+        let activated = try await session.execute(
+            .activateEndpointGrace(
+                commandID: CommandID("\(commandStem)-grace-activation"),
+                evaluationID: evaluation.id,
+                expectedBoardAttachment: expectedBoardAttachment
+            )
+        )
+        return try XCTUnwrap(activated.endpointGraces.last)
+    }
+
+    private func makeLikelyEndEndpointEvaluation(
+        session: InterviewRoomSession,
+        commandStem: String
+    ) async throws -> EndpointEvaluation {
+        let segmentID = try await makeTranscribedSegment(
+            session: session,
+            commandStem: commandStem,
+            body: "A complete public fixture answer.",
+            quality: .verified
+        )
+        let snapshot = await session.snapshot()
+        let selectedCandidateIDs = snapshot.segments
+            .filter { $0.committedTurnID == nil && $0.lifecycle != .excluded }
+            .sorted { $0.ordinal < $1.ordinal }
+            .compactMap(\.selectedCandidateID)
+        let context = SemanticEndpointContext(
+            interviewerQuestion: snapshot.activityPrompt.question,
+            requestedParts: snapshot.activityPrompt.requestedParts,
+            accumulatedAnswer: "A complete public fixture answer.",
+            latestSegment: "A complete public fixture answer.",
+            silenceDurationMilliseconds: 0,
+            specialty: snapshot.activityPrompt.specialty.rawValue,
+            stage: snapshot.activityPrompt.stage,
+            explicitCue: false,
+            workspaceActivity: []
+        )
+        let fingerprint = try InterviewRoomSession.endpointContextFingerprint(
+            context,
+            triggerSegmentID: segmentID,
+            selectedCandidateIDs: selectedCandidateIDs,
+            questionTurnID: nil
+        )
+        let authorized = try await session.execute(
+            .authorizeEndpointEvaluation(
+                commandID: CommandID("\(commandStem)-endpoint-authorization"),
+                triggerSegmentID: segmentID,
+                selectedCandidateIDs: selectedCandidateIDs,
+                questionTurnID: nil,
+                contextFingerprint: fingerprint
+            )
+        )
+        let evaluation = try XCTUnwrap(authorized.endpointEvaluations.last)
+        _ = try await session.execute(
+            .recordEndpointEvaluationOutcome(
+                commandID: CommandID("\(commandStem)-endpoint-outcome"),
+                evaluationID: evaluation.id,
+                outcome: .proposal(
+                    SemanticEndpointProposal(
+                        decision: .likelyEnd,
+                        reasonCode: .answerResolvesQuestion
+                    )
+                )
+            )
+        )
+        return evaluation
+    }
+
     private func makeCandidateFloorSession(
         store: InMemorySessionManifestStore,
         turnMode: TurnMode = .manual
@@ -2068,6 +2562,34 @@ private actor CountingInterviewerRuntime: InterviewerRuntime {
     func invocationCount() -> Int { calls }
 }
 
+private actor ControlledEndpointGraceScheduler: EndpointGraceScheduling {
+    private var didEnter = false
+    private var entryWaiters: [CheckedContinuation<Void, Never>] = []
+    private var waitContinuation: CheckedContinuation<Void, Never>?
+
+    func waitForGrace() async throws {
+        didEnter = true
+        let waiters = entryWaiters
+        entryWaiters.removeAll()
+        waiters.forEach { $0.resume() }
+        await withCheckedContinuation { continuation in
+            waitContinuation = continuation
+        }
+    }
+
+    func waitUntilWaiting() async {
+        if didEnter { return }
+        await withCheckedContinuation { continuation in
+            entryWaiters.append(continuation)
+        }
+    }
+
+    func release() {
+        waitContinuation?.resume()
+        waitContinuation = nil
+    }
+}
+
 private struct FixedCredentialReader: GroqCredentialReading {
     let value: String
 
@@ -2118,6 +2640,7 @@ private actor FailingRevisionSessionManifestStore: SessionManifestStore {
 private enum EndpointWriteFailurePoint {
     case authorization
     case outcome
+    case graceCompletion
 }
 
 private actor EndpointWriteFailingSessionManifestStore: SessionManifestStore {
@@ -2149,9 +2672,12 @@ private actor EndpointWriteFailingSessionManifestStore: SessionManifestStore {
             && manifest.endpointEvaluations.last?.lifecycle == .authorized
         let isOutcome = current?.endpointEvaluations.last?.lifecycle == .authorized
             && manifest.endpointEvaluations.last?.lifecycle != .authorized
+        let isGraceCompletion = current?.endpointGraces.last?.lifecycle == .pending
+            && manifest.endpointGraces.last?.lifecycle == .completed
         let shouldFail = switch failurePoint {
         case .authorization: isAuthorization
         case .outcome: isOutcome
+        case .graceCompletion: isGraceCompletion
         }
         if shouldFail, !didFail {
             didFail = true

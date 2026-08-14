@@ -54,6 +54,31 @@ final class CompactRoomPresentationTests: XCTestCase {
         XCTAssertFalse(handOff.isEnabled)
     }
 
+    func testPendingEndpointGraceAddsKeepFloorWithoutReplacingHandOff() throws {
+        let presentation = CompactRoomPresentation.make(
+            input: .init(
+                phase: .candidateFloor,
+                statusMessage: "Handing off in 4 seconds · Keep my floor to cancel",
+                showsRecordControl: true,
+                canRecordSegment: true,
+                showsKeepFloor: true,
+                canKeepFloor: true,
+                phaseActionTitle: "Hand off",
+                canPerformPhaseAction: true
+            )
+        )
+
+        XCTAssertEqual(
+            presentation.controls.map(\.action),
+            [.recordSegment, .keepFloor, .primaryPhaseAction, .expand]
+        )
+        let keepFloor = try XCTUnwrap(presentation.keepFloorControl)
+        XCTAssertEqual(keepFloor.title, "Keep my floor")
+        XCTAssertEqual(keepFloor.systemImage, "hand.raised.fill")
+        XCTAssertTrue(keepFloor.isEnabled)
+        XCTAssertEqual(presentation.phaseControl?.title, "Hand off")
+    }
+
     func testCaptureSavingAndTranscribingRemainDistinct() throws {
         let recording = CompactRoomPresentation.make(
             input: .init(
@@ -226,6 +251,7 @@ final class CompactRoomPresentationTests: XCTestCase {
             Set([
                 CompactRoomAction.recordSegment,
                 .stopRecording,
+                .keepFloor,
                 .primaryPhaseAction,
                 .stopSpeech,
                 .toggleSpeechMute,

@@ -89,7 +89,7 @@ controls its evidence status, never whether the text remains visible.
 
 ### Turn Mode
 
-The policy controlling Hand off: `Cue Only`, experimental `Patient Auto`, or
+The policy controlling Hand off: `Cue Only`, functional `Patient Auto`, or
 `Manual`.
 
 ### Endpoint Proposal
@@ -107,6 +107,14 @@ selected transcript candidate in the accumulated answer. It retains those
 stable evidence identities and a context fingerprint, not duplicated
 transcript or prompt text. An interrupted Evaluation is recorded without
 automatically replaying the provider request.
+
+### Endpoint Grace
+
+One durable, cancellable four-second wait between a current `likely_end`
+Endpoint Evaluation and Patient Auto's canonical Hand off. Keep my floor,
+resumed speech, a Turn Mode change, or Board or Notes activity cancels it. A
+pending grace is reconciled as interrupted after relaunch rather than silently
+replayed.
 
 ### Session Manifest
 
@@ -167,6 +175,9 @@ separate recording, model, transcript, or persistence state.
 - One Activity has at most one Live interaction writer.
 - One Hand off creates at most one Candidate Turn and one matching Interviewer
   Turn, even after retries.
+- One current `likely_end` Endpoint Evaluation owns at most one Endpoint Grace,
+  and automatic completion uses the same at-most-once Hand off transition as
+  the explicit action.
 - Accepted transitions advance the Session Manifest revision monotonically.
 - Every nonempty audio-derived transcript candidate remains visible with an
   explicit quality state.

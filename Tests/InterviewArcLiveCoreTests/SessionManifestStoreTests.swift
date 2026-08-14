@@ -86,7 +86,7 @@ final class SessionManifestStoreTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: manifestURL), legacyData)
     }
 
-    func testLegacyManifestWithoutEndpointEvaluationsDecodesEmptyHistory() throws {
+    func testLegacyManifestWithoutEndpointHistoryDecodesEmptyHistories() throws {
         let current = try manifest(
             sessionID: SessionID("public-legacy-endpoint-history"),
             revision: 0
@@ -96,11 +96,13 @@ final class SessionManifestStoreTests: XCTestCase {
             JSONSerialization.jsonObject(with: currentData) as? [String: Any]
         )
         object.removeValue(forKey: "endpointEvaluations")
+        object.removeValue(forKey: "endpointGraces")
         let legacyData = try JSONSerialization.data(withJSONObject: object)
 
         let decoded = try JSONDecoder().decode(SessionManifest.self, from: legacyData)
 
         XCTAssertTrue(decoded.endpointEvaluations.isEmpty)
+        XCTAssertTrue(decoded.endpointGraces.isEmpty)
         XCTAssertEqual(decoded.sessionID, current.sessionID)
         XCTAssertEqual(decoded.revision, current.revision)
     }
