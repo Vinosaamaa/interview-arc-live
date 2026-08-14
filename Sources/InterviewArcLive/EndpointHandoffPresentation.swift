@@ -4,6 +4,17 @@ import InterviewArcLiveCore
 /// supplies canonical evidence identities; this Module maps durable
 /// Evaluation and Endpoint Grace state to bounded, truthful UI copy.
 struct EndpointHandoffPresentation: Equatable {
+    struct Input {
+        let turnMode: TurnMode
+        let phase: InterviewRoomPhase?
+        let currentEvaluation: EndpointEvaluation?
+        let endpointGrace: EndpointGrace?
+        let canAutomaticallyHandOff: Bool
+        let hasSelectedDraft: Bool
+        let hasUnresolvedDraft: Bool
+        let hasStaleEvaluation: Bool
+    }
+
     enum Tone: Equatable {
         case neutral
         case working
@@ -31,17 +42,8 @@ struct EndpointHandoffPresentation: Equatable {
         return latestEvaluation
     }
 
-    static func make(
-        turnMode: TurnMode,
-        phase: InterviewRoomPhase?,
-        currentEvaluation: EndpointEvaluation?,
-        endpointGrace: EndpointGrace?,
-        canAutomaticallyHandOff: Bool,
-        hasSelectedDraft: Bool,
-        hasUnresolvedDraft: Bool,
-        hasStaleEvaluation: Bool
-    ) -> EndpointHandoffPresentation {
-        guard turnMode == .patientAuto else {
+    static func make(input: Input) -> EndpointHandoffPresentation {
+        guard input.turnMode == .patientAuto else {
             return EndpointHandoffPresentation(
                 title: "Manual turn-taking",
                 detail: "Semantic endpoint calls are off. Hand off remains explicit.",
@@ -49,7 +51,7 @@ struct EndpointHandoffPresentation: Equatable {
                 tone: .neutral
             )
         }
-        guard phase == .candidateFloor else {
+        guard input.phase == .candidateFloor else {
             return EndpointHandoffPresentation(
                 title: "Patient Auto waits for your floor",
                 detail: "Automatic Hand off only runs during the Candidate Floor.",
@@ -57,7 +59,7 @@ struct EndpointHandoffPresentation: Equatable {
                 tone: .neutral
             )
         }
-        if hasUnresolvedDraft {
+        if input.hasUnresolvedDraft {
             return EndpointHandoffPresentation(
                 title: "Patient Auto waiting for complete transcripts",
                 detail: "Resolve or exclude every draft Segment before another endpoint check.",
@@ -65,7 +67,7 @@ struct EndpointHandoffPresentation: Equatable {
                 tone: .neutral
             )
         }
-        if hasStaleEvaluation {
+        if input.hasStaleEvaluation {
             return EndpointHandoffPresentation(
                 title: "Evidence changed · Patient Auto waiting",
                 detail: "The prior result is no longer current. A new Segment can start another check.",
@@ -73,7 +75,7 @@ struct EndpointHandoffPresentation: Equatable {
                 tone: .neutral
             )
         }
-        if let endpointGrace {
+        if let endpointGrace = input.endpointGrace {
             switch endpointGrace.lifecycle {
             case .pending:
                 return EndpointHandoffPresentation(
@@ -88,12 +90,12 @@ struct EndpointHandoffPresentation: Equatable {
                 break
             }
         }
-        guard let currentEvaluation else {
+        guard let currentEvaluation = input.currentEvaluation else {
             return EndpointHandoffPresentation(
-                title: hasSelectedDraft
+                title: input.hasSelectedDraft
                     ? "Patient Auto waits for the next Segment"
                     : "Patient Auto waiting for a transcript",
-                detail: hasSelectedDraft
+                detail: input.hasSelectedDraft
                     ? "Existing evidence is not sent retroactively. Hand off remains available."
                     : "It checks after a new selected transcript is saved.",
                 systemImage: "waveform.badge.magnifyingglass",
@@ -103,7 +105,7 @@ struct EndpointHandoffPresentation: Equatable {
 
         return lifecyclePresentation(
             for: currentEvaluation,
-            canAutomaticallyHandOff: canAutomaticallyHandOff
+            canAutomaticallyHandOff: input.canAutomaticallyHandOff
         )
     }
 

@@ -265,6 +265,8 @@ extension SystemDesignRoomModel {
             || snapshot?.interviewerUtterances.contains(where: {
                 speechPresentation(for: $0).canStop
             }) == true
+        let pendingGrace = activeEndpointGrace
+        let keepFloorIsEnabled = canKeepFloor(pendingGrace: pendingGrace)
 
         return CompactRoomPresentation.make(
             input: CompactRoomPresentation.Input(
@@ -276,8 +278,8 @@ extension SystemDesignRoomModel {
                 showsRecordControl: showsRecordControl,
                 canRecordSegment: canRecordSegment,
                 recordTitle: recordActionTitle,
-                showsKeepFloor: activeEndpointGrace != nil,
-                canKeepFloor: canKeepFloor,
+                showsKeepFloor: pendingGrace != nil,
+                canKeepFloor: keepFloorIsEnabled,
                 phaseActionTitle: actionTitle,
                 phaseActionSystemImage: actionIcon,
                 canPerformPhaseAction: canAct,

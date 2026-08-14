@@ -186,15 +186,16 @@ struct SystemDesignRoomView: View {
     private func roomStatusMenu(
         presentation: FullRoomHeaderStatusPresentation
     ) -> some View {
-        Menu {
+        let endpointPresentation = model.endpointHandoffPresentation
+        return Menu {
             Picker("Turn-taking", selection: turnModeRawSelection) {
                 ForEach(model.availableTurnModes, id: \.rawValue) { mode in
                     Text(model.turnModeTitle(mode)).tag(mode.rawValue)
                 }
             }
             Divider()
-            Text(model.endpointHandoffPresentation.title)
-            Text(model.endpointHandoffPresentation.detail)
+            Text(endpointPresentation.title)
+            Text(endpointPresentation.detail)
             if model.needsGroqCredential {
                 Button("Add Groq key") { model.presentCredentialSetup() }
             }

@@ -167,14 +167,15 @@ struct CompactSystemDesignRoomView: View {
   }
 
   private var conversationControls: some View {
-    HStack(spacing: 8) {
-      if let candidateControl = presentation.candidateControl {
+    let currentPresentation = presentation
+    return HStack(spacing: 8) {
+      if let candidateControl = currentPresentation.candidateControl {
         utilityButton(candidateControl)
       }
-      if let keepFloorControl = presentation.keepFloorControl {
+      if let keepFloorControl = currentPresentation.keepFloorControl {
         utilityButton(keepFloorControl)
       }
-      if let phaseControl = presentation.phaseControl {
+      if let phaseControl = currentPresentation.phaseControl {
         conversationButton(phaseControl)
       }
     }

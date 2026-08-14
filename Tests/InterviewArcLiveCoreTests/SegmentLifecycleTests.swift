@@ -1778,11 +1778,57 @@ final class SegmentLifecycleTests: XCTestCase {
         XCTAssertTrue(resumed.turns.isEmpty)
     }
 
+    func testEndpointGraceActivationRejectsBoardChangeEvenAfterRevisionSave() async throws {
+        let session = try await makeCandidateFloorSession(
+            store: InMemorySessionManifestStore(),
+            turnMode: .patientAuto
+        )
+        let evaluation = try await makeLikelyEndEndpointEvaluation(
+            session: session,
+            commandStem: "grace-board-race"
+        )
+        _ = try await session.execute(
+            .updateBoardDraft(
+                commandID: CommandID("grace-board-race-update"),
+                document: BoardDocument(
+                    canvas: BoardCanvas(size: BoardSize(width: 1_200, height: 800)),
+                    elements: [
+                        .label(
+                            BoardLabel(
+                                id: BoardElementID("grace-board-race-label"),
+                                origin: BoardPoint(x: 40, y: 40),
+                                text: "Queue"
+                            )
+                        )
+                    ]
+                )
+            )
+        )
+        _ = try await session.execute(
+            .saveBoardRevision(commandID: CommandID("grace-board-race-save"))
+        )
+
+        do {
+            _ = try await session.execute(
+                .activateEndpointGrace(
+                    commandID: CommandID("grace-board-race-activation"),
+                    evaluationID: evaluation.id,
+                    expectedBoardAttachment: .noBoard
+                )
+            )
+            XCTFail("Expected the changed Board identity to reject grace activation")
+        } catch let error as InterviewRoomSessionError {
+            XCTAssertEqual(error, .endpointGraceEvidenceMismatch)
+        }
+        let snapshot = await session.snapshot()
+        XCTAssertTrue(snapshot.endpointGraces.isEmpty)
+    }
+
     func testEndpointGraceCancelsForBoardNotesModeAndExplicitKeepFloor() async throws {
-        let cases: [(String, (InterviewRoomSession, EndpointGrace) async throws -> InterviewRoomSnapshot, EndpointGraceCancellationReason)] = [
-            (
-                "board",
-                { session, _ in
+        let cases: [EndpointGraceCancellationCase] = [
+            EndpointGraceCancellationCase(
+                name: "board",
+                operation: { session, _ in
                     try await session.execute(
                         .updateBoardDraft(
                             commandID: CommandID("grace-board-change"),
@@ -1803,11 +1849,11 @@ final class SegmentLifecycleTests: XCTestCase {
                         )
                     )
                 },
-                .boardActivity
+                expectedReason: .boardActivity
             ),
-            (
-                "notes",
-                { session, _ in
+            EndpointGraceCancellationCase(
+                name: "notes",
+                operation: { session, _ in
                     try await session.execute(
                         .updateCandidateNotes(
                             commandID: CommandID("grace-notes-change"),
@@ -1815,11 +1861,11 @@ final class SegmentLifecycleTests: XCTestCase {
                         )
                     )
                 },
-                .notesActivity
+                expectedReason: .notesActivity
             ),
-            (
-                "mode",
-                { session, _ in
+            EndpointGraceCancellationCase(
+                name: "mode",
+                operation: { session, _ in
                     try await session.execute(
                         .setTurnMode(
                             commandID: CommandID("grace-mode-change"),
@@ -1827,11 +1873,11 @@ final class SegmentLifecycleTests: XCTestCase {
                         )
                     )
                 },
-                .turnModeChanged
+                expectedReason: .turnModeChanged
             ),
-            (
-                "keep-floor",
-                { session, grace in
+            EndpointGraceCancellationCase(
+                name: "keep-floor",
+                operation: { session, grace in
                     try await session.execute(
                         .cancelEndpointGrace(
                             commandID: CommandID("grace-keep-floor"),
@@ -1840,7 +1886,7 @@ final class SegmentLifecycleTests: XCTestCase {
                         )
                     )
                 },
-                .keptFloor
+                expectedReason: .keptFloor
             ),
         ]
 
@@ -1851,17 +1897,17 @@ final class SegmentLifecycleTests: XCTestCase {
             )
             let grace = try await makePendingEndpointGrace(
                 session: session,
-                commandStem: "grace-cancel-\(testCase.0)"
+                commandStem: "grace-cancel-\(testCase.name)"
             )
-            let cancelled = try await testCase.1(session, grace)
+            let cancelled = try await testCase.operation(session, grace)
             XCTAssertEqual(cancelled.endpointGraces.last?.lifecycle, .cancelled)
             XCTAssertEqual(
                 cancelled.endpointGraces.last?.cancellationReason,
-                testCase.2,
-                testCase.0
+                testCase.expectedReason,
+                testCase.name
             )
-            XCTAssertEqual(cancelled.phase, .candidateFloor, testCase.0)
-            XCTAssertTrue(cancelled.turns.isEmpty, testCase.0)
+            XCTAssertEqual(cancelled.phase, .candidateFloor, testCase.name)
+            XCTAssertTrue(cancelled.turns.isEmpty, testCase.name)
         }
     }
 
@@ -1913,38 +1959,11 @@ final class SegmentLifecycleTests: XCTestCase {
     func testCoordinatorSchedulesOnlyAfterDurableGraceAndStaleWakeIsHarmless() async throws {
         let scheduler = ControlledEndpointGraceScheduler()
         let runtime = CountingInterviewerRuntime()
-        let coordinator = try await SegmentSpeechCoordinator.open(
-            sessionID: SessionID("grace-scheduler-session"),
-            activityID: "grace-scheduler-activity",
-            activityPrompt: try fixtureActivityPrompt(),
-            turnMode: .patientAuto,
-            manifestStore: InMemorySessionManifestStore(),
-            interviewerRuntime: runtime,
-            recording: StubSegmentRecorder(
-                capture: try capturedAudio(fileName: "grace-scheduler.m4a")
-            ),
-            transcriber: SequencedSegmentTranscriber(
-                results: [
-                    .success(
-                        SegmentTranscriptionResult(
-                            body: "The design resolves delivery reliability.",
-                            quality: .verified
-                        )
-                    )
-                ]
-            ),
-            credentialReader: FixedCredentialReader(value: "credential"),
-            semanticEndpointClassifier: RecordingSemanticEndpointClassifier(
-                results: [
-                    .success(
-                        SemanticEndpointProposal(
-                            decision: .likelyEnd,
-                            reasonCode: .answerResolvesQuestion
-                        )
-                    )
-                ]
-            ),
-            endpointGraceScheduler: scheduler
+        let coordinator = try await makePatientAutoCoordinator(
+            commandStem: "grace-scheduler",
+            store: InMemorySessionManifestStore(),
+            runtime: runtime,
+            scheduler: scheduler
         )
         _ = try await coordinator.giveCandidateFloor(
             commandID: CommandID("grace-scheduler-floor")
@@ -1976,38 +1995,11 @@ final class SegmentLifecycleTests: XCTestCase {
     func testCoordinatorCompletesAutomaticHandOffAfterGraceRelease() async throws {
         let scheduler = ControlledEndpointGraceScheduler()
         let runtime = CountingInterviewerRuntime()
-        let coordinator = try await SegmentSpeechCoordinator.open(
-            sessionID: SessionID("grace-automatic-session"),
-            activityID: "grace-automatic-activity",
-            activityPrompt: try fixtureActivityPrompt(),
-            turnMode: .patientAuto,
-            manifestStore: InMemorySessionManifestStore(),
-            interviewerRuntime: runtime,
-            recording: StubSegmentRecorder(
-                capture: try capturedAudio(fileName: "grace-automatic.m4a")
-            ),
-            transcriber: SequencedSegmentTranscriber(
-                results: [
-                    .success(
-                        SegmentTranscriptionResult(
-                            body: "The design resolves delivery reliability.",
-                            quality: .verified
-                        )
-                    )
-                ]
-            ),
-            credentialReader: FixedCredentialReader(value: "credential"),
-            semanticEndpointClassifier: RecordingSemanticEndpointClassifier(
-                results: [
-                    .success(
-                        SemanticEndpointProposal(
-                            decision: .likelyEnd,
-                            reasonCode: .answerResolvesQuestion
-                        )
-                    )
-                ]
-            ),
-            endpointGraceScheduler: scheduler
+        let coordinator = try await makePatientAutoCoordinator(
+            commandStem: "grace-automatic",
+            store: InMemorySessionManifestStore(),
+            runtime: runtime,
+            scheduler: scheduler
         )
         _ = try await coordinator.giveCandidateFloor(
             commandID: CommandID("grace-automatic-floor")
@@ -2037,40 +2029,14 @@ final class SegmentLifecycleTests: XCTestCase {
     func testAutomaticHandOffWriteFailureCancelsPendingGrace() async throws {
         let scheduler = ControlledEndpointGraceScheduler()
         let runtime = CountingInterviewerRuntime()
-        let coordinator = try await SegmentSpeechCoordinator.open(
-            sessionID: SessionID("grace-write-failure-session"),
-            activityID: "grace-write-failure-activity",
-            activityPrompt: try fixtureActivityPrompt(),
-            turnMode: .patientAuto,
-            manifestStore: EndpointWriteFailingSessionManifestStore(
+        let coordinator = try await makePatientAutoCoordinator(
+            commandStem: "grace-write-failure",
+            store: EndpointWriteFailingSessionManifestStore(
                 failurePoint: .graceCompletion
             ),
-            interviewerRuntime: runtime,
-            recording: StubSegmentRecorder(
-                capture: try capturedAudio(fileName: "grace-write-failure.m4a")
-            ),
-            transcriber: SequencedSegmentTranscriber(
-                results: [
-                    .success(
-                        SegmentTranscriptionResult(
-                            body: "The answer remains durable after a failed Hand off write.",
-                            quality: .verified
-                        )
-                    )
-                ]
-            ),
-            credentialReader: FixedCredentialReader(value: "credential"),
-            semanticEndpointClassifier: RecordingSemanticEndpointClassifier(
-                results: [
-                    .success(
-                        SemanticEndpointProposal(
-                            decision: .likelyEnd,
-                            reasonCode: .answerResolvesQuestion
-                        )
-                    )
-                ]
-            ),
-            endpointGraceScheduler: scheduler
+            runtime: runtime,
+            scheduler: scheduler,
+            transcript: "The answer remains durable after a failed Hand off write."
         )
         _ = try await coordinator.giveCandidateFloor(
             commandID: CommandID("grace-write-failure-floor")
@@ -2100,10 +2066,83 @@ final class SegmentLifecycleTests: XCTestCase {
         XCTAssertEqual(invocationCount, 0)
     }
 
+    private struct EndpointGraceCancellationCase {
+        let name: String
+        let operation: (
+            InterviewRoomSession,
+            EndpointGrace
+        ) async throws -> InterviewRoomSnapshot
+        let expectedReason: EndpointGraceCancellationReason
+    }
+
+    private func makePatientAutoCoordinator(
+        commandStem: String,
+        store: any SessionManifestStore,
+        runtime: CountingInterviewerRuntime,
+        scheduler: ControlledEndpointGraceScheduler,
+        transcript: String = "The design resolves delivery reliability."
+    ) async throws -> SegmentSpeechCoordinator {
+        try await SegmentSpeechCoordinator.open(
+            sessionID: SessionID("\(commandStem)-session"),
+            activityID: "\(commandStem)-activity",
+            activityPrompt: try fixtureActivityPrompt(),
+            turnMode: .patientAuto,
+            manifestStore: store,
+            interviewerRuntime: runtime,
+            recording: StubSegmentRecorder(
+                capture: try capturedAudio(fileName: "\(commandStem).m4a")
+            ),
+            transcriber: SequencedSegmentTranscriber(
+                results: [
+                    .success(
+                        SegmentTranscriptionResult(
+                            body: transcript,
+                            quality: .verified
+                        )
+                    )
+                ]
+            ),
+            credentialReader: FixedCredentialReader(value: "credential"),
+            semanticEndpointClassifier: RecordingSemanticEndpointClassifier(
+                results: [
+                    .success(
+                        SemanticEndpointProposal(
+                            decision: .likelyEnd,
+                            reasonCode: .answerResolvesQuestion
+                        )
+                    )
+                ]
+            ),
+            endpointGraceScheduler: scheduler
+        )
+    }
+
     private func makePendingEndpointGrace(
         session: InterviewRoomSession,
         commandStem: String
     ) async throws -> EndpointGrace {
+        let evaluation = try await makeLikelyEndEndpointEvaluation(
+            session: session,
+            commandStem: commandStem
+        )
+        let snapshot = await session.snapshot()
+        let expectedBoardAttachment = try XCTUnwrap(
+            BoardHandoffAttachmentPolicy.currentDraftAttachment(in: snapshot.board)
+        )
+        let activated = try await session.execute(
+            .activateEndpointGrace(
+                commandID: CommandID("\(commandStem)-grace-activation"),
+                evaluationID: evaluation.id,
+                expectedBoardAttachment: expectedBoardAttachment
+            )
+        )
+        return try XCTUnwrap(activated.endpointGraces.last)
+    }
+
+    private func makeLikelyEndEndpointEvaluation(
+        session: InterviewRoomSession,
+        commandStem: String
+    ) async throws -> EndpointEvaluation {
         let segmentID = try await makeTranscribedSegment(
             session: session,
             commandStem: commandStem,
@@ -2154,13 +2193,7 @@ final class SegmentLifecycleTests: XCTestCase {
                 )
             )
         )
-        let activated = try await session.execute(
-            .activateEndpointGrace(
-                commandID: CommandID("\(commandStem)-grace-activation"),
-                evaluationID: evaluation.id
-            )
-        )
-        return try XCTUnwrap(activated.endpointGraces.last)
+        return evaluation
     }
 
     private func makeCandidateFloorSession(

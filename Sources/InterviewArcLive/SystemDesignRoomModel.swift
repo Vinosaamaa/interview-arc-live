@@ -412,7 +412,11 @@ final class SystemDesignRoomModel: ObservableObject {
     }
 
     var canKeepFloor: Bool {
-        activeEndpointGrace != nil
+        canKeepFloor(pendingGrace: activeEndpointGrace)
+    }
+
+    func canKeepFloor(pendingGrace: EndpointGrace?) -> Bool {
+        pendingGrace != nil
             && !isWorking
             && !hasPendingLocalPersistence
     }
@@ -420,14 +424,16 @@ final class SystemDesignRoomModel: ObservableObject {
     var endpointHandoffPresentation: EndpointHandoffPresentation {
         guard let snapshot else {
             return EndpointHandoffPresentation.make(
-                turnMode: .manual,
-                phase: nil,
-                currentEvaluation: nil,
-                endpointGrace: nil,
-                canAutomaticallyHandOff: false,
-                hasSelectedDraft: false,
-                hasUnresolvedDraft: false,
-                hasStaleEvaluation: false
+                input: EndpointHandoffPresentation.Input(
+                    turnMode: .manual,
+                    phase: nil,
+                    currentEvaluation: nil,
+                    endpointGrace: nil,
+                    canAutomaticallyHandOff: false,
+                    hasSelectedDraft: false,
+                    hasUnresolvedDraft: false,
+                    hasStaleEvaluation: false
+                )
             )
         }
 
@@ -459,15 +465,17 @@ final class SystemDesignRoomModel: ObservableObject {
         }
 
         return EndpointHandoffPresentation.make(
-            turnMode: snapshot.turnMode,
-            phase: snapshot.phase,
-            currentEvaluation: currentEvaluation,
-            endpointGrace: currentGrace,
-            canAutomaticallyHandOff: boardAttachmentForHandOff != nil,
-            hasSelectedDraft: !selectedCandidateIDs.isEmpty,
-            hasUnresolvedDraft: hasUnresolvedDraft,
-            hasStaleEvaluation: latestEvaluation != nil
-                && currentEvaluation == nil
+            input: EndpointHandoffPresentation.Input(
+                turnMode: snapshot.turnMode,
+                phase: snapshot.phase,
+                currentEvaluation: currentEvaluation,
+                endpointGrace: currentGrace,
+                canAutomaticallyHandOff: boardAttachmentForHandOff != nil,
+                hasSelectedDraft: !selectedCandidateIDs.isEmpty,
+                hasUnresolvedDraft: hasUnresolvedDraft,
+                hasStaleEvaluation: latestEvaluation != nil
+                    && currentEvaluation == nil
+            )
         )
     }
 

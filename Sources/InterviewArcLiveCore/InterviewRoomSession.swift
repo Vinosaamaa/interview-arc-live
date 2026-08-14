@@ -38,7 +38,8 @@ public enum InterviewRoomCommand: Codable, Sendable, Equatable {
     )
     case activateEndpointGrace(
         commandID: CommandID,
-        evaluationID: EndpointEvaluationID
+        evaluationID: EndpointEvaluationID,
+        expectedBoardAttachment: CandidateTurnBoardAttachment
     )
     case cancelEndpointGrace(
         commandID: CommandID,
@@ -125,7 +126,7 @@ public enum InterviewRoomCommand: Codable, Sendable, Equatable {
              .recordSegmentTranscriptionOutcome(let commandID, _, _, _),
              .authorizeEndpointEvaluation(let commandID, _, _, _, _),
              .recordEndpointEvaluationOutcome(let commandID, _, _),
-             .activateEndpointGrace(let commandID, _),
+             .activateEndpointGrace(let commandID, _, _),
              .cancelEndpointGrace(let commandID, _, _),
              .completeEndpointGrace(let commandID, _, _),
              .reconcileInterruptedEndpointGrace(let commandID, _),
@@ -713,7 +714,11 @@ public actor InterviewRoomSession {
                 for: endpointEvaluations[index]
             )
 
-        case .activateEndpointGrace(let commandID, let evaluationID):
+        case .activateEndpointGrace(
+            let commandID,
+            let evaluationID,
+            let expectedBoardAttachment
+        ):
             guard phase == .candidateFloor, mode == .patientAuto else {
                 throw invalidTransition("activateEndpointGrace")
             }
@@ -739,6 +744,10 @@ public actor InterviewRoomSession {
                 turns: manifest.turns,
                 segments: segments
             ) else {
+                throw InterviewRoomSessionError.endpointGraceEvidenceMismatch
+            }
+            guard BoardHandoffAttachmentPolicy.currentDraftAttachment(in: board)
+                == expectedBoardAttachment else {
                 throw InterviewRoomSessionError.endpointGraceEvidenceMismatch
             }
             endpointGraces.append(

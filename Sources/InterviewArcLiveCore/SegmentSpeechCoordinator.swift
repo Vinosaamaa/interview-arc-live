@@ -446,20 +446,7 @@ public final class SegmentSpeechCoordinator {
         publish(await session.snapshot())
 
         cancelScheduledGrace()
-        let interruptedGraces = snapshot.endpointGraces.filter {
-            $0.lifecycle == .pending
-        }
-        for grace in interruptedGraces {
-            _ = try await applyAndPublish(
-                .reconcileInterruptedEndpointGrace(
-                    commandID: InterviewRoomSession.derivedCommandID(
-                        source: grace.activationCommandID,
-                        operation: "interrupted-endpoint-grace"
-                    ),
-                    graceID: grace.id
-                )
-            )
-        }
+        try await reconcileInterruptedEndpointGraces()
 
         let interruptedAttempts = snapshot.segments.compactMap { segment in
             segment.transcriptionAttempts.first(where: { $0.state == .authorized }).map {
@@ -899,9 +886,9 @@ public final class SegmentSpeechCoordinator {
         evaluationID: EndpointEvaluationID,
         sourceCommandID: CommandID
     ) async -> InterviewRoomSnapshot {
-        guard BoardHandoffAttachmentPolicy.currentDraftAttachment(
+        guard let expectedBoardAttachment = BoardHandoffAttachmentPolicy.currentDraftAttachment(
             in: snapshot.board
-        ) != nil else {
+        ) else {
             return snapshot
         }
         let activationCommandID = InterviewRoomSession.derivedCommandID(
@@ -912,7 +899,8 @@ public final class SegmentSpeechCoordinator {
             let application = try await applyAndPublish(
                 .activateEndpointGrace(
                     commandID: activationCommandID,
-                    evaluationID: evaluationID
+                    evaluationID: evaluationID,
+                    expectedBoardAttachment: expectedBoardAttachment
                 )
             )
             guard application.disposition == .accepted,
@@ -927,6 +915,23 @@ public final class SegmentSpeechCoordinator {
         } catch {
             publish(await session.snapshot())
             return snapshot
+        }
+    }
+
+    private func reconcileInterruptedEndpointGraces() async throws {
+        let interruptedGraces = snapshot.endpointGraces.filter {
+            $0.lifecycle == .pending
+        }
+        for grace in interruptedGraces {
+            _ = try await applyAndPublish(
+                .reconcileInterruptedEndpointGrace(
+                    commandID: InterviewRoomSession.derivedCommandID(
+                        source: grace.activationCommandID,
+                        operation: "interrupted-endpoint-grace"
+                    ),
+                    graceID: grace.id
+                )
+            )
         }
     }
 

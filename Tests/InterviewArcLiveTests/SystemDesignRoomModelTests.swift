@@ -143,14 +143,16 @@ final class SystemDesignRoomModelTests: XCTestCase {
         )
 
         let presentation = EndpointHandoffPresentation.make(
-            turnMode: .patientAuto,
-            phase: .candidateFloor,
-            currentEvaluation: evaluation,
-            endpointGrace: nil,
-            canAutomaticallyHandOff: true,
-            hasSelectedDraft: true,
-            hasUnresolvedDraft: false,
-            hasStaleEvaluation: false
+            input: .init(
+                turnMode: .patientAuto,
+                phase: .candidateFloor,
+                currentEvaluation: evaluation,
+                endpointGrace: nil,
+                canAutomaticallyHandOff: true,
+                hasSelectedDraft: true,
+                hasUnresolvedDraft: false,
+                hasStaleEvaluation: false
+            )
         )
 
         XCTAssertEqual(presentation.title, "Preparing automatic Hand off")
@@ -169,14 +171,16 @@ final class SystemDesignRoomModelTests: XCTestCase {
         )
 
         let presentation = EndpointHandoffPresentation.make(
-            turnMode: .patientAuto,
-            phase: .candidateFloor,
-            currentEvaluation: evaluation,
-            endpointGrace: nil,
-            canAutomaticallyHandOff: false,
-            hasSelectedDraft: true,
-            hasUnresolvedDraft: false,
-            hasStaleEvaluation: false
+            input: .init(
+                turnMode: .patientAuto,
+                phase: .candidateFloor,
+                currentEvaluation: evaluation,
+                endpointGrace: nil,
+                canAutomaticallyHandOff: false,
+                hasSelectedDraft: true,
+                hasUnresolvedDraft: false,
+                hasStaleEvaluation: false
+            )
         )
 
         XCTAssertEqual(
@@ -199,14 +203,16 @@ final class SystemDesignRoomModelTests: XCTestCase {
         )
 
         let presentation = EndpointHandoffPresentation.make(
-            turnMode: .patientAuto,
-            phase: .candidateFloor,
-            currentEvaluation: evaluation,
-            endpointGrace: nil,
-            canAutomaticallyHandOff: true,
-            hasSelectedDraft: true,
-            hasUnresolvedDraft: false,
-            hasStaleEvaluation: false
+            input: .init(
+                turnMode: .patientAuto,
+                phase: .candidateFloor,
+                currentEvaluation: evaluation,
+                endpointGrace: nil,
+                canAutomaticallyHandOff: true,
+                hasSelectedDraft: true,
+                hasUnresolvedDraft: false,
+                hasStaleEvaluation: false
+            )
         )
 
         XCTAssertEqual(presentation.title, "Patient Auto request rejected")
@@ -246,14 +252,16 @@ final class SystemDesignRoomModelTests: XCTestCase {
         XCTAssertNil(stale)
 
         let presentation = EndpointHandoffPresentation.make(
-            turnMode: .patientAuto,
-            phase: .candidateFloor,
-            currentEvaluation: stale,
-            endpointGrace: nil,
-            canAutomaticallyHandOff: true,
-            hasSelectedDraft: true,
-            hasUnresolvedDraft: false,
-            hasStaleEvaluation: true
+            input: .init(
+                turnMode: .patientAuto,
+                phase: .candidateFloor,
+                currentEvaluation: stale,
+                endpointGrace: nil,
+                canAutomaticallyHandOff: true,
+                hasSelectedDraft: true,
+                hasUnresolvedDraft: false,
+                hasStaleEvaluation: true
+            )
         )
         XCTAssertEqual(presentation.title, "Evidence changed · Patient Auto waiting")
         XCTAssertFalse(presentation.detail.contains("likely complete"))
@@ -269,14 +277,16 @@ final class SystemDesignRoomModelTests: XCTestCase {
 
     func testFreshFloorWithHistoryWaitsForFirstNewTranscript() {
         let presentation = EndpointHandoffPresentation.make(
-            turnMode: .patientAuto,
-            phase: .candidateFloor,
-            currentEvaluation: nil,
-            endpointGrace: nil,
-            canAutomaticallyHandOff: true,
-            hasSelectedDraft: false,
-            hasUnresolvedDraft: false,
-            hasStaleEvaluation: false
+            input: .init(
+                turnMode: .patientAuto,
+                phase: .candidateFloor,
+                currentEvaluation: nil,
+                endpointGrace: nil,
+                canAutomaticallyHandOff: true,
+                hasSelectedDraft: false,
+                hasUnresolvedDraft: false,
+                hasStaleEvaluation: false
+            )
         )
 
         XCTAssertEqual(presentation.title, "Patient Auto waiting for a transcript")
@@ -305,15 +315,17 @@ final class SystemDesignRoomModelTests: XCTestCase {
 
         XCTAssertNil(currentEvaluation)
         let presentation = EndpointHandoffPresentation.make(
-            turnMode: .patientAuto,
-            phase: .candidateFloor,
-            currentEvaluation: currentEvaluation,
-            endpointGrace: nil,
-            canAutomaticallyHandOff: true,
-            hasSelectedDraft: false,
-            hasUnresolvedDraft: false,
-            hasStaleEvaluation: evaluations.last != nil
-                && currentEvaluation == nil
+            input: .init(
+                turnMode: .patientAuto,
+                phase: .candidateFloor,
+                currentEvaluation: currentEvaluation,
+                endpointGrace: nil,
+                canAutomaticallyHandOff: true,
+                hasSelectedDraft: false,
+                hasUnresolvedDraft: false,
+                hasStaleEvaluation: evaluations.last != nil
+                    && currentEvaluation == nil
+            )
         )
 
         XCTAssertEqual(presentation.title, "Evidence changed · Patient Auto waiting")
@@ -337,14 +349,16 @@ final class SystemDesignRoomModelTests: XCTestCase {
         )
 
         let presentation = EndpointHandoffPresentation.make(
-            turnMode: .patientAuto,
-            phase: .candidateFloor,
-            currentEvaluation: evaluation,
-            endpointGrace: grace,
-            canAutomaticallyHandOff: true,
-            hasSelectedDraft: true,
-            hasUnresolvedDraft: false,
-            hasStaleEvaluation: false
+            input: .init(
+                turnMode: .patientAuto,
+                phase: .candidateFloor,
+                currentEvaluation: evaluation,
+                endpointGrace: grace,
+                canAutomaticallyHandOff: true,
+                hasSelectedDraft: true,
+                hasUnresolvedDraft: false,
+                hasStaleEvaluation: false
+            )
         )
 
         XCTAssertEqual(presentation.title, "Handing off in 4 seconds")
@@ -369,14 +383,16 @@ final class SystemDesignRoomModelTests: XCTestCase {
         ).cancelling(reason: .keptFloor)
 
         let presentation = EndpointHandoffPresentation.make(
-            turnMode: .patientAuto,
-            phase: .candidateFloor,
-            currentEvaluation: evaluation,
-            endpointGrace: grace,
-            canAutomaticallyHandOff: true,
-            hasSelectedDraft: true,
-            hasUnresolvedDraft: false,
-            hasStaleEvaluation: false
+            input: .init(
+                turnMode: .patientAuto,
+                phase: .candidateFloor,
+                currentEvaluation: evaluation,
+                endpointGrace: grace,
+                canAutomaticallyHandOff: true,
+                hasSelectedDraft: true,
+                hasUnresolvedDraft: false,
+                hasStaleEvaluation: false
+            )
         )
 
         XCTAssertEqual(presentation.title, "Your floor is staying open")
