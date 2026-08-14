@@ -509,6 +509,49 @@ public enum CandidateTurnBoardAttachment: Codable, Sendable, Equatable {
     case revision(BoardRevisionID)
 }
 
+/// One source of truth for choosing Board evidence at Hand off.
+/// Automatic flows use only the current draft; the explicit UI may instead
+/// attach a revision the candidate is deliberately inspecting.
+public enum BoardHandoffAttachmentPolicy {
+    public static func currentDraftAttachment(
+        draft: BoardDocument,
+        revisions: [BoardRevision]
+    ) -> CandidateTurnBoardAttachment? {
+        if draft.elements.isEmpty {
+            return .noBoard
+        }
+        guard let latest = revisions.last,
+              latest.document == draft else {
+            return nil
+        }
+        return .revision(latest.id)
+    }
+
+    public static func currentDraftAttachment(
+        in workspace: BoardWorkspace
+    ) -> CandidateTurnBoardAttachment? {
+        currentDraftAttachment(
+            draft: workspace.draft,
+            revisions: workspace.revisions
+        )
+    }
+
+    public static func explicitAttachment(
+        in workspace: BoardWorkspace,
+        inspectedRevisionID: BoardRevisionID?
+    ) -> CandidateTurnBoardAttachment? {
+        if let inspectedRevisionID {
+            guard workspace.revisions.contains(where: {
+                $0.id == inspectedRevisionID
+            }) else {
+                return nil
+            }
+            return .revision(inspectedRevisionID)
+        }
+        return currentDraftAttachment(in: workspace)
+    }
+}
+
 public enum BoardArtifactIdentityValidationError: Error, Sendable, Equatable {
     case invalidRelativeIdentity
 }

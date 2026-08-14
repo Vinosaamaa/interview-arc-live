@@ -845,6 +845,235 @@ final class SegmentLifecycleTests: XCTestCase {
         }
     }
 
+    func testCueOnlyTerminalCueHandsOffVerbatimWithoutSemanticClassifier() async throws {
+        let body = "The queue absorbs bursts. That’s my answer."
+        let classifier = RecordingSemanticEndpointClassifier(results: [])
+        let runtime = CountingInterviewerRuntime()
+        let coordinator = try await SegmentSpeechCoordinator.open(
+            sessionID: SessionID("cue-only-handoff"),
+            activityID: "cue-only-activity",
+            activityPrompt: try fixtureActivityPrompt(),
+            turnMode: .cueOnly,
+            manifestStore: InMemorySessionManifestStore(),
+            interviewerRuntime: runtime,
+            recording: StubSegmentRecorder(
+                capture: try capturedAudio(fileName: "cue-only.m4a")
+            ),
+            transcriber: SequencedSegmentTranscriber(
+                results: [
+                    .success(
+                        SegmentTranscriptionResult(
+                            body: body,
+                            quality: .verified
+                        )
+                    )
+                ]
+            ),
+            credentialReader: FixedCredentialReader(value: "credential"),
+            semanticEndpointClassifier: classifier
+        )
+        _ = try await coordinator.giveCandidateFloor(
+            commandID: CommandID("cue-only-floor")
+        )
+        _ = try await coordinator.beginSegment(
+            commandID: CommandID("cue-only-begin")
+        )
+
+        let completed = try await coordinator.finishSegment(
+            commandID: CommandID("cue-only-finish"),
+            transcriptionCommandID: CommandID("cue-only-transcribe")
+        )
+
+        XCTAssertEqual(completed.phase, .interviewerTurn)
+        XCTAssertEqual(completed.turns.count, 2)
+        guard case .candidate(let candidate) = completed.turns.first else {
+            return XCTFail("Expected one Candidate Turn")
+        }
+        XCTAssertEqual(candidate.transcript.body, body)
+        XCTAssertEqual(candidate.boardAttachment, .noBoard)
+        let classifierCalls = await classifier.invocationCount()
+        let runtimeCalls = await runtime.invocationCount()
+        XCTAssertEqual(classifierCalls, 0)
+        XCTAssertEqual(runtimeCalls, 1)
+    }
+
+    func testCueOnlyDoesNotAttachDirtyBoardOrCommitTurn() async throws {
+        let coordinator = try await SegmentSpeechCoordinator.open(
+            sessionID: SessionID("cue-only-dirty-board"),
+            activityID: "cue-only-dirty-board-activity",
+            activityPrompt: try fixtureActivityPrompt(),
+            turnMode: .cueOnly,
+            manifestStore: InMemorySessionManifestStore(),
+            interviewerRuntime: fixtureRuntime(),
+            recording: StubSegmentRecorder(
+                capture: try capturedAudio(fileName: "cue-only-dirty-board.m4a")
+            ),
+            transcriber: SequencedSegmentTranscriber(
+                results: [
+                    .success(
+                        SegmentTranscriptionResult(
+                            body: "That is my answer.",
+                            quality: .verified
+                        )
+                    )
+                ]
+            ),
+            credentialReader: FixedCredentialReader(value: "credential")
+        )
+        _ = try await coordinator.giveCandidateFloor(
+            commandID: CommandID("cue-only-dirty-floor")
+        )
+        let dirtyBoard = try BoardDocument(
+            canvas: BoardCanvas(size: BoardSize(width: 1_200, height: 800)),
+            elements: [
+                .box(
+                    BoardBox(
+                        id: BoardElementID("cue-only-service"),
+                        frame: BoardRect(
+                            origin: BoardPoint(x: 80, y: 80),
+                            size: BoardSize(width: 160, height: 100)
+                        ),
+                        label: "Service"
+                    )
+                )
+            ]
+        )
+        _ = try await coordinator.updateBoardDraft(
+            dirtyBoard,
+            commandID: CommandID("cue-only-dirty-board-update")
+        )
+        _ = try await coordinator.beginSegment(
+            commandID: CommandID("cue-only-dirty-begin")
+        )
+
+        let completed = try await coordinator.finishSegment(
+            commandID: CommandID("cue-only-dirty-finish"),
+            transcriptionCommandID: CommandID("cue-only-dirty-transcribe")
+        )
+
+        XCTAssertEqual(completed.phase, .candidateFloor)
+        XCTAssertTrue(completed.turns.isEmpty)
+        XCTAssertEqual(completed.board.draft, dirtyBoard)
+        XCTAssertTrue(completed.board.revisions.isEmpty)
+    }
+
+    func testCueOnlyAttachesTheExactSavedBoardRevision() async throws {
+        let coordinator = try await SegmentSpeechCoordinator.open(
+            sessionID: SessionID("cue-only-saved-board"),
+            activityID: "cue-only-saved-board-activity",
+            activityPrompt: try fixtureActivityPrompt(),
+            turnMode: .cueOnly,
+            manifestStore: InMemorySessionManifestStore(),
+            interviewerRuntime: fixtureRuntime(),
+            recording: StubSegmentRecorder(
+                capture: try capturedAudio(fileName: "cue-only-saved-board.m4a")
+            ),
+            transcriber: SequencedSegmentTranscriber(
+                results: [
+                    .success(
+                        SegmentTranscriptionResult(
+                            body: "Could you give me a hint?",
+                            quality: .verified
+                        )
+                    )
+                ]
+            ),
+            credentialReader: FixedCredentialReader(value: "credential")
+        )
+        _ = try await coordinator.giveCandidateFloor(
+            commandID: CommandID("cue-only-saved-floor")
+        )
+        let document = try BoardDocument(
+            canvas: BoardCanvas(size: BoardSize(width: 1_200, height: 800)),
+            elements: [
+                .box(
+                    BoardBox(
+                        id: BoardElementID("cue-only-saved-service"),
+                        frame: BoardRect(
+                            origin: BoardPoint(x: 100, y: 100),
+                            size: BoardSize(width: 180, height: 110)
+                        ),
+                        label: "Gateway"
+                    )
+                )
+            ]
+        )
+        _ = try await coordinator.updateBoardDraft(
+            document,
+            commandID: CommandID("cue-only-saved-board-update")
+        )
+        let saved = try await coordinator.saveBoardRevision(
+            commandID: CommandID("cue-only-save-board")
+        )
+        let revision = try XCTUnwrap(saved.board.revisions.last)
+        _ = try await coordinator.beginSegment(
+            commandID: CommandID("cue-only-saved-begin")
+        )
+
+        let completed = try await coordinator.finishSegment(
+            commandID: CommandID("cue-only-saved-finish"),
+            transcriptionCommandID: CommandID("cue-only-saved-transcribe")
+        )
+
+        guard case .candidate(let candidate) = completed.turns.first else {
+            return XCTFail("Expected one Candidate Turn")
+        }
+        XCTAssertEqual(candidate.boardAttachment, .revision(revision.id))
+        XCTAssertEqual(completed.board.revisions, [revision])
+        XCTAssertEqual(completed.phase, .interviewerTurn)
+    }
+
+    func testCueOnlyReturnsDurableRetryStateWhenInterviewerFailsAfterHandOff() async throws {
+        let store = InMemorySessionManifestStore()
+        let runtime = FailingCueOnlyInterviewerRuntime()
+        let coordinator = try await SegmentSpeechCoordinator.open(
+            sessionID: SessionID("cue-only-interviewer-retry"),
+            activityID: "cue-only-interviewer-retry-activity",
+            activityPrompt: try fixtureActivityPrompt(),
+            turnMode: .cueOnly,
+            manifestStore: store,
+            interviewerRuntime: runtime,
+            recording: StubSegmentRecorder(
+                capture: try capturedAudio(fileName: "cue-only-interviewer-retry.m4a")
+            ),
+            transcriber: SequencedSegmentTranscriber(
+                results: [
+                    .success(
+                        SegmentTranscriptionResult(
+                            body: "That is my answer.",
+                            quality: .verified
+                        )
+                    )
+                ]
+            ),
+            credentialReader: FixedCredentialReader(value: "credential")
+        )
+        _ = try await coordinator.giveCandidateFloor(
+            commandID: CommandID("cue-only-interviewer-retry-floor")
+        )
+        _ = try await coordinator.beginSegment(
+            commandID: CommandID("cue-only-interviewer-retry-begin")
+        )
+
+        let retryable = try await coordinator.finishSegment(
+            commandID: CommandID("cue-only-interviewer-retry-finish"),
+            transcriptionCommandID: CommandID("cue-only-interviewer-retry-transcribe")
+        )
+
+        XCTAssertEqual(retryable.phase, .interviewerProcessing)
+        XCTAssertEqual(retryable.turns.count, 1)
+        guard case .candidate(let candidate) = retryable.turns.first else {
+            return XCTFail("Expected the durable Candidate Turn")
+        }
+        XCTAssertEqual(candidate.transcript.body, "That is my answer.")
+        XCTAssertEqual(candidate.boardAttachment, .noBoard)
+        let runtimeCalls = await runtime.invocationCount()
+        XCTAssertEqual(runtimeCalls, 1)
+        let durable = await store.load(sessionID: retryable.sessionID)
+        XCTAssertEqual(durable?.phase, .interviewerProcessing)
+        XCTAssertEqual(durable?.turns, retryable.turns)
+    }
+
     func testPatientAutoPersistsAuthorizationBeforeExactShadowContextAndProposal() async throws {
         let store = InMemorySessionManifestStore()
         let session = try await makeCandidateFloorSession(
@@ -2063,6 +2292,23 @@ private actor CountingInterviewerRuntime: InterviewerRuntime {
             displayMarkdown: "What trade-off comes next?",
             spokenText: "What trade-off comes next?"
         )
+    }
+
+    func invocationCount() -> Int { calls }
+}
+
+private enum CueOnlyInterviewerRuntimeError: Error {
+    case unavailable
+}
+
+private actor FailingCueOnlyInterviewerRuntime: InterviewerRuntime {
+    private var calls = 0
+
+    func respond(
+        to request: InterviewerRequest
+    ) throws -> CanonicalInterviewerResponse {
+        calls += 1
+        throw CueOnlyInterviewerRuntimeError.unavailable
     }
 
     func invocationCount() -> Int { calls }

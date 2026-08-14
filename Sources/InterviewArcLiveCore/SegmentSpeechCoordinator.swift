@@ -692,10 +692,69 @@ public final class SegmentSpeechCoordinator {
               recordedSegment.selectedCandidateID != previouslySelectedCandidateID else {
             return recorded
         }
-        return await evaluateEndpointIfNeeded(
-            triggerSegmentID: segmentID,
-            sourceCommandID: commandID
-        )
+        switch snapshot.turnMode {
+        case .cueOnly:
+            return try await handOffCueIfNeeded(
+                triggerSegmentID: segmentID,
+                sourceCommandID: commandID
+            )
+        case .patientAuto:
+            return await evaluateEndpointIfNeeded(
+                triggerSegmentID: segmentID,
+                sourceCommandID: commandID
+            )
+        case .manual:
+            return snapshot
+        }
+    }
+
+    /// Cue Only consumes only a newly selected, durably stored transcript.
+    /// It uses the same idempotent Hand off command as the visible control and
+    /// never invokes the semantic endpoint classifier.
+    private func handOffCueIfNeeded(
+        triggerSegmentID: SegmentID,
+        sourceCommandID: CommandID
+    ) async throws -> InterviewRoomSnapshot {
+        guard snapshot.phase == .candidateFloor,
+              snapshot.turnMode == .cueOnly else {
+            return snapshot
+        }
+        let draftSegments = snapshot.segments.filter { $0.committedTurnID == nil }
+        guard !draftSegments.contains(where: {
+            $0.lifecycle != .excluded && $0.selectedCandidate == nil
+        }),
+        let trigger = draftSegments.first(where: { $0.id == triggerSegmentID }),
+        let body = trigger.selectedCandidate?.body,
+        CueOnlyHandoffPolicy.reason(in: body) != nil,
+        let boardAttachment = Self.cueOnlyBoardAttachment(in: snapshot.board) else {
+            return snapshot
+        }
+
+        do {
+            return try await applyAndPublish(
+                .handOffSegmentsWithBoard(
+                    commandID: InterviewRoomSession.derivedCommandID(
+                        source: sourceCommandID,
+                        operation: "cue-only-hand-off"
+                    ),
+                    boardAttachment: boardAttachment
+                )
+            ).snapshot
+        } catch {
+            // Hand off persists the Candidate Turn before invoking Codex. If
+            // that provider work fails, the transcript succeeded and the
+            // durable room is now explicitly recoverable through Retry.
+            guard snapshot.phase == .interviewerProcessing else {
+                throw error
+            }
+            return snapshot
+        }
+    }
+
+    private static func cueOnlyBoardAttachment(
+        in workspace: BoardWorkspace
+    ) -> CandidateTurnBoardAttachment? {
+        BoardHandoffAttachmentPolicy.currentDraftAttachment(in: workspace)
     }
 
     /// Patient Auto is intentionally a Shadow policy in this slice. It stores

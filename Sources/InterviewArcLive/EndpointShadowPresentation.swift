@@ -40,6 +40,14 @@ struct EndpointShadowPresentation: Equatable {
         hasUnresolvedDraft: Bool,
         hasStaleEvaluation: Bool
     ) -> EndpointShadowPresentation {
+        if turnMode == .cueOnly {
+            return EndpointShadowPresentation(
+                title: "Cue Only turn-taking",
+                detail: "A terminal finish, direct question, or hint cue triggers Hand off after its transcript is saved. The Hand off control remains available.",
+                systemImage: "quote.bubble.fill",
+                tone: .neutral
+            )
+        }
         guard turnMode == .patientAuto else {
             return EndpointShadowPresentation(
                 title: "Manual turn-taking",

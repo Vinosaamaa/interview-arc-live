@@ -382,11 +382,11 @@ final class SystemDesignRoomModel: ObservableObject {
     }
 
     var availableTurnModes: [TurnMode] {
-        [.manual, .patientAuto]
+        [.cueOnly, .manual, .patientAuto]
     }
 
     var turnMode: TurnMode {
-        snapshot?.turnMode ?? .manual
+        snapshot?.turnMode ?? .cueOnly
     }
 
     var canSelectTurnMode: Bool {
@@ -410,7 +410,7 @@ final class SystemDesignRoomModel: ObservableObject {
     var endpointShadowPresentation: EndpointShadowPresentation {
         guard let snapshot else {
             return EndpointShadowPresentation.make(
-                turnMode: .manual,
+                turnMode: .cueOnly,
                 phase: nil,
                 currentEvaluation: nil,
                 hasSelectedDraft: false,
@@ -525,22 +525,22 @@ final class SystemDesignRoomModel: ObservableObject {
     }
 
     var boardAttachmentForHandOff: CandidateTurnBoardAttachment? {
+        guard let board = snapshot?.board else { return nil }
         if let inspectedBoardRevisionID {
-            guard snapshot?.board.revisions.contains(where: {
-                $0.id == inspectedBoardRevisionID
-            }) == true else {
-                return nil
-            }
-            return .revision(inspectedBoardRevisionID)
+            return BoardHandoffAttachmentPolicy.explicitAttachment(
+                in: board,
+                inspectedRevisionID: inspectedBoardRevisionID
+            )
         }
-        if boardEditor.document.elements.isEmpty {
-            return .noBoard
-        }
-        guard let latestBoardRevision,
-              latestBoardRevision.document == boardEditor.document else {
-            return nil
-        }
-        return .revision(latestBoardRevision.id)
+        return currentBoardDraftAttachmentForHandOff
+    }
+
+    var currentBoardDraftAttachmentForHandOff: CandidateTurnBoardAttachment? {
+        guard let board = snapshot?.board else { return nil }
+        return BoardHandoffAttachmentPolicy.currentDraftAttachment(
+            draft: boardEditor.document,
+            revisions: board.revisions
+        )
     }
 
     var canSaveBoardRevision: Bool {
@@ -996,7 +996,7 @@ final class SystemDesignRoomModel: ObservableObject {
                 sessionID: sessionID,
                 activityID: "local-system-design-tracer",
                 activityPrompt: activityPrompt,
-                turnMode: .manual,
+                turnMode: .cueOnly,
                 interviewerRuntime: codexRuntime,
                 recording: VoiceCoreSegmentRecorder(),
                 transcriber: VoiceCoreSegmentTranscriber(),
@@ -1102,7 +1102,7 @@ final class SystemDesignRoomModel: ObservableObject {
     }
 
     func selectTurnMode(_ mode: TurnMode) async {
-        guard mode == .manual || mode == .patientAuto,
+        guard availableTurnModes.contains(mode),
               mode != turnMode,
               canSelectTurnMode,
               let coordinator else {
@@ -1181,11 +1181,15 @@ final class SystemDesignRoomModel: ObservableObject {
                     segmentID: activeSegment.id,
                     commandID: commandID("initial-transcription")
                 )
-                publish(transcribed)
+                await publishTranscriptionResult(
+                    transcribed,
+                    triggerSegmentID: activeSegment.id
+                )
             }
         } catch {
             publish(coordinator.snapshot)
             handleCredentialFailure(error)
+            errorWasCodexFailure = applyCodexFailure(error)
             errorMessage = safeMessage(for: error)
         }
     }
@@ -1219,11 +1223,41 @@ final class SystemDesignRoomModel: ObservableObject {
                     isInitial ? "initial-transcription" : "retry-transcription"
                 )
             )
-            publish(updated)
+            await publishTranscriptionResult(
+                updated,
+                triggerSegmentID: segment.id
+            )
         } catch {
             publish(coordinator.snapshot)
             handleCredentialFailure(error)
+            errorWasCodexFailure = applyCodexFailure(error)
             errorMessage = safeMessage(for: error)
+        }
+    }
+
+    private func publishTranscriptionResult(
+        _ updated: InterviewRoomSnapshot,
+        triggerSegmentID: SegmentID
+    ) async {
+        publish(updated)
+        if updated.phase == .interviewerTurn {
+            await interviewerSpeechCoordinator?
+                .observeNewlyPersistedSnapshot(updated)
+            return
+        }
+        guard updated.phase == .candidateFloor,
+              updated.turnMode == .cueOnly,
+              let trigger = updated.segments.first(where: {
+                  $0.id == triggerSegmentID
+              }),
+              let body = trigger.selectedCandidate?.body,
+              CueOnlyHandoffPolicy.reason(in: body) != nil else {
+            return
+        }
+        if currentBoardDraftAttachmentForHandOff == nil {
+            boardErrorMessage = "Cue detected. Save the displayed Board as a revision, then choose Hand off."
+        } else {
+            statusMessage = "Cue detected · resolve the remaining segment before Hand off"
         }
     }
 
