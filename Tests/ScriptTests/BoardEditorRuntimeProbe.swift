@@ -343,12 +343,16 @@ private final class RuntimeProbe: NSObject,
             const toolbar = document.querySelector('.App-toolbar-container')?.getBoundingClientRect();
             const controls = document.querySelector('.interview-arc-board-controls')?.getBoundingClientRect();
             if (!toolbar || !controls) return false;
+            const placement = document.querySelector('.interview-arc-board-controls')
+              ?.dataset.placement;
             const overlaps = toolbar.left < controls.right
               && toolbar.right > controls.left
               && toolbar.top < controls.bottom
               && toolbar.bottom > controls.top;
             return !overlaps
-              && Math.abs(toolbar.top - controls.top) <= 1
+              && (placement === 'inline'
+                ? Math.abs(toolbar.top - controls.top) <= 1
+                : placement === 'stacked' && controls.top >= toolbar.bottom + 8)
               && controls.left >= 0
               && controls.right <= document.documentElement.clientWidth
               && controls.top >= 0
@@ -497,9 +501,21 @@ private final class RuntimeProbe: NSObject,
     }
 }
 
-guard CommandLine.arguments.count == 2 else {
-    fputs("usage: BoardEditorRuntimeProbe <BoardEditor resource root>\n", stderr)
+guard (2...3).contains(CommandLine.arguments.count) else {
+    fputs(
+        "usage: BoardEditorRuntimeProbe <BoardEditor resource root> [width]\n",
+        stderr
+    )
     exit(EXIT_FAILURE)
+}
+
+private let viewportWidth: CGFloat = if CommandLine.arguments.count == 3,
+    let width = Double(CommandLine.arguments[2]),
+    width >= 480
+{
+    CGFloat(width)
+} else {
+    780
 }
 
 let resourceRoot = URL(
@@ -540,7 +556,7 @@ private let assetHandler = LocalAssetHandler(
 configuration.setURLSchemeHandler(assetHandler, forURLScheme: "interviewarc-board")
 
 let webView = WKWebView(
-    frame: NSRect(x: 0, y: 0, width: 780, height: 600),
+    frame: NSRect(x: 0, y: 0, width: viewportWidth, height: 600),
     configuration: configuration
 )
 webView.navigationDelegate = probe

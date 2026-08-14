@@ -32,3 +32,35 @@ export const boardChromeActionConfigurations = (controls) => {
     },
   ];
 };
+
+const DEFAULT_INSET = 12;
+const DEFAULT_GAP = 10;
+
+export const boardChromeLayout = ({
+  viewportWidth,
+  toolbar,
+  controlsWidth,
+  inset = DEFAULT_INSET,
+  gap = DEFAULT_GAP,
+}) => {
+  const safeWidth = Math.max(0, Number(viewportWidth) || 0);
+  const safeControlsWidth = Math.max(0, Number(controlsWidth) || 0);
+  const right = Math.max(0, inset);
+  const controlsLeft = safeWidth - right - safeControlsWidth;
+  const toolbarRight = Number(toolbar?.right);
+  const toolbarTop = Number(toolbar?.top);
+  const toolbarBottom = Number(toolbar?.bottom);
+  const hasToolbarBounds = Number.isFinite(toolbarRight)
+    && Number.isFinite(toolbarTop)
+    && Number.isFinite(toolbarBottom);
+  const fitsInline = hasToolbarBounds
+    && toolbarRight + gap <= controlsLeft;
+
+  return {
+    mode: fitsInline ? "inline" : "stacked",
+    right,
+    top: fitsInline
+      ? Math.max(inset, toolbarTop)
+      : Math.max(inset, hasToolbarBounds ? toolbarBottom + gap : 72),
+  };
+};

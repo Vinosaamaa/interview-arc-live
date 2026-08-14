@@ -47,7 +47,9 @@ fi
   -framework AppKit \
   -framework WebKit \
   -o "$runtime_probe"
-"$runtime_probe" "$resource_root"
+for viewport_width in 780 992 1280; do
+  "$runtime_probe" "$resource_root" "$viewport_width"
+done
 
 grep -Fq "connect-src 'none'" "$resource_root/index.html" \
   || fail "Board editor content security policy permits network connections"
@@ -67,8 +69,10 @@ grep -Fq 'api.onPointerUp' "$editor_root/src/main.jsx" \
 if grep -Fq 'onPointerUp={() =>' "$editor_root/src/main.jsx"; then
   fail "Board editor still passes the unsupported Excalidraw onPointerUp prop"
 fi
-grep -Fq 'renderTopRightUI=' "$editor_root/src/main.jsx" \
-  || fail "Board editor does not embed durable Interview Arc actions in Excalidraw chrome"
+grep -Fq '<BoardChromeControls' "$editor_root/src/main.jsx" \
+  || fail "Board editor does not embed durable Interview Arc actions over the canvas"
+grep -Fq 'data-placement={layout.mode}' "$editor_root/src/main.jsx" \
+  || fail "Board editor actions do not expose their responsive placement"
 if grep -Fq '.App-toolbar-container,' "$editor_root/src/style.css"; then
   fail "Board editor still hides Excalidraw's own toolbar"
 fi
