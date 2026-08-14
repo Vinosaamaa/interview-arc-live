@@ -47,9 +47,7 @@ fi
   -framework AppKit \
   -framework WebKit \
   -o "$runtime_probe"
-for viewport_width in 780 992 1280; do
-  "$runtime_probe" "$resource_root" "$viewport_width"
-done
+"$runtime_probe" "$resource_root" 780 992 1280
 
 grep -Fq "connect-src 'none'" "$resource_root/index.html" \
   || fail "Board editor content security policy permits network connections"
