@@ -35,8 +35,11 @@ final class InterviewArcLiveTerminationGate {
 final class InterviewArcLiveApp: NSObject, NSApplicationDelegate {
     private static var retainedDelegate: InterviewArcLiveApp?
 
-    private let model = SystemDesignRoomModel()
+    private let model = SystemDesignRoomModel(
+        hostedController: try? HostedPracticeController.makeDefault()
+    )
     private var presentationCoordinator: InterviewRoomPresentationCoordinator?
+    private var activationRefreshTask: Task<Void, Never>?
     private var terminationGate: InterviewArcLiveTerminationGate?
 
     static func main() {
@@ -52,7 +55,11 @@ final class InterviewArcLiveApp: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         installMainMenu()
         terminationGate = InterviewArcLiveTerminationGate { [weak model] in
-            await model?.prepareLocalPersistenceForTermination() ?? true
+            guard let model else { return true }
+            guard await model.prepareLocalPersistenceForTermination() else {
+                return false
+            }
+            return await model.prepareHostedForTermination()
         }
         let coordinator = InterviewRoomPresentationCoordinator(model: model)
         presentationCoordinator = coordinator
@@ -73,6 +80,15 @@ final class InterviewArcLiveApp: NSObject, NSApplicationDelegate {
         false
     }
 
+    func applicationDidBecomeActive(_ notification: Notification) {
+        guard activationRefreshTask == nil else { return }
+        activationRefreshTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer { activationRefreshTask = nil }
+            await model.refreshHostedAuthority()
+        }
+    }
+
     func applicationShouldTerminate(
         _ sender: NSApplication
     ) -> NSApplication.TerminateReply {
@@ -83,6 +99,7 @@ final class InterviewArcLiveApp: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        activationRefreshTask?.cancel()
         presentationCoordinator?.prepareForTermination()
     }
 

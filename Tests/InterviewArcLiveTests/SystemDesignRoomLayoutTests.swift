@@ -202,6 +202,15 @@ final class SystemDesignRoomLayoutTests: XCTestCase {
         XCTAssertEqual(FullRoomLayout.turnlineEntryGap, 24)
         XCTAssertEqual(FullRoomLayout.turnlineBodyFontSize, 20)
         XCTAssertEqual(FullRoomLayout.floorRailHeight, 55)
+        XCTAssertEqual(FullRoomLayout.floorCompactStatusWidth, 112)
+        XCTAssertEqual(FullRoomLayout.floorCompactWaveformWidth, 80)
+        XCTAssertEqual(FullRoomLayout.floorCompactSpacing, 8)
+        XCTAssertEqual(FullRoomLayout.floorCompactHorizontalPadding, 16)
+        XCTAssertEqual(FullRoomLayout.floorCompactMaximumRequiredWidth, 623)
+        XCTAssertLessThanOrEqual(
+            FullRoomLayout.floorCompactMaximumRequiredWidth,
+            FullRoomLayout.minimumWindowWidth
+        )
         XCTAssertEqual(FullRoomLayout.floorContentHorizontalPadding, 24)
         XCTAssertEqual(FullRoomLayout.floorOutlineHorizontalInset, 16)
         XCTAssertEqual(FullRoomLayout.floorOutlineVerticalInset, 4)

@@ -157,6 +157,57 @@ final class FloorStatePresentationTests: XCTestCase {
         )
     }
 
+    func testHostedUnavailableStatesNeverClaimTheLocalRoomIsRestoring() {
+        let cases: [(
+            availability: FloorStatePresentation.RoomAvailability,
+            status: String,
+            fullLabel: String,
+            compactLabel: String
+        )] = [
+            (
+                .hostedSignInRequired,
+                "Connect Interview Arc to open Today’s System Design activity",
+                "Connect Interview Arc",
+                "Connect Interview Arc"
+            ),
+            (
+                .hostedActivityRequired,
+                "No System Design activity is open in Interview Arc Today",
+                "Open a System Design activity",
+                "Open System Design activity"
+            ),
+            (
+                .hostedRecoveryRequired,
+                "Hosted recovery needs attention",
+                "Hosted recovery required",
+                "Hosted recovery required"
+            ),
+        ]
+
+        for item in cases {
+            let presentation = FloorStatePresentation.make(
+                input: .init(
+                    phase: nil,
+                    statusMessage: item.status,
+                    roomAvailability: item.availability
+                )
+            )
+
+            XCTAssertEqual(presentation.statusKind, .recoveryAttention)
+            XCTAssertEqual(presentation.tone, .warning)
+            XCTAssertEqual(presentation.full.label, item.fullLabel)
+            XCTAssertEqual(presentation.full.detail, item.status)
+            XCTAssertEqual(
+                presentation.full.accessibilityValue,
+                "\(item.fullLabel). \(item.status)"
+            )
+            XCTAssertEqual(presentation.compact.label, item.compactLabel)
+            XCTAssertEqual(presentation.compact.detail, item.status)
+            XCTAssertFalse(presentation.full.accessibilityValue.contains("Restoring"))
+            XCTAssertFalse(presentation.compact.accessibilityValue.contains("Restoring"))
+        }
+    }
+
     func testSavingTranscribingRecordingAndPreparingHaveStablePriority() {
         let cases: [(
             lifecycles: [CandidateSegmentLifecycle],

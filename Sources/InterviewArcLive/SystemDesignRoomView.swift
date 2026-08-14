@@ -1,6 +1,7 @@
 import AppKit
 import Foundation
 import InterviewArcLiveCore
+import InterviewArcLiveHostedClient
 import SwiftUI
 
 struct SystemDesignRoomView: View {
@@ -82,6 +83,13 @@ struct SystemDesignRoomView: View {
                 errorMessage: model.credentialErrorMessage,
                 onSaveToKeychain: model.saveGroqCredential,
                 onUseUntilQuit: model.useGroqCredentialUntilQuit
+            )
+        }
+        .sheet(isPresented: $model.isLiveIntegrationSetupPresented) {
+            LiveIntegrationSetupView(
+                isWorking: model.isWorking,
+                errorMessage: model.errorMessage,
+                onSave: model.saveLiveIntegrationToken
             )
         }
         .confirmationDialog(
@@ -196,6 +204,22 @@ struct SystemDesignRoomView: View {
             Divider()
             Text(endpointPresentation.title)
             Text(endpointPresentation.detail)
+            if model.usesHostedAuthority {
+                Divider()
+                Text(model.hostedConnectionTitle)
+                if model.hostedSnapshot.connection == .signedOut {
+                    Button("Connect Interview Arc") {
+                        model.isLiveIntegrationSetupPresented = true
+                    }
+                } else {
+                    Button("Refresh hosted activity") {
+                        Task { await model.refreshHostedAuthority() }
+                    }
+                    Button("Disconnect Interview Arc", role: .destructive) {
+                        Task { await model.disconnectLiveIntegration() }
+                    }
+                }
+            }
             if model.needsGroqCredential {
                 Button("Add Groq key") { model.presentCredentialSetup() }
             }
@@ -429,7 +453,31 @@ struct SystemDesignRoomView: View {
         VStack(spacing: 0) {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 0) {
-                    if let snapshot = model.snapshot {
+                    if model.usesHostedAuthority && !model.hostedPairs.isEmpty {
+                        ForEach(Array(model.hostedPairs.enumerated()), id: \.element.id) {
+                            index, pair in
+                            hostedTurnlineEntry(
+                                role: "YOU",
+                                body: pair.candidate.text,
+                                color: LivePalette.candidateText,
+                                rendersMarkdown: false,
+                                isLast: false,
+                                pair: pair
+                            )
+                            hostedTurnlineEntry(
+                                role: "MARA",
+                                body: pair.interviewer.displayMarkdown,
+                                color: LivePalette.interviewer,
+                                rendersMarkdown: true,
+                                isLast: index == model.hostedPairs.count - 1
+                                    && model.snapshot?.phase != .candidateFloor,
+                                pair: nil
+                            )
+                        }
+                        if model.snapshot?.phase == .candidateFloor {
+                            candidateFloorEntry
+                        }
+                    } else if let snapshot = model.snapshot {
                         ForEach(snapshot.turns.indices, id: \.self) { index in
                             turnlineEntry(
                                 snapshot.turns[index],
@@ -441,10 +489,10 @@ struct SystemDesignRoomView: View {
                         if snapshot.phase == .candidateFloor {
                             candidateFloorEntry
                         } else if snapshot.turns.isEmpty {
-                            preparingEmptyState
+                            emptyTurnlineState
                         }
                     } else {
-                        preparingEmptyState
+                        emptyTurnlineState
                     }
                 }
                 .padding(.top, 26)
@@ -517,16 +565,24 @@ struct SystemDesignRoomView: View {
         }
     }
 
-    private var preparingEmptyState: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("PREPARING ROOM")
+    private var emptyTurnlineState: some View {
+        let presentation = model.floorStatePresentation
+
+        return VStack(alignment: .leading, spacing: 10) {
+            Text(presentation.full.label.uppercased())
                 .font(.system(.caption, design: .monospaced, weight: .bold))
-                .foregroundStyle(LivePalette.interviewer)
-            Text("Restoring the latest complete local session.")
+                .foregroundStyle(
+                    presentation.tone == .warning
+                        ? LivePalette.warning
+                        : LivePalette.interviewer
+                )
+            Text(presentation.full.detail)
                 .font(.system(.body, design: .rounded))
                 .foregroundStyle(LivePalette.muted)
         }
         .padding(28)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(presentation.full.accessibilityValue)
     }
 
     private var candidateFloorEntry: some View {
@@ -624,44 +680,14 @@ struct SystemDesignRoomView: View {
             boardRevisionID = nil
         }
 
-        return HStack(
-            alignment: .top,
-            spacing: FullRoomLayout.turnlineEntryGap
+        return turnlineRow(
+            role: role,
+            body: body,
+            color: color,
+            rendersMarkdown: rendersMarkdown,
+            isLast: isLast
         ) {
-            VStack(spacing: 0) {
-                Circle()
-                    .fill(color)
-                    .frame(width: 11, height: 11)
-                Rectangle()
-                    .fill(isLast ? Color.clear : LivePalette.line)
-                    .frame(width: 1)
-                    .frame(minHeight: 82)
-            }
-            .padding(.top, 4)
-            .accessibilityHidden(true)
-
-            VStack(alignment: .leading, spacing: 10) {
-                Text(role)
-                    .font(.system(.callout, design: .monospaced, weight: .bold))
-                    .foregroundStyle(color)
-                Group {
-                    if rendersMarkdown {
-                        Text(.init(body))
-                    } else {
-                        Text(body)
-                    }
-                }
-                    .font(
-                        .system(
-                            size: FullRoomLayout.turnlineBodyFontSize,
-                            weight: .medium,
-                            design: .rounded
-                        )
-                    )
-                    .lineSpacing(4)
-                    .textSelection(.enabled)
-                    .fixedSize(horizontal: false, vertical: true)
-
+            Group {
                 if let interviewerTurnID,
                    let utterance = model.utterance(for: interviewerTurnID) {
                     interviewerSpeechRow(utterance)
@@ -683,6 +709,82 @@ struct SystemDesignRoomView: View {
                         "Opens the exact immutable board attached to this answer without changing the current draft"
                     )
                 }
+            }
+        }
+    }
+
+    private func hostedTurnlineEntry(
+        role: String,
+        body: String,
+        color: Color,
+        rendersMarkdown: Bool,
+        isLast: Bool,
+        pair: LivePair?
+    ) -> some View {
+        turnlineRow(
+            role: role,
+            body: body,
+            color: color,
+            rendersMarkdown: rendersMarkdown,
+            isLast: isLast
+        ) {
+            if let pair,
+               pair.candidate.evidenceStatus == .possibleContamination,
+               !pair.candidate.evidenceSatisfied {
+                Button("Confirm this transcript") {
+                    Task {
+                        await model.confirmHostedCandidateEvidence(
+                            pairID: pair.pairId
+                        )
+                    }
+                }
+                .buttonStyle(.bordered)
+                .accessibilityHint(
+                    "Explicitly accepts possible contamination so hosted Finish can proceed"
+                )
+            }
+        }
+    }
+
+    private func turnlineRow<Accessory: View>(
+        role: String,
+        body: String,
+        color: Color,
+        rendersMarkdown: Bool,
+        isLast: Bool,
+        @ViewBuilder accessory: () -> Accessory
+    ) -> some View {
+        HStack(alignment: .top, spacing: FullRoomLayout.turnlineEntryGap) {
+            VStack(spacing: 0) {
+                Circle().fill(color).frame(width: 11, height: 11)
+                Rectangle()
+                    .fill(isLast ? Color.clear : LivePalette.line)
+                    .frame(width: 1)
+                    .frame(minHeight: 82)
+            }
+            .padding(.top, 4)
+            .accessibilityHidden(true)
+
+            VStack(alignment: .leading, spacing: 10) {
+                Text(role)
+                    .font(.system(.callout, design: .monospaced, weight: .bold))
+                    .foregroundStyle(color)
+                Group {
+                    if rendersMarkdown { Text(.init(body)) }
+                    else { Text(body) }
+                }
+                .font(
+                    .system(
+                        size: FullRoomLayout.turnlineBodyFontSize,
+                        weight: .medium,
+                        design: .rounded
+                    )
+                )
+                .lineSpacing(4)
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+
+                accessory()
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.bottom, 30)
@@ -799,109 +901,12 @@ struct SystemDesignRoomView: View {
     }
 
     private var floorRail: some View {
-        let floorState = model.floorStatePresentation
-
-        return HStack(spacing: 14) {
-            VStack(alignment: .leading, spacing: 3) {
-                Text(floorState.full.label.uppercased())
-                    .font(.system(.callout, design: .rounded, weight: .bold))
-                    .foregroundStyle(LivePalette.violet)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.8)
-                Text(floorState.full.detail)
-                    .font(.system(.caption, design: .rounded, weight: .medium))
-                    .foregroundStyle(LivePalette.muted)
-                    .lineLimit(1)
-            }
-            .frame(width: FullRoomLayout.floorStatusWidth, alignment: .leading)
-
-            LiveWaveform(isActive: model.canStopRecording)
-                .frame(minWidth: 140, maxWidth: .infinity)
-                .frame(height: FullRoomLayout.minimumActionHitTarget)
-
-            if model.activeEndpointGrace != nil {
-                Button {
-                    Task { await model.keepMyFloor() }
-                } label: {
-                    ViewThatFits(in: .horizontal) {
-                        Label("Keep my floor", systemImage: "hand.raised.fill")
-                            .font(.system(.body, design: .rounded, weight: .semibold))
-                        Image(systemName: "hand.raised.fill")
-                            .accessibilityHidden(true)
-                    }
-                    .frame(minWidth: 44, minHeight: FullRoomLayout.minimumActionHitTarget)
-                }
-                .buttonStyle(RoomChromeButtonStyle())
-                .foregroundStyle(LivePalette.violet)
-                .disabled(!model.canKeepFloor)
-                .keyboardShortcut(.escape, modifiers: [])
-                .accessibilityIdentifier(FullRoomAccessibility.keepFloorAction)
-                .accessibilityLabel("Keep my floor")
-                .accessibilityHint("Cancels the pending automatic Hand off without changing saved answer evidence")
-                .help("Cancel automatic Hand off")
-            }
-
-            Button {
-                Task { await model.performPrimaryAction() }
-            } label: {
-                Label(model.actionTitle, systemImage: model.actionIcon)
-                    .font(.system(.body, design: .rounded, weight: .semibold))
-                    .frame(
-                        minWidth: 132,
-                        minHeight: FullRoomLayout.minimumActionHitTarget
-                    )
-            }
-            .buttonStyle(RoomPrimaryActionButtonStyle())
-            .disabled(!model.canAct)
-            .keyboardShortcut(.return, modifiers: [.command])
-            .accessibilityIdentifier(FullRoomAccessibility.primaryAction)
-            .accessibilityHint(floorState.primaryActionHint)
-
-            if model.canStopRecording {
-                headerDivider
-                Button {
-                    Task { await model.stopRecording() }
-                } label: {
-                    Label("Pause", systemImage: "pause.fill")
-                        .font(.system(.body, design: .rounded, weight: .semibold))
-                        .frame(minWidth: 86, minHeight: FullRoomLayout.minimumActionHitTarget)
-                }
-                .buttonStyle(RoomChromeButtonStyle())
-                .foregroundStyle(LivePalette.navy)
-                .disabled(model.isWorking)
-                .keyboardShortcut(.space, modifiers: [.command])
-                .accessibilityIdentifier(FullRoomAccessibility.recordingAction)
-            } else if model.showsRecordControl {
-                headerDivider
-                Button {
-                    Task { await model.recordSegment() }
-                } label: {
-                    Label("Record", systemImage: "record.circle")
-                        .font(.system(.body, design: .rounded, weight: .semibold))
-                        .frame(minWidth: 86, minHeight: FullRoomLayout.minimumActionHitTarget)
-                }
-                .buttonStyle(RoomChromeButtonStyle())
-                .foregroundStyle(LivePalette.navy)
-                .disabled(!model.canRecordSegment)
-                .keyboardShortcut(.space, modifiers: [.command])
-                .accessibilityIdentifier(FullRoomAccessibility.recordingAction)
-            }
-
-            headerDivider
-
-            Button {
-                Task { _ = await model.finishInterview() }
-            } label: {
-                Label("End", systemImage: "stop.fill")
-                    .font(.system(.body, design: .rounded, weight: .medium))
-                    .frame(minWidth: 70, minHeight: FullRoomLayout.minimumActionHitTarget)
-            }
-            .buttonStyle(RoomChromeButtonStyle(tint: LivePalette.warning))
-            .foregroundStyle(LivePalette.warning)
-            .accessibilityIdentifier(FullRoomAccessibility.endAction)
+        ViewThatFits(in: .horizontal) {
+            floorRailContent(compact: false)
+                .fixedSize(horizontal: true, vertical: false)
+            floorRailContent(compact: true)
         }
         .foregroundStyle(LivePalette.navy)
-        .padding(.horizontal, FullRoomLayout.floorContentHorizontalPadding)
         .frame(minHeight: FullRoomLayout.floorRailHeight)
         .background(LivePalette.paper)
         .accessibilityElement(children: .contain)
@@ -917,7 +922,261 @@ struct SystemDesignRoomView: View {
         }
     }
 
+    private func floorRailContent(compact: Bool) -> some View {
+        let floorState = model.floorStatePresentation
+
+        return HStack(
+            spacing: compact ? FullRoomLayout.floorCompactSpacing : 14
+        ) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(floorState.full.label.uppercased())
+                    .font(.system(.callout, design: .rounded, weight: .bold))
+                    .foregroundStyle(LivePalette.violet)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+                if !compact {
+                    Text(floorState.full.detail)
+                        .font(.system(.caption, design: .rounded, weight: .medium))
+                        .foregroundStyle(LivePalette.muted)
+                        .lineLimit(1)
+                }
+            }
+            .frame(
+                width: compact
+                    ? FullRoomLayout.floorCompactStatusWidth
+                    : FullRoomLayout.floorStatusWidth,
+                alignment: .leading
+            )
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(floorState.full.label)
+            .accessibilityValue(floorState.full.detail)
+
+            LiveWaveform(isActive: model.canStopRecording)
+                .frame(
+                    minWidth: compact
+                        ? FullRoomLayout.floorCompactWaveformWidth
+                        : 140,
+                    maxWidth: .infinity
+                )
+                .frame(height: FullRoomLayout.minimumActionHitTarget)
+
+            if model.usesHostedAuthority {
+                Button {
+                    Task { await model.toggleHostedTimer() }
+                } label: {
+                    floorActionLabel(
+                        model.hostedElapsedText
+                            ?? (model.hostedTimerIsRunning ? "Pause" : "Start"),
+                        systemImage: model.hostedTimerIsRunning
+                            ? "pause.circle.fill"
+                            : "play.circle.fill",
+                        compact: compact,
+                        wideMinimumWidth: 76
+                    )
+                    .monospacedDigit()
+                }
+                .buttonStyle(.bordered)
+                .disabled(!model.isHostedWritable)
+                .accessibilityLabel(
+                    model.hostedTimerIsRunning
+                        ? "Pause hosted activity timer"
+                        : "Start hosted activity timer"
+                )
+
+                Menu {
+                    Button("Solved") {
+                        Task { await model.setHostedResult(.solved) }
+                    }
+                    Button("Solved after reviewing approach") {
+                        Task {
+                            await model.setHostedResult(
+                                .solvedAfterReviewingApproach
+                            )
+                        }
+                    }
+                    Button("Failed") {
+                        Task { await model.setHostedResult(.failed) }
+                    }
+                    if model.hostedResult != nil {
+                        Divider()
+                        Button("Clear result", role: .destructive) {
+                            Task { await model.setHostedResult(nil) }
+                        }
+                    }
+                } label: {
+                    floorActionLabel(
+                        hostedResultTitle,
+                        systemImage: "checkmark.seal",
+                        compact: compact,
+                        wideMinimumWidth: 88
+                    )
+                }
+                .menuStyle(.borderlessButton)
+                .disabled(!model.isHostedWritable)
+                .accessibilityLabel("Hosted result: \(hostedResultTitle)")
+                .help("Set the hosted activity result")
+            }
+
+            if model.activeEndpointGrace != nil {
+                Button {
+                    Task { await model.keepMyFloor() }
+                } label: {
+                    floorActionLabel(
+                        "Keep my floor",
+                        systemImage: "hand.raised.fill",
+                        compact: compact,
+                        wideMinimumWidth: 112
+                    )
+                }
+                .buttonStyle(RoomChromeButtonStyle())
+                .foregroundStyle(LivePalette.violet)
+                .disabled(!model.canKeepFloor)
+                .keyboardShortcut(.escape, modifiers: [])
+                .accessibilityIdentifier(FullRoomAccessibility.keepFloorAction)
+                .accessibilityLabel("Keep my floor")
+                .accessibilityHint("Cancels the pending automatic Hand off without changing saved answer evidence")
+                .help("Cancel automatic Hand off")
+            }
+
+            Button {
+                Task { await model.performPrimaryAction() }
+            } label: {
+                floorActionLabel(
+                    model.actionTitle,
+                    systemImage: model.actionIcon,
+                    compact: compact,
+                    wideMinimumWidth: 132
+                )
+            }
+            .buttonStyle(RoomPrimaryActionButtonStyle())
+            .disabled(!model.canAct)
+            .keyboardShortcut(.return, modifiers: [.command])
+            .accessibilityIdentifier(FullRoomAccessibility.primaryAction)
+            .accessibilityLabel(model.actionTitle)
+            .accessibilityHint(floorState.primaryActionHint)
+            .help(model.actionTitle)
+
+            if model.canStopRecording {
+                headerDivider
+                Button {
+                    Task { await model.stopRecording() }
+                } label: {
+                    floorActionLabel(
+                        "Pause",
+                        systemImage: "pause.fill",
+                        compact: compact,
+                        wideMinimumWidth: 86
+                    )
+                }
+                .buttonStyle(RoomChromeButtonStyle())
+                .foregroundStyle(LivePalette.navy)
+                .disabled(model.isWorking)
+                .keyboardShortcut(.space, modifiers: [.command])
+                .accessibilityIdentifier(FullRoomAccessibility.recordingAction)
+                .accessibilityLabel("Pause recording")
+                .help("Pause recording")
+            } else if model.showsRecordControl {
+                headerDivider
+                Button {
+                    Task { await model.recordSegment() }
+                } label: {
+                    floorActionLabel(
+                        "Record",
+                        systemImage: "record.circle",
+                        compact: compact,
+                        wideMinimumWidth: 86
+                    )
+                }
+                .buttonStyle(RoomChromeButtonStyle())
+                .foregroundStyle(LivePalette.navy)
+                .disabled(!model.canRecordSegment)
+                .keyboardShortcut(.space, modifiers: [.command])
+                .accessibilityIdentifier(FullRoomAccessibility.recordingAction)
+                .accessibilityLabel("Record answer segment")
+                .help("Record answer segment")
+            }
+
+            headerDivider
+
+            if model.hostedNextSystemDesignActivityID != nil {
+                Button {
+                    Task { _ = await model.finishAndOpenNextInterview() }
+                } label: {
+                    floorActionLabel(
+                        "Finish & next",
+                        systemImage: "forward.end.fill",
+                        compact: compact,
+                        wideMinimumWidth: 112,
+                        weight: .medium
+                    )
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(LivePalette.violet)
+                .disabled(model.isWorking || !model.isHostedWritable)
+                .accessibilityIdentifier(FullRoomAccessibility.finishNextAction)
+                .accessibilityLabel("Finish and open next interview")
+                .help("Finish and open next interview")
+
+                headerDivider
+            }
+
+            Button {
+                Task { _ = await model.finishInterview() }
+            } label: {
+                floorActionLabel(
+                    "End",
+                    systemImage: "stop.fill",
+                    compact: compact,
+                    wideMinimumWidth: 70,
+                    weight: .medium
+                )
+            }
+            .buttonStyle(RoomChromeButtonStyle(tint: LivePalette.warning))
+            .foregroundStyle(LivePalette.warning)
+            .accessibilityIdentifier(FullRoomAccessibility.endAction)
+            .accessibilityLabel("End interview")
+            .help("End interview")
+        }
+        .padding(
+            .horizontal,
+            compact
+                ? FullRoomLayout.floorCompactHorizontalPadding
+                : FullRoomLayout.floorContentHorizontalPadding
+        )
+    }
+
+    @ViewBuilder
+    private func floorActionLabel(
+        _ title: String,
+        systemImage: String,
+        compact: Bool,
+        wideMinimumWidth: CGFloat,
+        weight: Font.Weight = .semibold
+    ) -> some View {
+        if compact {
+            Image(systemName: systemImage)
+                .font(.system(.body, design: .rounded, weight: weight))
+                .frame(
+                    minWidth: FullRoomLayout.minimumActionHitTarget,
+                    minHeight: FullRoomLayout.minimumActionHitTarget
+                )
+                .accessibilityHidden(true)
+        } else {
+            Label(title, systemImage: systemImage)
+                .font(.system(.body, design: .rounded, weight: weight))
+                .lineLimit(1)
+                .frame(
+                    minWidth: wideMinimumWidth,
+                    minHeight: FullRoomLayout.minimumActionHitTarget
+                )
+        }
+    }
+
     private var turnlineSummary: String {
+        if model.usesHostedAuthority, !model.hostedPairs.isEmpty {
+            let count = model.hostedPairs.count * 2
+            return count == 1 ? "1 HOSTED TURN" : "\(count) HOSTED TURNS"
+        }
         guard let snapshot = model.snapshot else {
             return "RESTORING SESSION"
         }
@@ -928,6 +1187,16 @@ struct SystemDesignRoomView: View {
         }
         let count = snapshot.turns.count
         return count == 1 ? "1 SAVED TURN" : "\(count) SAVED TURNS"
+    }
+
+    private var hostedResultTitle: String {
+        switch model.hostedResult {
+        case .solved: "Solved"
+        case .solvedAfterReviewingApproach: "Solved with review"
+        case .failed: "Failed"
+        case .unknown: "Unsupported result"
+        case nil: "Set result"
+        }
     }
 
     private var segmentCountLabel: String {
@@ -1119,6 +1388,10 @@ enum FullRoomLayout {
     static let boardMinimumWidth: CGFloat = 483
     static let floorRailHeight: CGFloat = 55
     static let floorStatusWidth: CGFloat = 144
+    static let floorCompactStatusWidth: CGFloat = 112
+    static let floorCompactWaveformWidth: CGFloat = 80
+    static let floorCompactSpacing: CGFloat = 8
+    static let floorCompactHorizontalPadding: CGFloat = 16
     static let floorContentHorizontalPadding: CGFloat = 24
     static let floorOutlineHorizontalInset: CGFloat = 16
     static let floorOutlineVerticalInset: CGFloat = 4
@@ -1126,6 +1399,15 @@ enum FullRoomLayout {
     static let requiredWorkspaceHeight: CGFloat = 320
     static let requiredTurnlineHeight: CGFloat = 200
     static let minimumWindowHeight: CGFloat = 500
+
+    static var floorCompactMaximumRequiredWidth: CGFloat {
+        floorCompactStatusWidth
+            + floorCompactWaveformWidth
+            + 7 * minimumActionHitTarget
+            + 3 * workspaceVisualDividerWidth
+            + 11 * floorCompactSpacing
+            + 2 * floorCompactHorizontalPadding
+    }
 
     static var questionBandMaximumHeight: CGFloat {
         questionBandHeight(forLineCount: questionLineLimit)
@@ -1424,6 +1706,7 @@ enum FullRoomAccessibility {
     static let keepFloorAction = "full-room-keep-floor-action"
     static let recordingAction = "full-room-recording-action"
     static let endAction = "full-room-end-action"
+    static let finishNextAction = "full-room-finish-next-action"
     static let collapse = "full-room-collapse"
 
     static let allIdentifiers = [
@@ -1434,6 +1717,7 @@ enum FullRoomAccessibility {
         primaryAction,
         recordingAction,
         endAction,
+        finishNextAction,
         collapse,
     ]
 }

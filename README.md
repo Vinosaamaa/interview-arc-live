@@ -1,7 +1,14 @@
 # interview-arc-live
-Experimental native macOS technical mock-interview client for Interview Arc
+Experimental native macOS technical mock-interview client for Interview Arc.
 
 Current product design: [specialty room concepts](docs/design/specialty-rooms.md).
+
+The System Design room can connect to Interview Arc's authoritative `/live/v1`
+practice state using a separate personal integration token. Today, question,
+timer, result, canonical turn pairs, writer leases, finish, and finish-next are
+hosted projections; recordings, provider credentials, local speech, and Board
+artifacts remain private to this Mac. See
+[ADR 0009](docs/adr/0009-authoritative-hosted-practice-session.md).
 
 ## Current implementation
 

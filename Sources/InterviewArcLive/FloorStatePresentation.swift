@@ -31,6 +31,14 @@ struct FloorStatePresentation: Equatable {
         case playing
     }
 
+    enum RoomAvailability: Equatable {
+        case ready
+        case restoring
+        case hostedSignInRequired
+        case hostedActivityRequired
+        case hostedRecoveryRequired
+    }
+
     struct Surface: Equatable {
         let label: String
         let detail: String
@@ -50,6 +58,7 @@ struct FloorStatePresentation: Equatable {
         var isInterviewerRequestInFlight: Bool
         var isCodexReady: Bool
         var canStopRecording: Bool
+        var roomAvailability: RoomAvailability
 
         init(
             phase: InterviewRoomPhase? = nil,
@@ -60,7 +69,8 @@ struct FloorStatePresentation: Equatable {
             speechActivity: SpeechActivity? = nil,
             isInterviewerRequestInFlight: Bool = false,
             isCodexReady: Bool = false,
-            canStopRecording: Bool = false
+            canStopRecording: Bool = false,
+            roomAvailability: RoomAvailability = .ready
         ) {
             self.phase = phase
             self.candidateSegmentLifecycles = candidateSegmentLifecycles
@@ -71,6 +81,7 @@ struct FloorStatePresentation: Equatable {
             self.isInterviewerRequestInFlight = isInterviewerRequestInFlight
             self.isCodexReady = isCodexReady
             self.canStopRecording = canStopRecording
+            self.roomAvailability = roomAvailability
         }
     }
 
@@ -88,7 +99,7 @@ struct FloorStatePresentation: Equatable {
             tone: status.tone,
             full: fullSurface(for: input),
             compact: Surface(
-                label: compactLabel(for: input.phase),
+                label: compactLabel(for: input),
                 detail: status.detail
             ),
             systemImage: status.systemImage,
@@ -106,6 +117,27 @@ struct FloorStatePresentation: Equatable {
                 input.statusMessage,
                 "checkmark.circle.fill"
             )
+        }
+
+        if input.phase == nil {
+            switch input.roomAvailability {
+            case .hostedSignInRequired:
+                return (
+                    .recoveryAttention,
+                    .warning,
+                    input.statusMessage,
+                    "link.circle.fill"
+                )
+            case .hostedActivityRequired, .hostedRecoveryRequired:
+                return (
+                    .recoveryAttention,
+                    .warning,
+                    input.statusMessage,
+                    "exclamationmark.triangle.fill"
+                )
+            case .ready, .restoring:
+                break
+            }
         }
 
         let normalizedStatus = input.statusMessage.lowercased()
@@ -217,6 +249,28 @@ struct FloorStatePresentation: Equatable {
     }
 
     private static func fullSurface(for input: Input) -> Surface {
+        if input.phase == nil {
+            switch input.roomAvailability {
+            case .hostedSignInRequired:
+                return Surface(
+                    label: "Connect Interview Arc",
+                    detail: input.statusMessage
+                )
+            case .hostedActivityRequired:
+                return Surface(
+                    label: "Open a System Design activity",
+                    detail: input.statusMessage
+                )
+            case .hostedRecoveryRequired:
+                return Surface(
+                    label: "Hosted recovery required",
+                    detail: input.statusMessage
+                )
+            case .ready, .restoring:
+                break
+            }
+        }
+
         if input.isInterviewerRequestInFlight {
             return Surface(
                 label: "Answer saved · Codex working",
@@ -266,10 +320,17 @@ struct FloorStatePresentation: Equatable {
         return count == 1 ? "1 Segment" : "\(count) Segments"
     }
 
-    private static func compactLabel(
-        for phase: InterviewRoomPhase?
-    ) -> String {
-        switch phase {
+    private static func compactLabel(for input: Input) -> String {
+        if input.phase == nil {
+            switch input.roomAvailability {
+            case .hostedSignInRequired: return "Connect Interview Arc"
+            case .hostedActivityRequired: return "Open System Design activity"
+            case .hostedRecoveryRequired: return "Hosted recovery required"
+            case .ready, .restoring: break
+            }
+        }
+
+        switch input.phase {
         case .candidateFloor: return "Your floor"
         case .interviewerProcessing: return "Answer saved"
         case .interviewerTurn: return "Interviewer turn"
@@ -326,8 +387,24 @@ extension SystemDesignRoomModel {
                 speechActivity: speechActivity,
                 isInterviewerRequestInFlight: isInterviewerRequestInFlight,
                 isCodexReady: isCodexReady,
-                canStopRecording: canStopRecording
+                canStopRecording: canStopRecording,
+                roomAvailability: floorRoomAvailability
             )
         )
+    }
+
+    private var floorRoomAvailability: FloorStatePresentation.RoomAvailability {
+        guard snapshot == nil else { return .ready }
+        guard usesHostedAuthority else { return .restoring }
+        switch hostedSnapshot.connection {
+        case .signedOut:
+            return .hostedSignInRequired
+        case .noOpenSystemDesignActivity:
+            return .hostedActivityRequired
+        case .offline, .recoveryRequired:
+            return .hostedRecoveryRequired
+        case .loading, .readOnly, .writable:
+            return .restoring
+        }
     }
 }

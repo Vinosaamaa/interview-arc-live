@@ -6,6 +6,10 @@ let package = Package(
     platforms: [.macOS(.v14)],
     products: [
         .library(name: "InterviewArcLiveCore", targets: ["InterviewArcLiveCore"]),
+        .library(
+            name: "InterviewArcLiveHostedClient",
+            targets: ["InterviewArcLiveHostedClient"]
+        ),
         .executable(name: "InterviewArcLive", targets: ["InterviewArcLive"]),
         .executable(
             name: "InterviewArcLiveCodexSmoke",
@@ -36,6 +40,10 @@ let package = Package(
     ],
     targets: [
         .target(name: "InterviewArcLiveCore"),
+        .target(
+            name: "InterviewArcLiveHostedClient",
+            dependencies: ["InterviewArcLiveCore"]
+        ),
         .target(
             name: "InterviewArcLiveVoiceAdapter",
             dependencies: [
@@ -68,6 +76,7 @@ let package = Package(
             name: "InterviewArcLive",
             dependencies: [
                 "InterviewArcLiveCore",
+                "InterviewArcLiveHostedClient",
                 "InterviewArcLiveCodexAdapter",
                 "InterviewArcLiveQwenAdapter",
                 "InterviewArcLiveSpeechOutputAdapter",
@@ -100,6 +109,13 @@ let package = Package(
         .testTarget(
             name: "InterviewArcLiveCoreTests",
             dependencies: ["InterviewArcLiveCore"]
+        ),
+        .testTarget(
+            name: "InterviewArcLiveHostedClientTests",
+            dependencies: [
+                "InterviewArcLiveCore",
+                "InterviewArcLiveHostedClient",
+            ]
         ),
         .testTarget(
             name: "InterviewArcLiveVoiceAdapterTests",
