@@ -66,18 +66,19 @@ private final class RuntimeProbe: NSObject,
     WKScriptMessageHandler,
     WKNavigationDelegate
 {
-    private let application: NSApplication
+    private let viewportWidths: [CGFloat]
     private var webView: WKWebView?
     private var didFinish = false
     private var failures: [String] = []
+    private var viewportFailures: [String] = []
     private var isReady = false
     private var sceneEvents: [[String: Any]] = []
     private var flushedCommands: [String] = []
     private var directCommands: [String] = []
     private var loadedElementCount: Int?
 
-    init(application: NSApplication) {
-        self.application = application
+    init(viewportWidths: [CGFloat]) {
+        self.viewportWidths = viewportWidths
     }
 
     func recordFailure(_ message: String) {
@@ -277,10 +278,41 @@ private final class RuntimeProbe: NSObject,
     private func finish() {
         guard !didFinish else { return }
         didFinish = true
+        validateViewport(at: 0)
+    }
+
+    private func validateViewport(at index: Int) {
         guard let webView else {
             complete(success: false, detail: "WKWebView was released")
             return
         }
+        guard index < viewportWidths.count else {
+            let widths = viewportWidths
+                .map { String(format: "%.0f", Double($0)) }
+                .joined(separator: ", ")
+            let succeeded = failures.isEmpty && viewportFailures.isEmpty
+            complete(
+                success: succeeded,
+                detail: succeeded
+                    ? "viewports \(widths) retained ready local chrome, native bridge state, and the canonical document"
+                    : (failures + viewportFailures).joined(separator: "; ")
+            )
+            return
+        }
+        let width = viewportWidths[index]
+        webView.setFrameSize(NSSize(width: width, height: 600))
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+            [weak self, weak webView] in
+            guard let self, let webView else { return }
+            evaluateViewport(at: index, width: width, webView: webView)
+        }
+    }
+
+    private func evaluateViewport(
+        at index: Int,
+        width: CGFloat,
+        webView: WKWebView
+    ) {
         let probe = #"""
         JSON.stringify({
           ready: document.documentElement.dataset.interviewArcBoardReady ?? null,
@@ -343,12 +375,16 @@ private final class RuntimeProbe: NSObject,
             const toolbar = document.querySelector('.App-toolbar-container')?.getBoundingClientRect();
             const controls = document.querySelector('.interview-arc-board-controls')?.getBoundingClientRect();
             if (!toolbar || !controls) return false;
+            const placement = document.querySelector('.interview-arc-board-controls')
+              ?.dataset.placement;
             const overlaps = toolbar.left < controls.right
               && toolbar.right > controls.left
               && toolbar.top < controls.bottom
               && toolbar.bottom > controls.top;
             return !overlaps
-              && Math.abs(toolbar.top - controls.top) <= 1
+              && (placement === 'inline'
+                ? Math.abs(toolbar.top - controls.top) <= 1
+                : placement === 'stacked' && controls.top >= toolbar.bottom + 8)
               && controls.left >= 0
               && controls.right <= document.documentElement.clientWidth
               && controls.top >= 0
@@ -409,18 +445,18 @@ private final class RuntimeProbe: NSObject,
                 && flushedCommands.contains("saveRevision")
                 && directCommands.contains("exportRevision")
                 && sceneEventsPreserveNativeDocument()
-            complete(
-                success: stable,
-                detail: stable
-                    ? "ready, stable React root, native bridge present, and every scene update preserved the native document"
-                    : (failures + [
+            if !stable {
+                viewportFailures.append(
+                    (["viewport \(Int(width)) failed"] + failures + [
                         "scene updates: \(sceneEvents.count)",
                         "flushed commands: \(flushedCommands)",
                         "direct commands: \(directCommands)",
                         "probe: \(object)",
                     ])
-                        .joined(separator: "; ")
-            )
+                    .joined(separator: "; ")
+                )
+            }
+            validateViewport(at: index + 1)
         }
     }
 
@@ -497,8 +533,23 @@ private final class RuntimeProbe: NSObject,
     }
 }
 
-guard CommandLine.arguments.count == 2 else {
-    fputs("usage: BoardEditorRuntimeProbe <BoardEditor resource root>\n", stderr)
+guard CommandLine.arguments.count >= 2 else {
+    fputs(
+        "usage: BoardEditorRuntimeProbe <BoardEditor resource root> [width ...]\n",
+        stderr
+    )
+    exit(EXIT_FAILURE)
+}
+
+private let suppliedWidths = CommandLine.arguments.dropFirst(2)
+private let viewportWidths: [CGFloat] = suppliedWidths.isEmpty
+    ? [780]
+    : suppliedWidths.compactMap { rawWidth in
+        guard let width = Double(rawWidth), width >= 480 else { return nil }
+        return CGFloat(width)
+    }
+guard viewportWidths.count == max(1, suppliedWidths.count) else {
+    fputs("every viewport width must be a number of at least 480\n", stderr)
     exit(EXIT_FAILURE)
 }
 
@@ -508,7 +559,7 @@ let resourceRoot = URL(
 )
 private let application = NSApplication.shared
 application.setActivationPolicy(.prohibited)
-private let probe = RuntimeProbe(application: application)
+private let probe = RuntimeProbe(viewportWidths: viewportWidths)
 let configuration = WKWebViewConfiguration()
 configuration.websiteDataStore = .nonPersistent()
 configuration.preferences.javaScriptCanOpenWindowsAutomatically = false
@@ -540,7 +591,7 @@ private let assetHandler = LocalAssetHandler(
 configuration.setURLSchemeHandler(assetHandler, forURLScheme: "interviewarc-board")
 
 let webView = WKWebView(
-    frame: NSRect(x: 0, y: 0, width: 780, height: 600),
+    frame: NSRect(x: 0, y: 0, width: viewportWidths[0], height: 600),
     configuration: configuration
 )
 webView.navigationDelegate = probe
