@@ -57,6 +57,30 @@ final class HostedPracticeSessionTests: XCTestCase {
         XCTAssertEqual(commandBodies[0], commandBodies[1])
     }
 
+    func testResponseLossAfterServerCommitUsesReceiptWithoutReplayingMutation() async throws {
+        let fixture = try HostedSessionFixture()
+        _ = await fixture.session.open()
+        await fixture.transport.commitNextCommandThenLoseResponse()
+
+        do {
+            try await fixture.session.start()
+            XCTFail("Expected response loss after the server commit")
+        } catch let error as LiveV1ClientError {
+            XCTAssertEqual(error, .transportUnavailable)
+        }
+        let ambiguous = await fixture.session.snapshot()
+        XCTAssertEqual(ambiguous.pendingOperationCount, 1)
+
+        await fixture.session.recoverPendingOperations()
+
+        let recovered = await fixture.session.snapshot()
+        XCTAssertEqual(recovered.pendingOperationCount, 0)
+        let commandBodies = await fixture.transport.commandBodies()
+        let paths = await fixture.transport.paths()
+        XCTAssertEqual(commandBodies.count, 1)
+        XCTAssertTrue(paths.last?.contains("/receipts/") == true)
+    }
+
     func testRefreshCannotBecomeWritableBeforeAmbiguousReceiptRecovery() async throws {
         let fixture = try HostedSessionFixture()
         _ = await fixture.session.open()
@@ -302,6 +326,95 @@ final class HostedPracticeSessionTests: XCTestCase {
         XCTAssertEqual(snapshot.pendingOperationCount, 0)
     }
 
+    func testCommittedPairKeepsOneStableIdentityAndCanonicalSequenceAfterRefresh() async throws {
+        let fixture = try HostedSessionFixture()
+        _ = await fixture.session.open()
+
+        try await fixture.session.commitPair(
+            pairID: "pair-1",
+            candidate: LiveCandidatePairInput(
+                turnId: "candidate-1",
+                text: "Use regional queues with idempotent delivery.",
+                evidenceStatus: .verified,
+                occurredAt: 1_000_010
+            ),
+            interviewer: LiveInterviewerPairInput(
+                turnId: "interviewer-1",
+                displayMarkdown: "How do you recover a failed region?",
+                spokenText: "How do you recover a failed region?",
+                occurredAt: 1_000_020
+            )
+        )
+
+        let committed = await fixture.session.snapshot()
+        XCTAssertEqual(committed.activity?.pairs.map(\.pairId), ["pair-1"])
+        XCTAssertEqual(committed.activity?.pairs.first?.candidate.turnId, "candidate-1")
+        XCTAssertEqual(committed.activity?.pairs.first?.candidate.sequence, 1)
+        XCTAssertEqual(committed.activity?.pairs.first?.interviewer.turnId, "interviewer-1")
+        XCTAssertEqual(committed.activity?.pairs.first?.interviewer.sequence, 2)
+
+        let refreshed = try await fixture.session.refresh()
+        XCTAssertEqual(refreshed.activity?.pairs, committed.activity?.pairs)
+        XCTAssertEqual(refreshed.pendingOperationCount, 0)
+    }
+
+    func testFailedClipUploadRetainsAcceptedPairAndRecoversExactPrivateIntent() async throws {
+        let fixture = try HostedSessionFixture()
+        _ = await fixture.session.open()
+        try await fixture.session.commitPair(
+            pairID: "pair-clip",
+            candidate: LiveCandidatePairInput(
+                turnId: "candidate-clip",
+                text: "The clip is optional evidence.",
+                evidenceStatus: .verified,
+                occurredAt: 1_000_010
+            ),
+            interviewer: LiveInterviewerPairInput(
+                turnId: "interviewer-clip",
+                displayMarkdown: "Continue.",
+                spokenText: "Continue.",
+                occurredAt: 1_000_020
+            ),
+            clipID: "clip-1"
+        )
+        await fixture.transport.failNextClipUploadTransport()
+
+        do {
+            try await fixture.session.stageAndUploadClip(
+                clipID: "clip-1",
+                candidateTurnID: "candidate-clip",
+                mimeType: "audio/m4a",
+                data: Data("private fixture audio".utf8)
+            )
+            XCTFail("Expected ambiguous clip upload failure")
+        } catch let error as LiveV1ClientError {
+            XCTAssertEqual(error, .transportUnavailable)
+        }
+
+        var snapshot = await fixture.session.snapshot()
+        XCTAssertEqual(snapshot.connection, .offline)
+        XCTAssertEqual(snapshot.pendingOperationCount, 1)
+        XCTAssertEqual(snapshot.activity?.pairs.map(\.pairId), ["pair-clip"])
+        XCTAssertEqual(snapshot.activity?.clips.first?.status, .staged)
+        let retainedIntent = try await fixture.clipStore.loadIntent(clipID: "clip-1")
+        XCTAssertNotNil(retainedIntent)
+
+        await fixture.session.recoverPendingOperations()
+
+        snapshot = await fixture.session.snapshot()
+        XCTAssertEqual(snapshot.pendingOperationCount, 0)
+        XCTAssertEqual(snapshot.activity?.pairs.map(\.pairId), ["pair-clip"])
+        XCTAssertEqual(snapshot.activity?.clips.first?.status, .available)
+        let recoveredIntent = try await fixture.clipStore.loadIntent(clipID: "clip-1")
+        XCTAssertNil(recoveredIntent)
+        let paths = await fixture.transport.paths()
+        XCTAssertTrue(paths.suffix(2).first?.contains("/receipts/") == true)
+        XCTAssertEqual(
+            paths.last,
+            "/live/v1/activities/activity-1/clips/clip-1/content"
+        )
+    }
+
     func testTimerUsesServerOffsetWithoutPersistingLocalTicks() async throws {
         let fixture = try HostedSessionFixture()
         let snapshot = await fixture.session.open()
@@ -455,6 +568,7 @@ private final class HostedSessionFixture {
     let token: TestTokenReader
     let transport: HostedFixtureTransport
     let outbox: PrivateLiveOutboxStore
+    let clipStore: PrivateLiveClipStore
     let clock: TestLiveClock
     let session: HostedPracticeSession
     private let root: URL
@@ -473,6 +587,9 @@ private final class HostedSessionFixture {
         outbox = PrivateLiveOutboxStore(
             directoryURL: root.appendingPathComponent("outbox")
         )
+        clipStore = PrivateLiveClipStore(
+            directoryURL: root.appendingPathComponent("clips")
+        )
         clock = TestLiveClock(now: 1_000_000)
         session = HostedPracticeSession(
             client: LiveV1Client(tokenReader: token, transport: transport),
@@ -481,9 +598,7 @@ private final class HostedSessionFixture {
                 directoryURL: root.appendingPathComponent("identity")
             ),
             outbox: outbox,
-            clipStore: PrivateLiveClipStore(
-                directoryURL: root.appendingPathComponent("clips")
-            ),
+            clipStore: clipStore,
             clock: clock,
             holderSessionID: holderSessionID
         )
@@ -517,13 +632,20 @@ private enum HostedFixtureTransportError: Error { case expectedFailure }
 private actor HostedFixtureTransport: LiveV1Transport {
     private var recorded: [LiveV1Request] = []
     private var failCommand = false
+    private var commitCommandThenLoseResponse = false
+    private var failClipUpload = false
     private var rejectLeaseAcquire = false
     private var rejectReceiptLookup = false
     private var commandRejection: (code: String, retryable: Bool)?
     private var useNextActivity = false
     private var heldLease: LiveLeaseGrant?
+    private var committedPairs: [LivePair] = []
+    private var clips: [LiveClip] = []
+    private var receipts: [String: LiveMutationReceipt] = [:]
 
     func failNextCommandTransport() { failCommand = true }
+    func commitNextCommandThenLoseResponse() { commitCommandThenLoseResponse = true }
+    func failNextClipUploadTransport() { failClipUpload = true }
     func rejectNextLeaseAcquire() { rejectLeaseAcquire = true }
     func rejectNextReceiptLookup() { rejectReceiptLookup = true }
     func rejectNextCommand(code: String, retryable: Bool) {
@@ -559,10 +681,43 @@ private actor HostedFixtureTransport: LiveV1Transport {
                     retryable: true
                 )
             }
-            return errorResponse(
-                status: 404,
-                code: "receipt_not_found",
-                retryable: false
+            let operationID = request.path.split(separator: "/").last.map(String.init) ?? ""
+            if let receipt = receipts[operationID] {
+                return response(
+                    LiveReceiptResponse(protocolVersion: 1, receipt: receipt)
+                )
+            }
+            return errorResponse(status: 404, code: "receipt_not_found", retryable: false)
+        }
+        if request.method == .put, request.path.hasSuffix("/content") {
+            if failClipUpload {
+                failClipUpload = false
+                throw HostedFixtureTransportError.expectedFailure
+            }
+            guard let operationID = request.headers["X-Live-Operation-Id"],
+                  let clipID = request.path.split(separator: "/").dropLast().last.map(String.init),
+                  let staged = clips.first(where: { $0.clipId == clipID }) else {
+                return errorResponse(status: 400, code: "invalid_request", retryable: false)
+            }
+            let available = LiveClip(
+                clipId: staged.clipId,
+                candidateTurnId: staged.candidateTurnId,
+                pairId: staged.pairId,
+                mimeType: staged.mimeType,
+                byteSize: staged.byteSize,
+                sha256: staged.sha256,
+                status: .available,
+                failureCode: nil,
+                createdAt: staged.createdAt,
+                updatedAt: 1_000_040
+            )
+            clips = clips.map { $0.clipId == clipID ? available : $0 }
+            return response(
+                mutationResponse(
+                    operationID: operationID,
+                    operation: "clip.upload",
+                    clip: available
+                )
             )
         }
         guard let body = request.body,
@@ -572,6 +727,18 @@ private actor HostedFixtureTransport: LiveV1Transport {
         }
         if request.path.hasSuffix("/commands"), failCommand {
             failCommand = false
+            throw HostedFixtureTransportError.expectedFailure
+        }
+        if request.path.hasSuffix("/commands"), commitCommandThenLoseResponse {
+            commitCommandThenLoseResponse = false
+            receipts[operationID] = LiveMutationReceipt(
+                protocolVersion: 1,
+                operationId: operationID,
+                activityId: "activity-1",
+                operation: "command.\(object["command"] as? String ?? "")",
+                committedAt: 1_000_000,
+                result: [:]
+            )
             throw HostedFixtureTransportError.expectedFailure
         }
         if request.path.hasSuffix("/commands"), let rejection = commandRejection {
@@ -615,37 +782,120 @@ private actor HostedFixtureTransport: LiveV1Transport {
                 || object["command"] as? String == "finish-next" {
                 heldLease = nil
             }
+        } else if request.path.hasSuffix("/turn-pairs") {
+            operation = "turn_pair.commit"
+            lease = nil
+            guard let pairID = object["pairId"] as? String,
+                  let candidate = object["candidate"] as? [String: Any],
+                  let interviewer = object["interviewer"] as? [String: Any],
+                  let candidateTurnID = candidate["turnId"] as? String,
+                  let candidateText = candidate["text"] as? String,
+                  let candidateEvidenceRaw = candidate["evidenceStatus"] as? String,
+                  let candidateEvidence = LiveCandidateEvidenceStatus(rawValue: candidateEvidenceRaw),
+                  let candidateOccurredAt = candidate["occurredAt"] as? NSNumber,
+                  let interviewerTurnID = interviewer["turnId"] as? String,
+                  let displayMarkdown = interviewer["displayMarkdown"] as? String,
+                  let spokenText = interviewer["spokenText"] as? String,
+                  let interviewerOccurredAt = interviewer["occurredAt"] as? NSNumber else {
+                return errorResponse(status: 400, code: "invalid_pair", retryable: false)
+            }
+            let nextSequence = committedPairs.count * 2 + 1
+            committedPairs.append(
+                LivePair(
+                    pairId: pairID,
+                    candidate: LiveCandidateTurn(
+                        turnId: candidateTurnID,
+                        text: candidateText,
+                        evidenceStatus: candidateEvidence,
+                        evidenceConfirmedAt: nil,
+                        evidenceSatisfied: candidateEvidence == .verified,
+                        occurredAt: candidateOccurredAt.int64Value,
+                        sequence: nextSequence
+                    ),
+                    interviewer: LiveInterviewerTurn(
+                        turnId: interviewerTurnID,
+                        displayMarkdown: displayMarkdown,
+                        spokenText: spokenText,
+                        occurredAt: interviewerOccurredAt.int64Value,
+                        sequence: nextSequence + 1
+                    ),
+                    clipId: object["clipId"] as? String,
+                    committedAt: 1_000_030
+                )
+            )
+        } else if request.path.hasSuffix("/clips/stage") {
+            operation = "clip.stage"
+            lease = nil
+            guard let clipID = object["clipId"] as? String,
+                  let candidateTurnID = object["candidateTurnId"] as? String,
+                  let mimeType = object["mimeType"] as? String,
+                  let byteSize = object["byteSize"] as? Int,
+                  let sha256 = object["sha256"] as? String else {
+                return errorResponse(status: 400, code: "invalid_clip", retryable: false)
+            }
+            clips.append(
+                LiveClip(
+                    clipId: clipID,
+                    candidateTurnId: candidateTurnID,
+                    pairId: committedPairs.first(where: {
+                        $0.candidate.turnId == candidateTurnID
+                    })?.pairId,
+                    mimeType: mimeType,
+                    byteSize: byteSize,
+                    sha256: sha256,
+                    status: .staged,
+                    failureCode: nil,
+                    createdAt: 1_000_030,
+                    updatedAt: 1_000_030
+                )
+            )
         } else {
             operation = "fixture"
             lease = nil
         }
-        let projectedActivity = activityProjection(
-            request.path.contains("activity-2")
-                ? HostedFixtures.nextActivity
-                : HostedFixtures.activity
-        )
         let selectedNextActivityID = object["command"] as? String == "finish-next"
             ? "activity-2"
             : nil
         return response(
-            LiveMutationResponse(
-                protocolVersion: 1,
-                duplicate: false,
-                receipt: LiveMutationReceipt(
-                    protocolVersion: 1,
-                    operationId: operationID,
-                    activityId: projectedActivity.activity.id,
-                    operation: operation,
-                    committedAt: 1_000_000,
-                    result: [:]
-                ),
-                activity: projectedActivity,
+            mutationResponse(
+                operationID: operationID,
+                operation: operation,
+                base: request.path.contains("activity-2")
+                    ? HostedFixtures.nextActivity
+                    : HostedFixtures.activity,
                 lease: lease,
-                selectedNextActivityId: selectedNextActivityID,
-                confirmation: nil,
-                today: HostedFixtures.today,
-                clip: nil
+                selectedNextActivityID: selectedNextActivityID,
+                clip: clips.last
             )
+        )
+    }
+
+    private func mutationResponse(
+        operationID: String,
+        operation: String,
+        base: LiveActivityProjection = HostedFixtures.activity,
+        lease: LiveLeaseGrant? = nil,
+        selectedNextActivityID: String? = nil,
+        clip: LiveClip? = nil
+    ) -> LiveMutationResponse {
+        let projectedActivity = activityProjection(base)
+        return LiveMutationResponse(
+            protocolVersion: 1,
+            duplicate: false,
+            receipt: LiveMutationReceipt(
+                protocolVersion: 1,
+                operationId: operationID,
+                activityId: projectedActivity.activity.id,
+                operation: operation,
+                committedAt: 1_000_000,
+                result: [:]
+            ),
+            activity: projectedActivity,
+            lease: lease,
+            selectedNextActivityId: selectedNextActivityID,
+            confirmation: nil,
+            today: HostedFixtures.today,
+            clip: clip
         )
     }
 
@@ -672,8 +922,12 @@ private actor HostedFixtureTransport: LiveV1Transport {
                 holderPresent: heldLease != nil,
                 expiresAt: heldLease?.expiresAt
             ),
-            pairs: base.pairs,
-            clips: base.clips
+            pairs: base.activity.id == HostedFixtures.activity.activity.id
+                ? committedPairs
+                : base.pairs,
+            clips: base.activity.id == HostedFixtures.activity.activity.id
+                ? clips
+                : base.clips
         )
     }
 
