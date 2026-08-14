@@ -1638,8 +1638,14 @@ final class SystemDesignRoomModel: ObservableObject {
         coordinator = nil
         snapshot = nil
         segments = []
-        boardPersistenceTail = nil
+        localPersistenceTail = nil
+        localPersistenceGeneration = 0
         pendingBoardWriteCount = 0
+        candidateNotesPersistenceTask = nil
+        pendingCandidateNotes = nil
+        didLoadInitialCandidateNotes = false
+        candidateNotesDraft = ""
+        candidateNotesSavePresentation = .saved
         boardArtifactStore = nil
         boardEditor = BoardEditorState(document: .empty)
         inspectedBoardRevisionID = nil
