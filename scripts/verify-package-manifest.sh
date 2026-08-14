@@ -14,13 +14,15 @@ smoke_executable="$app_dir/Contents/Helpers/InterviewArcLiveCodexSmoke"
 endpoint_smoke_executable="$app_dir/Contents/Helpers/InterviewArcLiveEndpointSmoke"
 speech_smoke_executable="$app_dir/Contents/Helpers/InterviewArcLiveSpeechSmoke"
 info_plist="$app_dir/Contents/Info.plist"
+app_icon="$app_dir/Contents/Resources/InterviewArcLive.icns"
 mlx_resource_bundle="$app_dir/Contents/Resources/mlx-swift_Cmlx.bundle"
 mlx_metallib_candidates=("$mlx_resource_bundle"/**/default.metallib(N))
 
 if [[ ! -x "$executable" || ! -x "$smoke_executable" \
     || ! -x "$endpoint_smoke_executable" \
     || ! -x "$speech_smoke_executable" \
-    || ! -f "$info_plist" || ! -f "$manifest_path" \
+    || ! -f "$info_plist" || ! -f "$app_icon" || -L "$app_icon" \
+    || ! -f "$manifest_path" \
     || ! -d "$mlx_resource_bundle" || -L "$mlx_resource_bundle" \
     || ${#mlx_metallib_candidates} -ne 1 \
     || ! -f "${mlx_metallib_candidates[1]}" \
@@ -49,6 +51,7 @@ manifest_value() {
 }
 
 actual_identifier="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$info_plist")"
+actual_icon_name="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIconFile' "$info_plist")"
 actual_cdhash="$(/usr/bin/codesign -dvvv "$app_dir" 2>&1 | /usr/bin/awk -F= '/^CDHash=/{print $2; exit}')"
 actual_executable_sha="$(/usr/bin/shasum -a 256 "$executable" | /usr/bin/awk '{print $1}')"
 actual_smoke_sha="$(/usr/bin/shasum -a 256 "$smoke_executable" | /usr/bin/awk '{print $1}')"
@@ -63,6 +66,8 @@ actual_mlx_metallib_byte_count="$(/usr/bin/stat -f '%z' "$actual_mlx_metallib")"
 
 [[ "$(manifest_value bundle_identifier)" == "$actual_identifier" ]] \
   || { echo "Package manifest bundle identifier mismatch." >&2; exit 65; }
+[[ "$actual_icon_name" == "InterviewArcLive.icns" ]] \
+  || { echo "Packaged application icon metadata mismatch." >&2; exit 65; }
 [[ "$(manifest_value code_directory_hash)" == "$actual_cdhash" ]] \
   || { echo "Package manifest code-directory hash mismatch." >&2; exit 65; }
 [[ "$(manifest_value executable_sha256)" == "$actual_executable_sha" ]] \

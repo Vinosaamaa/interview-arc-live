@@ -3,6 +3,41 @@ import InterviewArcLiveCore
 @testable import InterviewArcLive
 
 final class BoardEditorTests: XCTestCase {
+    func testReplacingEmbeddedDocumentParticipatesInNativeUndoRedo() throws {
+        var editor = BoardEditorState(document: .empty)
+        let box = BoardBox(
+            id: BoardElementID("box-1"),
+            frame: BoardRect(
+                origin: BoardPoint(x: 80, y: 90),
+                size: BoardSize(width: 160, height: 100)
+            ),
+            label: "API",
+            kind: .service
+        )
+        let replacement = try BoardDocument(
+            canvas: editor.document.canvas,
+            elements: [.box(box)]
+        )
+
+        let changed = try editor.applyReportingMutation(
+            .replaceDocument(
+                replacement,
+                selectedElementID: box.id
+            )
+        )
+        XCTAssertTrue(changed.documentChanged)
+        XCTAssertEqual(editor.document, replacement)
+        XCTAssertEqual(editor.selectedElementID, box.id)
+
+        try editor.apply(.undo)
+        XCTAssertEqual(editor.document, .empty)
+        XCTAssertNil(editor.selectedElementID)
+
+        try editor.apply(.redo)
+        XCTAssertEqual(editor.document, replacement)
+        XCTAssertEqual(editor.selectedElementID, box.id)
+    }
+
     func testConnectorKeyboardAndAccessibilityActivationShareSourceTargetFlow() {
         XCTAssertTrue(
             BoardAccessibilityActionPolicy.exposesDelete(isReadOnly: false)
@@ -137,6 +172,22 @@ final class BoardEditorTests: XCTestCase {
                 BoardPoint(x: 106, y: 100),
                 after: first
             )
+        )
+    }
+
+    func testStraightLineSamplingKeepsOnlyTheGestureEndpoints() {
+        let start = BoardPoint(x: 20, y: 30)
+
+        XCTAssertEqual(
+            BoardGestureSampling.straightLinePoints(from: nil, to: start),
+            [start]
+        )
+        XCTAssertEqual(
+            BoardGestureSampling.straightLinePoints(
+                from: start,
+                to: BoardPoint(x: 180, y: 140)
+            ),
+            [start, BoardPoint(x: 180, y: 140)]
         )
     }
 

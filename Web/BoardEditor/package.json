@@ -1,0 +1,21 @@
+{
+  "name": "interview-arc-board-editor",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "build": "vite build && node scripts/copy-assets.mjs",
+    "test": "node --test scripts/*.test.mjs",
+    "sync": "node scripts/sync-resources.mjs",
+    "bundle": "npm run build && npm run sync"
+  },
+  "dependencies": {
+    "@excalidraw/excalidraw": "0.17.6",
+    "react": "18.3.1",
+    "react-dom": "18.3.1"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "6.0.5",
+    "vite": "8.2.1"
+  }
+}

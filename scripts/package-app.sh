@@ -6,8 +6,14 @@ setopt NULL_GLOB
 repo_root="${0:A:h:h}"
 configuration="${1:-release}"
 case "$configuration" in
-  debug) xcode_configuration="Debug" ;;
-  release) xcode_configuration="Release" ;;
+  debug)
+    xcode_configuration="Debug"
+    package_testability="YES"
+    ;;
+  release)
+    xcode_configuration="Release"
+    package_testability="NO"
+    ;;
   *)
     echo "Usage: $0 [debug|release]" >&2
     exit 64
@@ -21,13 +27,32 @@ smoke_executable_name="InterviewArcLiveCodexSmoke"
 endpoint_smoke_executable_name="InterviewArcLiveEndpointSmoke"
 speech_smoke_executable_name="InterviewArcLiveSpeechSmoke"
 info_plist="$repo_root/Resources/Info.plist"
+app_icon="$repo_root/Resources/InterviewArcLive.icns"
 signing_identity="${INTERVIEW_ARC_LIVE_SIGNING_IDENTITY:--}"
 manifest_path="$repo_root/dist/InterviewArcLive.package-manifest.txt"
 allow_dirty="${INTERVIEW_ARC_LIVE_ALLOW_DIRTY:-0}"
 derived_data="${INTERVIEW_ARC_LIVE_DERIVED_DATA_PATH:-$repo_root/.build/xcode-derived-data}"
+verified_build_receipt="$derived_data/InterviewArcLive.verified-build"
+build_candidate_receipt="$derived_data/InterviewArcLive.build-candidate"
+package_scheme="InterviewArcLive-Package"
+deployment_target="14.0"
+code_signing_allowed="NO"
+package_sdk="macosx"
+target_architecture="$(/usr/bin/uname -m)"
+case "$target_architecture" in
+  arm64|x86_64) ;;
+  *)
+    echo "Packaging requires an explicit supported macOS architecture." >&2
+    exit 64
+    ;;
+esac
 
 if [[ ! -f "$info_plist" ]]; then
   echo "Missing application metadata: Resources/Info.plist" >&2
+  exit 66
+fi
+if [[ ! -f "$app_icon" || -L "$app_icon" ]]; then
+  echo "Missing application icon: Resources/InterviewArcLive.icns" >&2
   exit 66
 fi
 if [[ ! -f "$repo_root/Package.resolved" ]]; then
@@ -47,23 +72,49 @@ if [[ -n "$(git status --porcelain --untracked-files=all)" ]]; then
   fi
 fi
 
-if ! command -v xcodebuild >/dev/null 2>&1; then
+if ! command -v xcodebuild >/dev/null 2>&1 || ! command -v xcrun >/dev/null 2>&1; then
   echo "Packaging the MLX runtime requires Xcode and xcodebuild." >&2
   exit 69
 fi
 
-# MLX compiles Metal shaders through Xcode. A plain `swift build` can produce
-# source objects while omitting the runtime metallib, so it is not accepted as
-# release evidence for the TTS-enabled application.
-xcodebuild build \
-  -scheme InterviewArcLive-Package \
-  -configuration "$xcode_configuration" \
-  -destination 'platform=macOS' \
-  -derivedDataPath "$derived_data" \
-  -disableAutomaticPackageResolution \
-  -onlyUsePackageVersionsFromResolvedFile \
-  MACOSX_DEPLOYMENT_TARGET=14.0 \
-  CODE_SIGNING_ALLOWED=NO
+expected_build_receipt="$("$repo_root/scripts/build-product-receipt.sh" \
+  "$source_commit" "$package_scheme" "$xcode_configuration" \
+  "$package_testability" "$deployment_target" "$code_signing_allowed" \
+  "$package_sdk" "$target_architecture")"
+reuse_build_products="false"
+if [[ "$source_tree_clean" == "true" ]]; then
+  for receipt in "$verified_build_receipt" "$build_candidate_receipt"; do
+    if [[ -f "$receipt" && "$(<"$receipt")" == "$expected_build_receipt" ]]; then
+      reuse_build_products="true"
+      break
+    fi
+  done
+fi
+
+# Consume either provenance file before trusting products. A failed package can
+# never leave a matching receipt that would suppress the next rebuild.
+rm -f "$verified_build_receipt" "$build_candidate_receipt"
+
+if [[ "$reuse_build_products" == "true" ]]; then
+  echo "Reusing matching $xcode_configuration build products from $derived_data."
+else
+  # MLX compiles Metal shaders through Xcode. A plain `swift build` can produce
+  # source objects while omitting the runtime metallib, so it is not accepted as
+  # release evidence for the TTS-enabled application.
+  xcodebuild build \
+    -scheme "$package_scheme" \
+    -configuration "$xcode_configuration" \
+    -destination "platform=macOS,arch=$target_architecture" \
+    -sdk "$package_sdk" \
+    -derivedDataPath "$derived_data" \
+    -disableAutomaticPackageResolution \
+    -onlyUsePackageVersionsFromResolvedFile \
+    MACOSX_DEPLOYMENT_TARGET="$deployment_target" \
+    ENABLE_TESTABILITY="$package_testability" \
+    ARCHS="$target_architecture" \
+    ONLY_ACTIVE_ARCH=YES \
+    CODE_SIGNING_ALLOWED="$code_signing_allowed"
+fi
 
 bin_dir="$derived_data/Build/Products/$xcode_configuration"
 executable="$bin_dir/$executable_name"
@@ -103,6 +154,7 @@ fi
 rm -rf "$app_dir"
 mkdir -p "$contents_dir/MacOS" "$contents_dir/Helpers" "$contents_dir/Resources"
 cp "$info_plist" "$contents_dir/Info.plist"
+cp "$app_icon" "$contents_dir/Resources/InterviewArcLive.icns"
 cp "$executable" "$contents_dir/MacOS/$executable_name"
 cp "$smoke_executable" "$contents_dir/Helpers/$smoke_executable_name"
 cp "$endpoint_smoke_executable" "$contents_dir/Helpers/$endpoint_smoke_executable_name"
@@ -197,6 +249,13 @@ fi
 chmod 0600 "$manifest_path"
 
 "$repo_root/scripts/verify-package-manifest.sh" "$app_dir" "$manifest_path"
+
+if [[ "$source_tree_clean" == "true" ]]; then
+  receipt_temp="$(/usr/bin/mktemp "$derived_data/.InterviewArcLive.verified-build.XXXXXX")"
+  printf '%s\n' "$expected_build_receipt" > "$receipt_temp"
+  chmod 0600 "$receipt_temp"
+  mv -f "$receipt_temp" "$verified_build_receipt"
+fi
 
 echo "$app_dir"
 echo "$manifest_path"

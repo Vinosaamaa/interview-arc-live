@@ -7,34 +7,58 @@ struct SystemDesignBoardView: View {
     @State private var connectorSourceID: BoardElementID?
     @State private var activePenPoints: [BoardPoint] = []
     @State private var lastEraserPoint: BoardPoint?
-    @State private var newBoxKind: BoardNodeKind = .service
+    @State private var newBoxKind: BoardNodeKind = .generic
     @State private var editingElementID: BoardElementID?
     @State private var editingText = ""
     @State private var interactionFeedback: String?
     @State private var isRevisionHistoryPresented = false
+    @State private var enhancedEditorIsReady = false
+    @State private var enhancedEditorFailure: String?
+    @State private var enhancedEditorAttemptID = UUID()
     @FocusState private var isCanvasFocused: Bool
     @FocusState private var isLabelEditorFocused: Bool
     @AccessibilityFocusState private var accessibilityFocusedElementID: BoardElementID?
+
+    private var enhancedEditorBridgeController: ExcalidrawBoardBridgeController {
+        model.enhancedBoardBridgeController
+    }
+
+    private var showsNativeBoardRevisionControls: Bool {
+        BoardRailPresentation.showsNativeRevisionControls(
+            selectedWorkSurface: model.selectedWorkSurface,
+            enhancedEditorIsReady: enhancedEditorIsReady
+        )
+    }
 
     var body: some View {
         VStack(spacing: 0) {
             revisionRail
             Divider().overlay(BoardPalette.line)
-            toolRail
-            Divider().overlay(BoardPalette.line)
-            canvas
+            workSurfaceContent
         }
         .background(BoardPalette.canvas)
         .foregroundStyle(BoardPalette.navy)
         .sheet(isPresented: $isRevisionHistoryPresented) {
             revisionHistoryBrowser
         }
+        .onChange(of: model.selectedWorkSurface) { previous, current in
+            guard BoardEnhancedEditorLifecycle.shouldInvalidateAttempt(
+                from: previous,
+                to: current
+            ) else { return }
+            enhancedEditorIsReady = false
+            enhancedEditorAttemptID = UUID()
+        }
         .onDeleteCommand {
-            guard !model.isInspectingBoardRevision else { return }
-            model.applyBoardAction(.deleteSelection)
+            guard model.selectedWorkSurface == .board,
+                  !model.isInspectingBoardRevision else { return }
+            enhancedEditorBridgeController.performAfterFlushing {
+                model.applyBoardAction(.deleteSelection)
+            }
         }
         .onExitCommand {
-            guard !model.isInspectingBoardRevision else { return }
+            guard model.selectedWorkSurface == .board,
+                  !model.isInspectingBoardRevision else { return }
             if editingElementID != nil {
                 cancelEditing()
             } else {
@@ -43,20 +67,71 @@ struct SystemDesignBoardView: View {
                 model.applyBoardAction(.setTool(.select))
             }
         }
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel("System design board")
-        .accessibilityValue(boardAccessibilityValue)
-        .boardRootAccessibilityActions(
-            isReadOnly: model.isInspectingBoardRevision,
-            addTitle: "Add \(newBoxKind.displayName) node",
-            add: addBoxFromKeyboard,
-            next: { selectRelativeElement(forward: true) },
-            previous: { selectRelativeElement(forward: false) }
-        )
         .task(id: interactionFeedback) {
             guard interactionFeedback != nil else { return }
             try? await Task.sleep(for: .seconds(2))
             interactionFeedback = nil
+        }
+    }
+
+    @ViewBuilder
+    private var workSurfaceContent: some View {
+        switch model.selectedWorkSurface {
+        case .board:
+            VStack(spacing: 0) {
+                if enhancedEditorFailure != nil {
+                    toolRail
+                    Divider().overlay(BoardPalette.line)
+                }
+                canvas
+            }
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel("System design board")
+            .accessibilityValue(boardAccessibilityValue)
+            .accessibilityIdentifier("work-surface-panel-board")
+            .boardRootAccessibilityActions(
+                isReadOnly: model.isInspectingBoardRevision,
+                addTitle: "Add \(newBoxKind.displayName) node",
+                add: addBoxFromKeyboard,
+                next: { selectRelativeElement(forward: true) },
+                previous: { selectRelativeElement(forward: false) }
+            )
+            .optionalBoardAccessibilityAction(
+                isEnabled: model.isInspectingBoardRevision,
+                title: "Return to board draft"
+            ) {
+                handleEnhancedEditorCommand(.returnToDraft)
+            }
+            .optionalBoardAccessibilityAction(
+                isEnabled: model.canSaveBoardRevision
+                    && model.isBoardDraftDirty,
+                title: "Save board revision"
+            ) {
+                saveRevisionAfterEnhancedFlush()
+            }
+            .optionalBoardAccessibilityAction(
+                isEnabled: model.snapshot?.board.revisions.isEmpty == false,
+                title: "Browse board revisions"
+            ) {
+                handleEnhancedEditorCommand(.showRevisions)
+            }
+            .optionalBoardAccessibilityAction(
+                isEnabled: model.canAttachBoardRevision,
+                title: "Attach board revision"
+            ) {
+                handleEnhancedEditorCommand(.attachRevision)
+            }
+            .optionalBoardAccessibilityAction(
+                isEnabled: model.canExportBoardRevision
+                    && !model.isBoardExporting,
+                title: "Export board revision"
+            ) {
+                handleEnhancedEditorCommand(.exportRevision)
+            }
+        case .brief:
+            briefSurface
+        case .notes:
+            notesSurface
         }
     }
 
@@ -80,37 +155,34 @@ struct SystemDesignBoardView: View {
         )
 
         return HStack(spacing: compact ? BoardRailWidthBudget.compactRevisionSpacing : 0) {
+            workSurfaceSwitcher(compact: compact)
             if compact {
-                tab("Board", isSelected: true)
-                    .frame(width: BoardRailWidthBudget.compactTabWidth)
-                    .accessibilityHint("Brief and Notes are not available in this version")
-                revisionStatus(compact: true)
-                Spacer(minLength: BoardRailWidthBudget.compactRevisionSpacerWidth)
-                revisionPrimaryAction(compact: true)
-                revisionMenu(compact: true)
-                attachRevisionButton(compact: true)
-                exportRevisionButton(compact: true)
-            } else {
-                HStack(spacing: 30) {
-                    tab("Board", isSelected: true)
-                    tab("Brief", isSelected: false)
-                    tab("Notes", isSelected: false)
+                if model.selectedWorkSurface == .board,
+                   !enhancedEditorIsReady {
+                    revisionStatus(compact: true)
+                } else {
+                    workSurfaceStatus(compact: true)
                 }
-                .fixedSize()
-
+                Spacer(minLength: BoardRailWidthBudget.compactRevisionSpacerWidth)
+                if showsNativeBoardRevisionControls {
+                    nativeRevisionControls(compact: true)
+                }
+            } else {
                 Spacer(
                     minLength: BoardRailWidthBudget.wideRevisionGroupGapMinimum
                 )
 
-                HStack(spacing: 18) {
-                    revisionStatus(compact: false)
-                    revisionPrimaryAction(compact: false)
-                    revisionMenu(compact: false)
-                    railDivider
-                    attachRevisionButton(compact: false)
-                    exportRevisionButton(compact: false)
+                if model.selectedWorkSurface == .board {
+                    HStack(spacing: 18) {
+                        revisionStatus(compact: false)
+                        if showsNativeBoardRevisionControls {
+                            nativeRevisionControls(compact: false)
+                        }
+                    }
+                    .fixedSize()
+                } else {
+                    workSurfaceStatus(compact: false)
                 }
-                .fixedSize()
             }
         }
         .font(.system(.callout, design: .rounded))
@@ -127,6 +199,7 @@ struct SystemDesignBoardView: View {
     }
 
     private var compactRevisionActionCount: Int {
+        guard showsNativeBoardRevisionControls else { return 0 }
         var count = 2 // Attach and Export are always discoverable.
         if model.isInspectingBoardRevision || model.isBoardDraftDirty {
             count += 1
@@ -135,6 +208,70 @@ struct SystemDesignBoardView: View {
             count += 1
         }
         return count
+    }
+
+    @ViewBuilder
+    private func nativeRevisionControls(compact: Bool) -> some View {
+        revisionPrimaryAction(compact: compact)
+        revisionMenu(compact: compact)
+        if !compact {
+            railDivider
+        }
+        attachRevisionButton(compact: compact)
+        exportRevisionButton(compact: compact)
+    }
+
+    private func workSurfaceSwitcher(compact: Bool) -> some View {
+        HStack(spacing: compact ? 4 : 22) {
+            ForEach(SystemDesignWorkSurfacePane.allCases) { pane in
+                WorkSurfaceTab(
+                    pane: pane,
+                    isSelected: model.selectedWorkSurface == pane,
+                    compact: compact,
+                    isEnabled: model.snapshot != nil
+                ) {
+                    model.selectWorkSurface(pane)
+                }
+            }
+        }
+        .fixedSize()
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Work surfaces")
+    }
+
+    private func workSurfaceStatus(compact: Bool) -> some View {
+        let text: String
+        let icon: String
+        let isError: Bool
+        switch model.selectedWorkSurface {
+        case .board:
+            text = model.boardRevisionStatus
+            icon = revisionStatusIcon
+            isError = model.boardErrorMessage != nil
+        case .brief:
+            text = compact ? "Activity brief" : "Activity brief · read-only"
+            icon = "doc.text"
+            isError = false
+        case .notes:
+            text = model.candidateNotesSavePresentation.text
+            icon = model.candidateNotesSavePresentation == .saving
+                ? "arrow.triangle.2.circlepath"
+                : "checkmark.circle"
+            if case .error = model.candidateNotesSavePresentation {
+                isError = true
+            } else {
+                isError = false
+            }
+        }
+        return Label(text, systemImage: icon)
+            .font(.system(.callout, design: .rounded))
+            .foregroundStyle(isError ? BoardPalette.errorText : BoardPalette.muted)
+            .lineLimit(compact ? 1 : 2)
+            .frame(minHeight: BoardLayoutMetrics.minimumHitTarget)
+            .help(text)
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("\(model.selectedWorkSurface.title) status")
+            .accessibilityValue(text)
     }
 
     private func revisionStatus(compact: Bool) -> some View {
@@ -176,7 +313,7 @@ struct SystemDesignBoardView: View {
     private func revisionPrimaryAction(compact: Bool) -> some View {
         if model.isInspectingBoardRevision {
             Button {
-                Task { await model.returnToBoardDraft() }
+                handleEnhancedEditorCommand(.returnToDraft)
             } label: {
                 adaptiveRailLabel(
                     "Return to draft",
@@ -184,13 +321,17 @@ struct SystemDesignBoardView: View {
                     compact: compact
                 )
             }
-            .buttonStyle(.plain)
-            .foregroundStyle(BoardPalette.violet)
+            .buttonStyle(
+                BoardRailButtonStyle(
+                    role: .accent,
+                    addsHorizontalPadding: !compact
+                )
+            )
             .help("Return to draft")
             .accessibilityHint("Closes the immutable revision without changing the editable draft")
         } else if model.isBoardDraftDirty {
             Button {
-                Task { await model.saveBoardRevision() }
+                saveRevisionAfterEnhancedFlush()
             } label: {
                 adaptiveRailLabel(
                     "Save revision",
@@ -198,8 +339,12 @@ struct SystemDesignBoardView: View {
                     compact: compact
                 )
             }
-            .buttonStyle(.plain)
-            .foregroundStyle(BoardPalette.violet)
+            .buttonStyle(
+                BoardRailButtonStyle(
+                    role: .accent,
+                    addsHorizontalPadding: !compact
+                )
+            )
             .disabled(!model.canSaveBoardRevision)
             .keyboardShortcut("s", modifiers: .command)
             .help("Save revision")
@@ -284,7 +429,7 @@ struct SystemDesignBoardView: View {
 
     private func attachRevisionButton(compact: Bool) -> some View {
         Button {
-            Task { await model.attachSelectedBoardRevision() }
+            handleEnhancedEditorCommand(.attachRevision)
         } label: {
             adaptiveRailLabel(
                 "Attach revision",
@@ -292,16 +437,24 @@ struct SystemDesignBoardView: View {
                 compact: compact
             )
         }
-        .buttonStyle(.plain)
-        .foregroundStyle(BoardPalette.navy)
+        .buttonStyle(
+            BoardRailButtonStyle(
+                role: .standard,
+                addsHorizontalPadding: !compact
+            )
+        )
         .disabled(!model.canAttachBoardRevision)
-        .help("Attach revision")
+        .help(
+            model.canAttachBoardRevision
+                ? "Attach revision"
+                : "Save a revision and complete a candidate answer before attaching"
+        )
         .accessibilityHint("Attaches the selected immutable revision to the latest unattached answer")
     }
 
     private func exportRevisionButton(compact: Bool) -> some View {
         Button {
-            Task { await model.exportSelectedBoardRevision() }
+            handleEnhancedEditorCommand(.exportRevision)
         } label: {
             if model.isBoardExporting {
                 ProgressView()
@@ -319,18 +472,18 @@ struct SystemDesignBoardView: View {
                 )
             }
         }
-        .buttonStyle(.plain)
-        .foregroundStyle(BoardPalette.violet)
-        .background(
-            BoardPalette.violet.opacity(0.08),
-            in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+        .buttonStyle(
+            BoardRailButtonStyle(
+                role: .accent,
+                addsHorizontalPadding: !compact
+            )
         )
-        .overlay {
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .stroke(BoardPalette.violet.opacity(0.28), lineWidth: 1)
-        }
         .disabled(!model.canExportBoardRevision || model.isBoardExporting)
-        .help("Export board revision")
+        .help(
+            model.canExportBoardRevision
+                ? "Export board revision"
+                : "Save or select a revision before exporting"
+        )
         .accessibilityHint("Exports Draw.io source, SVG, and PNG as one private bundle")
     }
 
@@ -353,23 +506,159 @@ struct SystemDesignBoardView: View {
         }
     }
 
-    private func tab(_ title: String, isSelected: Bool) -> some View {
-        Text(title)
-            .font(.system(.body, design: .rounded, weight: isSelected ? .semibold : .regular))
-            .foregroundStyle(isSelected ? BoardPalette.ink : BoardPalette.muted)
-            .frame(minHeight: BoardLayoutMetrics.sectionLabelHeight)
-            .overlay(alignment: .bottom) {
-                if isSelected {
-                    Rectangle()
-                        .fill(BoardPalette.violet)
-                        .frame(height: 3)
+    private var briefSurface: some View {
+        let prompt = model.activityPromptForPresentation
+        return ScrollView {
+            VStack(alignment: .leading, spacing: 24) {
+                VStack(alignment: .leading, spacing: 8) {
+                    Label("System design · \(prompt.stage)", systemImage: "scope")
+                        .font(.system(.callout, design: .rounded, weight: .semibold))
+                        .foregroundStyle(BoardPalette.violet)
+                    Text(prompt.question)
+                        .font(.system(size: 30, weight: .semibold, design: .rounded))
+                        .foregroundStyle(BoardPalette.ink)
+                        .textSelection(.enabled)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                Divider().overlay(BoardPalette.line)
+
+                if prompt.requestedParts.isEmpty {
+                    Text("No additional requested parts were provided for this activity.")
+                        .font(.system(.body, design: .rounded))
+                        .foregroundStyle(BoardPalette.muted)
+                } else {
+                    VStack(alignment: .leading, spacing: 14) {
+                        Text("Requested parts")
+                            .font(.system(.headline, design: .rounded, weight: .semibold))
+                        ForEach(Array(prompt.requestedParts.enumerated()), id: \.offset) { index, part in
+                            HStack(alignment: .firstTextBaseline, spacing: 12) {
+                                Text("\(index + 1)")
+                                    .font(.system(.caption, design: .rounded, weight: .bold))
+                                    .foregroundStyle(BoardPalette.violet)
+                                    .frame(width: 22, height: 22)
+                                    .background(
+                                        BoardPalette.violet.opacity(0.10),
+                                        in: Circle()
+                                    )
+                                Text(part)
+                                    .font(.system(.body, design: .rounded))
+                                    .foregroundStyle(BoardPalette.navy)
+                                    .textSelection(.enabled)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                        }
+                    }
                 }
             }
-            .accessibilityLabel(
-                isSelected
-                    ? "Board, current section"
-                    : "\(title), not available in this version"
-            )
+            .frame(maxWidth: 760, alignment: .leading)
+            .padding(.horizontal, 32)
+            .padding(.vertical, 28)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .background(BoardPalette.paper)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Activity brief")
+        .accessibilityIdentifier("work-surface-panel-brief")
+    }
+
+    private var notesSurface: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: 5) {
+                Text("Private notes")
+                    .font(.system(.title2, design: .rounded, weight: .semibold))
+                    .foregroundStyle(BoardPalette.ink)
+                Text("Scratch space for you. Notes are saved locally and never sent to Mara.")
+                    .font(.system(.callout, design: .rounded))
+                    .foregroundStyle(BoardPalette.muted)
+            }
+            .padding(.horizontal, 24)
+            .padding(.top, 22)
+            .padding(.bottom, 14)
+
+            ZStack(alignment: .topLeading) {
+                if model.candidateNotesDraft.isEmpty {
+                    Text("Capture assumptions, trade-offs, or questions to revisit…")
+                        .font(.system(.body, design: .rounded))
+                        .foregroundStyle(BoardPalette.muted.opacity(0.8))
+                        .padding(.horizontal, 19)
+                        .padding(.vertical, 17)
+                        .allowsHitTesting(false)
+                }
+                TextEditor(
+                    text: Binding(
+                        get: { model.candidateNotesDraft },
+                        set: { newValue in
+                            model.updateCandidateNotesDraft(newValue)
+                        }
+                    )
+                )
+                .font(.system(.body, design: .rounded))
+                .foregroundStyle(BoardPalette.navy)
+                .scrollContentBackground(.hidden)
+                .padding(12)
+                .disabled(!model.canEditCandidateNotes)
+                .accessibilityLabel("Candidate notes")
+                .accessibilityHint(
+                    "Private local scratch notes. These are not included in the transcript or spoken by Mara."
+                )
+            }
+            .background(BoardPalette.canvas)
+            .overlay {
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .stroke(BoardPalette.line, lineWidth: 1)
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .padding(.horizontal, 24)
+
+            HStack(spacing: 12) {
+                Label(
+                    model.candidateNotesSavePresentation.text,
+                    systemImage: notesStatusIcon
+                )
+                .foregroundStyle(notesStatusColor)
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel("Notes status")
+                .accessibilityValue(model.candidateNotesSavePresentation.text)
+
+                if case .error = model.candidateNotesSavePresentation {
+                    Button("Retry") {
+                        model.retryCandidateNotesSave()
+                    }
+                    .buttonStyle(.borderless)
+                    .foregroundStyle(BoardPalette.violet)
+                }
+
+                Spacer()
+
+                Text("\(model.candidateNotesDraft.utf8.count.formatted()) / \(CandidateNotes.maximumBodyUTF8Bytes.formatted()) bytes")
+                    .foregroundStyle(BoardPalette.muted)
+                    .accessibilityLabel("Notes size")
+            }
+            .font(.system(.caption, design: .rounded))
+            .padding(.horizontal, 28)
+            .frame(minHeight: 44)
+        }
+        .padding(.bottom, 12)
+        .background(BoardPalette.paper)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Private notes")
+        .accessibilityIdentifier("work-surface-panel-notes")
+    }
+
+    private var notesStatusIcon: String {
+        switch model.candidateNotesSavePresentation {
+        case .saved: "checkmark.circle.fill"
+        case .saving: "arrow.triangle.2.circlepath"
+        case .error: "exclamationmark.triangle.fill"
+        }
+    }
+
+    private var notesStatusColor: Color {
+        if case .error = model.candidateNotesSavePresentation {
+            return BoardPalette.errorText
+        }
+        return BoardPalette.muted
     }
 
     private var toolRail: some View {
@@ -474,7 +763,7 @@ struct SystemDesignBoardView: View {
                     newBoxKind = kind
                     connectorSourceID = nil
                     model.applyBoardAction(.setTool(.box))
-                    interactionFeedback = "\(kind.displayName) box tool active · click the canvas to place"
+                    interactionFeedback = "\(kind.displayName) box tool active · draw on the canvas"
                     isCanvasFocused = true
                 } label: {
                     boxKindMenuLabel(kind)
@@ -512,7 +801,7 @@ struct SystemDesignBoardView: View {
         } primaryAction: {
             connectorSourceID = nil
             model.applyBoardAction(.setTool(.box))
-            interactionFeedback = "\(newBoxKind.displayName) box tool active · click the canvas to place"
+            interactionFeedback = "\(newBoxKind.displayName) box tool active · draw on the canvas"
             isCanvasFocused = true
         }
         .menuStyle(.borderlessButton)
@@ -528,7 +817,7 @@ struct SystemDesignBoardView: View {
         .accessibilityValue(
             "\(newBoxKind.displayName)\(model.boardEditor.tool == .box ? ", selected" : "")"
         )
-        .accessibilityHint("Choose the architecture node kind, then click the canvas")
+        .accessibilityHint("Choose the architecture node kind, then draw it on the canvas")
         .help("Box · \(newBoxKind.displayName)")
     }
 
@@ -566,26 +855,12 @@ struct SystemDesignBoardView: View {
                     width: compact ? BoardLayoutMetrics.minimumHitTarget : nil
                 )
                 .frame(minHeight: BoardLayoutMetrics.toolControlHeight)
-                .background(
-                    model.boardEditor.tool == tool
-                        ? BoardPalette.violet.opacity(0.14)
-                        : Color.clear,
-                    in: RoundedRectangle(cornerRadius: 9, style: .continuous)
-                )
-                .overlay {
-                    RoundedRectangle(cornerRadius: 9, style: .continuous)
-                        .stroke(
-                            model.boardEditor.tool == tool
-                                ? BoardPalette.violet.opacity(0.72)
-                                : .clear,
-                            lineWidth: 1
-                        )
-                }
         }
-        .foregroundStyle(
-            model.boardEditor.tool == tool
-                ? BoardPalette.violet
-                : BoardPalette.navy
+        .buttonStyle(
+            BoardRailButtonStyle(
+                role: .tool(isSelected: model.boardEditor.tool == tool),
+                addsHorizontalPadding: false
+            )
         )
         .keyboardShortcut(shortcut(for: tool), modifiers: .control)
         .disabled(model.isInspectingBoardRevision)
@@ -598,10 +873,7 @@ struct SystemDesignBoardView: View {
         let title = isUndo ? "Undo" : "Redo"
         let icon = isUndo ? "arrow.uturn.backward" : "arrow.uturn.forward"
         return Button {
-            model.applyBoardAction(isUndo ? .undo : .redo)
-            interactionFeedback = isUndo
-                ? "Undid the last board edit"
-                : "Restored the last board edit"
+            performHistoryAfterEnhancedFlush(isUndo: isUndo)
         } label: {
             Group {
                 if compact {
@@ -616,6 +888,12 @@ struct SystemDesignBoardView: View {
             )
             .frame(minHeight: BoardLayoutMetrics.toolControlHeight)
         }
+        .buttonStyle(
+            BoardRailButtonStyle(
+                role: .standard,
+                addsHorizontalPadding: !compact
+            )
+        )
         .disabled(
             isUndo
                 ? !model.boardEditor.canUndo || model.isInspectingBoardRevision
@@ -670,7 +948,120 @@ struct SystemDesignBoardView: View {
         .accessibilityValue("\(Int((model.boardEditor.zoom * 100).rounded())) percent")
     }
 
+    @ViewBuilder
     private var canvas: some View {
+        if enhancedEditorFailure == nil {
+            ZStack {
+                enhancedCanvas
+                nativeCanvas(showsStatusOverlays: false)
+                    .opacity(0.001)
+                    .allowsHitTesting(false)
+            }
+        } else {
+            nativeCanvas(showsStatusOverlays: true)
+                .overlay(alignment: .topTrailing) {
+                    Button {
+                        enhancedEditorFailure = nil
+                        enhancedEditorIsReady = false
+                        enhancedEditorAttemptID = UUID()
+                        interactionFeedback = "Retrying the local Excalidraw canvas"
+                    } label: {
+                        Label("Retry Excalidraw", systemImage: "arrow.clockwise")
+                    }
+                    .buttonStyle(
+                        BoardRailButtonStyle(
+                            role: .standard,
+                            addsHorizontalPadding: true
+                        )
+                    )
+                    .padding(12)
+                    .help("Retry the bundled offline Excalidraw editor")
+                }
+        }
+    }
+
+    private var enhancedCanvas: some View {
+        let attemptID = enhancedEditorAttemptID
+        return ZStack(alignment: .topLeading) {
+            ExcalidrawBoardEditorView(
+                document: model.boardDocumentForPresentation,
+                selectedElementID: model.boardSelectedElementIDForPresentation,
+                zoom: model.boardEditor.zoom,
+                tool: model.boardEditor.tool,
+                boxKind: newBoxKind,
+                controls: enhancedEditorControls,
+                isReadOnly: model.isInspectingBoardRevision,
+                bridgeController: enhancedEditorBridgeController,
+                onSceneChange: { decoded in
+                    let previousIDs = Set(
+                        model.boardEditor.document.elements.map(\.id)
+                    )
+                    _ = model.applyBoardAction(
+                        .replaceDocument(
+                            decoded.document,
+                            selectedElementID: decoded.selectedElementID
+                        )
+                    )
+                    let accepted = model.boardEditor.document == decoded.document
+                    guard accepted else { return false }
+                    if let zoom = decoded.zoom,
+                       abs(zoom - model.boardEditor.zoom) > 0.000_1 {
+                        model.applyBoardAction(.setZoom(zoom))
+                    }
+                    if let decodedBoxKind = decoded.boxKind {
+                        newBoxKind = decodedBoxKind
+                    }
+                    if let decodedTool = decoded.tool,
+                       decodedTool != model.boardEditor.tool {
+                        model.applyBoardAction(.setTool(decodedTool))
+                    }
+                    if decoded.document.elements.contains(where: {
+                        !previousIDs.contains($0.id)
+                    }) {
+                        interactionFeedback = "Canvas element added and saved locally"
+                    }
+                    return true
+                },
+                onCommand: handleEnhancedEditorCommand,
+                onReady: {
+                    guard attemptID == enhancedEditorAttemptID,
+                          model.selectedWorkSurface == .board else { return }
+                    enhancedEditorIsReady = true
+                    interactionFeedback = "Enhanced canvas ready · edits stay local"
+                },
+                onIssue: { message in
+                    guard attemptID == enhancedEditorAttemptID,
+                          model.selectedWorkSurface == .board else { return }
+                    interactionFeedback = message
+                },
+                onFailure: { message in
+                    guard attemptID == enhancedEditorAttemptID,
+                          model.selectedWorkSurface == .board else { return }
+                    enhancedEditorFailure = message
+                    enhancedEditorIsReady = false
+                    interactionFeedback = "\(message) Using the native canvas."
+                }
+            )
+            .id(attemptID)
+            .accessibilityHidden(true)
+
+            if !enhancedEditorIsReady {
+                HStack(spacing: 8) {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text("Loading the local canvas…")
+                }
+                .font(.system(.caption, design: .rounded, weight: .medium))
+                .foregroundStyle(BoardPalette.muted)
+                .padding(12)
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel("Loading the local Board canvas")
+            }
+        }
+        .background(BoardPalette.canvas)
+    }
+
+    private func nativeCanvas(showsStatusOverlays: Bool) -> some View {
         GeometryReader { proxy in
             ScrollView([.horizontal, .vertical]) {
                 let document = model.boardDocumentForPresentation
@@ -689,7 +1080,7 @@ struct SystemDesignBoardView: View {
                     labelLayer(document)
                     boxLayer(document)
 
-                    if document.elements.isEmpty {
+                    if showsStatusOverlays && document.elements.isEmpty {
                         emptyState
                             .padding(.leading, 28)
                             .padding(.top, 26)
@@ -742,10 +1133,81 @@ struct SystemDesignBoardView: View {
                     .allowsHitTesting(false)
             }
             .overlay(alignment: .bottomLeading) {
-                boardFooter
-                    .padding(12)
+                if showsStatusOverlays {
+                    boardFooter
+                        .padding(12)
+                }
             }
         }
+    }
+
+    private func saveRevisionAfterEnhancedFlush() {
+        enhancedEditorBridgeController.performAfterFlushing {
+            Task { await model.saveBoardRevision() }
+        }
+    }
+
+    private func performHistoryAfterEnhancedFlush(isUndo: Bool) {
+        enhancedEditorBridgeController.performAfterFlushing {
+            model.applyBoardAction(isUndo ? .undo : .redo)
+            interactionFeedback = isUndo
+                ? "Undid the last board edit"
+                : "Restored the last board edit"
+        }
+    }
+
+    private func handleEnhancedEditorCommand(
+        _ command: ExcalidrawBoardCommand
+    ) {
+        switch command {
+        case .undo:
+            model.applyBoardAction(.undo)
+        case .redo:
+            model.applyBoardAction(.redo)
+        case .saveRevision:
+            guard model.isBoardDraftDirty else {
+                interactionFeedback = "Board already matches the latest revision"
+                return
+            }
+            Task { await model.saveBoardRevision() }
+        case .zoomIn:
+            model.applyBoardAction(
+                .setZoom(model.boardEditor.zoom * 1.25)
+            )
+        case .zoomOut:
+            model.applyBoardAction(
+                .setZoom(model.boardEditor.zoom / 1.25)
+            )
+        case .zoomReset:
+            model.applyBoardAction(.resetZoom)
+        case .showRevisions:
+            isRevisionHistoryPresented = true
+        case .returnToDraft:
+            Task { await model.returnToBoardDraft() }
+        case .attachRevision:
+            Task { await model.attachSelectedBoardRevision() }
+        case .exportRevision:
+            enhancedEditorBridgeController.performAfterFlushing {
+                Task { await model.exportSelectedBoardRevision() }
+            }
+        case .tool(let tool):
+            model.applyBoardAction(.setTool(tool))
+        }
+    }
+
+    private var enhancedEditorControls: ExcalidrawBoardControls {
+        let footer = boardFooterPresentation
+        return ExcalidrawBoardControls(
+            revisionStatus: model.boardRevisionStatusPresentation.fullText,
+            notice: footer.tone == .neutral ? nil : footer.text,
+            noticeIsError: footer.tone == .error,
+            isInspecting: model.isInspectingBoardRevision,
+            canSave: model.canSaveBoardRevision && model.isBoardDraftDirty,
+            hasRevisions: model.snapshot?.board.revisions.isEmpty == false,
+            canAttach: model.canAttachBoardRevision,
+            canExport: model.canExportBoardRevision,
+            isExporting: model.isBoardExporting
+        )
     }
 
     private var emptyState: some View {
@@ -770,11 +1232,7 @@ struct SystemDesignBoardView: View {
     }
 
     private var boardFooter: some View {
-        let presentation = BoardFooterPresentation.make(
-            errorMessage: model.boardErrorMessage,
-            exportMessage: model.boardExportMessage,
-            interactionFeedback: interactionFeedback
-        )
+        let presentation = boardFooterPresentation
 
         return HStack(spacing: 7) {
             Image(systemName: presentation.systemImage)
@@ -795,6 +1253,14 @@ struct SystemDesignBoardView: View {
         .accessibilityElement(children: .combine)
         .accessibilityLabel("Board status")
         .accessibilityValue(presentation.text)
+    }
+
+    private var boardFooterPresentation: BoardFooterPresentation {
+        BoardFooterPresentation.make(
+            errorMessage: model.boardErrorMessage,
+            exportMessage: model.boardExportMessage,
+            interactionFeedback: interactionFeedback
+        )
     }
 
     private func boxLayer(_ document: BoardDocument) -> some View {
@@ -1211,6 +1677,11 @@ struct SystemDesignBoardView: View {
                     y: value.location.y
                 )
                 switch model.boardEditor.tool {
+                case .line:
+                    activePenPoints = BoardGestureSampling.straightLinePoints(
+                        from: activePenPoints.first,
+                        to: point
+                    )
                 case .pen:
                     if activePenPoints.count < BoardDocument.maximumStrokePoints,
                        activePenPoints.isEmpty
@@ -1233,6 +1704,8 @@ struct SystemDesignBoardView: View {
                 guard !model.isInspectingBoardRevision else { return }
                 let point = BoardPoint(x: value.location.x, y: value.location.y)
                 switch model.boardEditor.tool {
+                case .hand:
+                    break
                 case .select:
                     select(nil)
                     interactionFeedback = "Selection cleared"
@@ -1266,7 +1739,7 @@ struct SystemDesignBoardView: View {
                     if let id = model.boardEditor.selectedElementID {
                         beginEditing(id: id, text: "Label")
                     }
-                case .pen:
+                case .line, .pen:
                     if activePenPoints.count >= 2 {
                         model.applyBoardAction(.addStroke(points: activePenPoints))
                     }
@@ -1592,10 +2065,12 @@ struct SystemDesignBoardView: View {
 
     private func shortcut(for tool: BoardEditorTool) -> KeyEquivalent {
         switch tool {
+        case .hand: "h"
         case .select: "v"
         case .connector: "c"
         case .box: "b"
         case .label: "t"
+        case .line: "l"
         case .pen: "p"
         case .eraser: "e"
         }
@@ -1603,10 +2078,12 @@ struct SystemDesignBoardView: View {
 
     private func hint(for tool: BoardEditorTool) -> String {
         switch tool {
+        case .hand: "Pan the enhanced Excalidraw canvas"
         case .select: "Select, move, relabel, or delete board elements"
         case .connector: "Choose a source box, then a target box"
-        case .box: "Click the canvas to add an architecture box"
+        case .box: "Draw on the canvas to add an architecture box"
         case .label: "Click the canvas to add editable text"
+        case .line: "Drag on the canvas to draw a straight line"
         case .pen: "Drag on the canvas to draw a freehand annotation"
         case .eraser: "Drag across a freehand annotation to erase it"
         }
@@ -1630,6 +2107,19 @@ struct SystemDesignBoardView: View {
 }
 
 private extension View {
+    @ViewBuilder
+    func optionalBoardAccessibilityAction(
+        isEnabled: Bool,
+        title: String,
+        action: @escaping () -> Void
+    ) -> some View {
+        if isEnabled {
+            accessibilityAction(named: Text(title)) { action() }
+        } else {
+            self
+        }
+    }
+
     @ViewBuilder
     func boardRootAccessibilityActions(
         isReadOnly: Bool,
@@ -1870,6 +2360,14 @@ enum BoardStrokePointerInteraction {
 enum BoardGestureSampling {
     static let minimumEraserDistance = 6.0
 
+    static func straightLinePoints(
+        from start: BoardPoint?,
+        to current: BoardPoint
+    ) -> [BoardPoint] {
+        guard let start else { return [current] }
+        return [start, current]
+    }
+
     static func shouldAcceptEraserPoint(
         _ point: BoardPoint,
         after previous: BoardPoint?
@@ -2069,10 +2567,26 @@ enum BoardRailWidthBudget {
 }
 
 enum BoardRailPresentation {
+    static func showsNativeRevisionControls(
+        selectedWorkSurface: SystemDesignWorkSurfacePane,
+        enhancedEditorIsReady: Bool
+    ) -> Bool {
+        selectedWorkSurface == .board && !enhancedEditorIsReady
+    }
+
     static func compactRevisionStatus(
         _ status: BoardRevisionStatusPresentation
     ) -> String {
         status.compactText
+    }
+}
+
+enum BoardEnhancedEditorLifecycle {
+    static func shouldInvalidateAttempt(
+        from previous: SystemDesignWorkSurfacePane,
+        to current: SystemDesignWorkSurfacePane
+    ) -> Bool {
+        previous == .board && current != .board
     }
 }
 
@@ -2103,6 +2617,123 @@ enum BoardPalette {
     static let errorText = Color(red: 169 / 255, green: 54 / 255, blue: 30 / 255)
     static let muted = Color(red: 82 / 255, green: 98 / 255, blue: 139 / 255)
     static let line = Color(red: 224 / 255, green: 226 / 255, blue: 237 / 255)
+}
+
+enum BoardRailControlRole: Equatable {
+    case standard
+    case accent
+    case tool(isSelected: Bool)
+
+    var isSelected: Bool {
+        if case .tool(let isSelected) = self { return isSelected }
+        return false
+    }
+
+    var isAccent: Bool {
+        if case .accent = self { return true }
+        return false
+    }
+}
+
+enum BoardRailInteractionMetrics {
+    static let cornerRadius: CGFloat = 9
+    static let pressedScale = 0.985
+    static let disabledOpacity = 0.5
+    static let transitionDuration = 0.12
+}
+
+struct BoardRailButtonStyle: ButtonStyle {
+    let role: BoardRailControlRole
+    let addsHorizontalPadding: Bool
+
+    func makeBody(configuration: Configuration) -> some View {
+        BoardRailButtonStyleBody(
+            configuration: configuration,
+            role: role,
+            addsHorizontalPadding: addsHorizontalPadding
+        )
+    }
+}
+
+private struct BoardRailButtonStyleBody: View {
+    let configuration: ButtonStyleConfiguration
+    let role: BoardRailControlRole
+    let addsHorizontalPadding: Bool
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.isEnabled) private var isEnabled
+    @State private var isHovered = false
+
+    var body: some View {
+        configuration.label
+            .padding(.horizontal, addsHorizontalPadding ? 10 : 0)
+            .frame(minHeight: BoardLayoutMetrics.minimumHitTarget)
+            .foregroundStyle(foreground)
+            .background(
+                background,
+                in: RoundedRectangle(
+                    cornerRadius: BoardRailInteractionMetrics.cornerRadius,
+                    style: .continuous
+                )
+            )
+            .overlay {
+                RoundedRectangle(
+                    cornerRadius: BoardRailInteractionMetrics.cornerRadius,
+                    style: .continuous
+                )
+                .stroke(border, lineWidth: 1)
+            }
+            .contentShape(Rectangle())
+            .opacity(isEnabled ? 1 : BoardRailInteractionMetrics.disabledOpacity)
+            .scaleEffect(
+                reduceMotion || !configuration.isPressed
+                    ? 1
+                    : BoardRailInteractionMetrics.pressedScale
+            )
+            .animation(
+                reduceMotion
+                    ? nil
+                    : .easeOut(
+                        duration: BoardRailInteractionMetrics.transitionDuration
+                    ),
+                value: isHovered
+            )
+            .animation(
+                reduceMotion
+                    ? nil
+                    : .easeOut(
+                        duration: BoardRailInteractionMetrics.transitionDuration
+                    ),
+                value: configuration.isPressed
+            )
+            .onHover { isHovered = $0 }
+    }
+
+    private var foreground: Color {
+        guard isEnabled else { return BoardPalette.muted }
+        return role.isAccent || role.isSelected
+            ? BoardPalette.violet
+            : BoardPalette.navy
+    }
+
+    private var background: Color {
+        guard isEnabled else { return .clear }
+        if role.isSelected { return BoardPalette.violet.opacity(0.14) }
+        if configuration.isPressed { return BoardPalette.violet.opacity(0.13) }
+        if isHovered { return BoardPalette.violet.opacity(0.08) }
+        if role.isAccent { return BoardPalette.violet.opacity(0.055) }
+        return .clear
+    }
+
+    private var border: Color {
+        guard isEnabled else { return BoardPalette.line.opacity(0.7) }
+        if role.isSelected { return BoardPalette.violet.opacity(0.72) }
+        if role.isAccent { return BoardPalette.violet.opacity(0.32) }
+        if isHovered || configuration.isPressed {
+            return BoardPalette.violet.opacity(0.22)
+        }
+        return .clear
+    }
 }
 
 private struct BoardNodeVisualLayer: View {
@@ -2434,5 +3065,83 @@ enum BoardKeyboardPlacement {
             origin: BoardPoint(x: x, y: y),
             size: BoardSize(width: width, height: height)
         )
+    }
+}
+
+private struct WorkSurfaceTab: View {
+    let pane: SystemDesignWorkSurfacePane
+    let isSelected: Bool
+    let compact: Bool
+    let isEnabled: Bool
+    let action: () -> Void
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var isHovered = false
+
+    var body: some View {
+        Button {
+            action()
+        } label: {
+            Group {
+                if compact {
+                    Image(systemName: pane.systemImage)
+                        .accessibilityHidden(true)
+                } else {
+                    Text(pane.title)
+                }
+            }
+            .font(.system(.body, design: .rounded, weight: isSelected ? .semibold : .regular))
+            .foregroundStyle(isSelected ? BoardPalette.ink : BoardPalette.muted)
+            .frame(minWidth: compact ? 44 : nil, minHeight: 44)
+            .padding(.horizontal, compact ? 0 : 4)
+            .contentShape(Rectangle())
+            .background(
+                isSelected
+                    ? BoardPalette.violet.opacity(0.08)
+                    : (isHovered && isEnabled ? BoardPalette.violet.opacity(0.05) : .clear),
+                in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+            )
+            .overlay(alignment: .bottom) {
+                if isSelected {
+                    Capsule()
+                        .fill(BoardPalette.violet)
+                        .frame(height: 3)
+                }
+            }
+        }
+        .buttonStyle(
+            WorkSurfacePressStyle(
+                isEnabled: isEnabled,
+                reduceMotion: reduceMotion
+            )
+        )
+        .disabled(!isEnabled)
+        .onHover { hovering in
+            isHovered = hovering && isEnabled
+        }
+        .animation(
+            reduceMotion ? nil : .easeOut(duration: 0.14),
+            value: isHovered
+        )
+        .help(pane.title)
+        .accessibilityLabel(pane.title)
+        .accessibilityHint("Shows the \(pane.title) work surface")
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
+        .accessibilityIdentifier("work-surface-tab-\(pane.rawValue)")
+    }
+}
+
+private struct WorkSurfacePressStyle: ButtonStyle {
+    let isEnabled: Bool
+    let reduceMotion: Bool
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed && isEnabled ? 0.97 : 1)
+            .opacity(configuration.isPressed && isEnabled ? 0.82 : 1)
+            .animation(
+                reduceMotion ? nil : .easeOut(duration: 0.10),
+                value: configuration.isPressed
+            )
     }
 }

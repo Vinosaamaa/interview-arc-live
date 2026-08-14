@@ -1,5 +1,35 @@
 import AppKit
 
+@MainActor
+final class InterviewArcLiveTerminationGate {
+    typealias Preparation = @MainActor () async -> Bool
+    typealias Reply = @MainActor (Bool) -> Void
+
+    private let preparation: Preparation
+    private var preparationTask: Task<Void, Never>?
+    private var pendingReplies: [Reply] = []
+
+    init(preparation: @escaping Preparation) {
+        self.preparation = preparation
+    }
+
+    func requestTermination(
+        reply: @escaping Reply
+    ) -> NSApplication.TerminateReply {
+        pendingReplies.append(reply)
+        guard preparationTask == nil else { return .terminateLater }
+        preparationTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            let shouldTerminate = await preparation()
+            preparationTask = nil
+            let replies = pendingReplies
+            pendingReplies.removeAll()
+            replies.forEach { $0(shouldTerminate) }
+        }
+        return .terminateLater
+    }
+}
+
 @main
 @MainActor
 final class InterviewArcLiveApp: NSObject, NSApplicationDelegate {
@@ -9,8 +39,8 @@ final class InterviewArcLiveApp: NSObject, NSApplicationDelegate {
         hostedController: try? HostedPracticeController.makeDefault()
     )
     private var presentationCoordinator: InterviewRoomPresentationCoordinator?
-    private var terminationTask: Task<Void, Never>?
     private var activationRefreshTask: Task<Void, Never>?
+    private var terminationGate: InterviewArcLiveTerminationGate?
 
     static func main() {
         let application = NSApplication.shared
@@ -24,6 +54,13 @@ final class InterviewArcLiveApp: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         installMainMenu()
+        terminationGate = InterviewArcLiveTerminationGate { [weak model] in
+            guard let model else { return true }
+            guard await model.prepareLocalPersistenceForTermination() else {
+                return false
+            }
+            return await model.prepareHostedForTermination()
+        }
         let coordinator = InterviewRoomPresentationCoordinator(model: model)
         presentationCoordinator = coordinator
         coordinator.start()
@@ -55,14 +92,10 @@ final class InterviewArcLiveApp: NSObject, NSApplicationDelegate {
     func applicationShouldTerminate(
         _ sender: NSApplication
     ) -> NSApplication.TerminateReply {
-        guard terminationTask == nil else { return .terminateLater }
-        terminationTask = Task { @MainActor [weak self, weak sender] in
-            guard let self, let sender else { return }
-            let prepared = await model.prepareHostedForTermination()
-            terminationTask = nil
-            sender.reply(toApplicationShouldTerminate: prepared)
+        guard let terminationGate else { return .terminateNow }
+        return terminationGate.requestTermination { [weak sender] shouldTerminate in
+            sender?.reply(toApplicationShouldTerminate: shouldTerminate)
         }
-        return .terminateLater
     }
 
     func applicationWillTerminate(_ notification: Notification) {

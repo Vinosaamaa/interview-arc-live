@@ -16,6 +16,12 @@ final class BoardNodePresentationTests: XCTestCase {
         XCTAssertEqual(BoardCanvasVisualMetrics.gridDotDiameter, 1.6)
         XCTAssertEqual(BoardCanvasVisualMetrics.gridDotOpacity, 0.22)
         XCTAssertEqual(BoardCanvasVisualMetrics.footerMaximumWidth, 420)
+        XCTAssertEqual(BoardRailInteractionMetrics.cornerRadius, 9)
+        XCTAssertEqual(BoardRailInteractionMetrics.pressedScale, 0.985)
+        XCTAssertEqual(BoardRailInteractionMetrics.disabledOpacity, 0.5)
+        XCTAssertEqual(BoardRailInteractionMetrics.transitionDuration, 0.12)
+        XCTAssertEqual(BoardEditorTool.hand.rawValue, "hand")
+        XCTAssertEqual(BoardEditorTool.line.rawValue, "line")
     }
 
     func testCompactBoardRailsFitTheSupported680PointBoardWidth() {
@@ -33,6 +39,7 @@ final class BoardNodePresentationTests: XCTestCase {
             boardWidth
         )
         XCTAssertEqual(worstCaseRevisionWidth, 428)
+        XCTAssertEqual(BoardRailWidthBudget.compactHorizontalPadding, 8)
         XCTAssertEqual(BoardRailWidthBudget.compactToolbarRequiredWidth, 483)
         XCTAssertLessThanOrEqual(worstCaseRevisionWidth, boardWidth)
         XCTAssertLessThanOrEqual(
@@ -238,6 +245,60 @@ final class BoardNodePresentationTests: XCTestCase {
         )
     }
 
+    func testNativeRevisionControlsAppearOnlyForBoardFallback() {
+        XCTAssertTrue(
+            BoardRailPresentation.showsNativeRevisionControls(
+                selectedWorkSurface: .board,
+                enhancedEditorIsReady: false
+            )
+        )
+        XCTAssertFalse(
+            BoardRailPresentation.showsNativeRevisionControls(
+                selectedWorkSurface: .board,
+                enhancedEditorIsReady: true
+            )
+        )
+        XCTAssertFalse(
+            BoardRailPresentation.showsNativeRevisionControls(
+                selectedWorkSurface: .brief,
+                enhancedEditorIsReady: false
+            )
+        )
+        XCTAssertFalse(
+            BoardRailPresentation.showsNativeRevisionControls(
+                selectedWorkSurface: .notes,
+                enhancedEditorIsReady: false
+            )
+        )
+    }
+
+    func testEnhancedEditorAttemptInvalidatesWhenLeavingBoard() {
+        XCTAssertTrue(
+            BoardEnhancedEditorLifecycle.shouldInvalidateAttempt(
+                from: .board,
+                to: .brief
+            )
+        )
+        XCTAssertTrue(
+            BoardEnhancedEditorLifecycle.shouldInvalidateAttempt(
+                from: .board,
+                to: .notes
+            )
+        )
+        XCTAssertFalse(
+            BoardEnhancedEditorLifecycle.shouldInvalidateAttempt(
+                from: .brief,
+                to: .board
+            )
+        )
+        XCTAssertFalse(
+            BoardEnhancedEditorLifecycle.shouldInvalidateAttempt(
+                from: .board,
+                to: .board
+            )
+        )
+    }
+
     func testRevisionMenuBoundsRecentItemsAndFullBrowserKeepsEveryRevision() {
         let revisions = (0..<8).map { ordinal in
             BoardRevision(
@@ -270,7 +331,11 @@ final class BoardNodePresentationTests: XCTestCase {
         let rect = CGRect(x: 20, y: 30, width: 160, height: 90)
         for visual in visuals {
             XCTAssertFalse(visual.outlinePath(in: rect).commands.isEmpty)
-            XCTAssertFalse(visual.pictogramPaths(in: rect).isEmpty)
+            if visual.pictogram == .none {
+                XCTAssertTrue(visual.pictogramPaths(in: rect).isEmpty)
+            } else {
+                XCTAssertFalse(visual.pictogramPaths(in: rect).isEmpty)
+            }
             XCTAssertEqual(
                 visual.outlinePath(in: rect).svgPathData,
                 visual.outlinePath(in: rect).svgPathData

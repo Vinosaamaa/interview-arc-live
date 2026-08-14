@@ -21,7 +21,10 @@ Codex App Server, and can explicitly generate or replay a private local
 interviewer voice. Its full System Design room follows the checked-in issue #1
 hierarchy and includes a functional Board with editable boxes, connectors,
 labels, freehand annotations, undo/redo, zoom, immutable revisions, exact Turn
-attachments, and private deterministic Draw.io/SVG/PNG exports. Product
+attachments, and private deterministic Draw.io/SVG/PNG exports. Its enhanced
+canvas is a locally bundled, network-blocked Excalidraw Adapter; the bounded
+native Board Document remains the only canonical source, and the native canvas
+remains the recovery fallback. Product
 decisions live in
 [issue #1](https://github.com/Vinosaamaa/interview-arc-live/issues/1); the
 foundation is tracked by
@@ -61,6 +64,18 @@ Session Manifest, recovery, deterministic-rendering, and presentation tests in
 that Xcode lane. After an authorized merge, package and sign exact `main`, then
 verify the staged and installed artifacts with the public-safe headed Board
 save/attach/export/relaunch recovery smoke from issue #17.
+
+When changing the enhanced Board editor, rebuild the checked-in local assets
+from the exact lockfile. The bundle command replaces only the generated Board
+editor resource directory; it does not change the canonical Board model or
+contact a hosted canvas at runtime.
+
+```bash
+cd Web/BoardEditor
+npm ci --ignore-scripts
+npm audit
+npm run bundle
+```
 
 The preview keeps its Session Manifest and source recordings under Live's local
 Application Support root. Manual Hand off joins selected Groq transcripts and

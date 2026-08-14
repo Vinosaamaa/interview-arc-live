@@ -81,7 +81,8 @@ let package = Package(
                 "InterviewArcLiveQwenAdapter",
                 "InterviewArcLiveSpeechOutputAdapter",
                 "InterviewArcLiveVoiceAdapter",
-            ]
+            ],
+            resources: [.copy("Resources/BoardEditor")]
         ),
         .executableTarget(
             name: "InterviewArcLiveCodexSmoke",

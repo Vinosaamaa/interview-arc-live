@@ -8,6 +8,9 @@ struct SystemDesignRoomView: View {
     @ObservedObject var model: SystemDesignRoomModel
     let onCollapse: () -> Void
     @State private var isModelRemovalConfirmationPresented = false
+    @State private var preferredTurnlineWidth: CGFloat?
+    @State private var isWorkspaceDividerHovered = false
+    @GestureState private var splitDragTranslation: CGFloat = 0
 
     init(
         model: SystemDesignRoomModel,
@@ -20,31 +23,37 @@ struct SystemDesignRoomView: View {
     var body: some View {
         VStack(spacing: 0) {
             header
-            question
-            if let errorMessage = model.errorMessage {
-                recoveryBanner(errorMessage)
-            }
-            if let codexMessage = model.codexAttentionMessage {
-                codexReadinessBanner(codexMessage)
-            }
-
             GeometryReader { workspace in
+                let baseTurnlineWidth = FullRoomLayout.turnlineBaseWidth(
+                    for: workspace.size.width,
+                    preferredTurnlineWidth: preferredTurnlineWidth
+                )
                 let widths = FullRoomLayout.workspaceWidths(
-                    for: workspace.size.width
+                    for: workspace.size.width,
+                    preferredTurnlineWidth: preferredTurnlineWidth
+                )
+                let splitPreview = FullRoomLayout.splitDragPreview(
+                    baseWidth: baseTurnlineWidth,
+                    dragTranslation: splitDragTranslation,
+                    workspaceWidth: workspace.size.width
                 )
 
                 HStack(spacing: 0) {
-                    transcript
+                    conversationPane
                         .frame(
                             width: widths.turnlineWidth,
                             height: workspace.size.height
                         )
                         .overlay(alignment: .trailing) {
-                            Rectangle()
-                                .fill(LivePalette.line)
-                                .frame(width: widths.visualDividerWidth)
-                                .allowsHitTesting(false)
-                                .accessibilityHidden(true)
+                            workspaceDivider(
+                                baseWidth: baseTurnlineWidth,
+                                currentWidth: splitPreview.proposedTurnlineWidth,
+                                totalWidth: widths.totalWidth
+                            )
+                            .offset(
+                                x: FullRoomLayout.workspaceDividerHitWidth / 2
+                                    + splitPreview.translation
+                            )
                         }
                     board
                         .frame(
@@ -57,6 +66,9 @@ struct SystemDesignRoomView: View {
                     width: widths.totalWidth,
                     height: workspace.size.height,
                     alignment: .leading
+                )
+                .coordinateSpace(
+                    name: FullRoomLayout.workspaceCoordinateSpaceName
                 )
             }
 
@@ -315,15 +327,15 @@ struct SystemDesignRoomView: View {
 
     private var collapseButton: some View {
         Button(action: onCollapse) {
-            Image(systemName: "sidebar.trailing")
+            Image(systemName: "arrow.down.right.and.arrow.up.left")
                 .frame(
                     width: FullRoomLayout.minimumActionHitTarget,
                     height: FullRoomLayout.minimumActionHitTarget
                 )
         }
-        .buttonStyle(.plain)
+        .buttonStyle(RoomChromeButtonStyle())
         .accessibilityIdentifier(FullRoomAccessibility.collapse)
-        .accessibilityLabel(FullRoomHeaderAccessibility.collapseLabel)
+        .accessibilityLabel("Collapse to compact controls")
         .accessibilityHint("Keeps the same room and board in compact controls")
     }
 
@@ -370,6 +382,20 @@ struct SystemDesignRoomView: View {
             .accessibilityLabel(presentation.title)
             .accessibilityHint("Open Mara’s menu for local voice controls")
         }
+    }
+
+    private var conversationPane: some View {
+        VStack(spacing: 0) {
+            question
+            if let errorMessage = model.errorMessage {
+                recoveryBanner(errorMessage)
+            }
+            if let codexMessage = model.codexAttentionMessage {
+                codexReadinessBanner(codexMessage)
+            }
+            transcript
+        }
+        .background(LivePalette.paper)
     }
 
     private var question: some View {
@@ -424,23 +450,6 @@ struct SystemDesignRoomView: View {
 
     private var transcript: some View {
         VStack(spacing: 0) {
-            HStack(alignment: .firstTextBaseline, spacing: 12) {
-                Text("TURNLINE")
-                    .font(.system(.callout, design: .monospaced, weight: .bold))
-                    .tracking(1.1)
-                    .foregroundStyle(LivePalette.navy)
-                Spacer(minLength: 12)
-                Text(turnlineSummary)
-                    .font(.system(.caption, design: .monospaced, weight: .semibold))
-                    .foregroundStyle(LivePalette.muted)
-                    .lineLimit(1)
-            }
-            .padding(.horizontal, 30)
-            .frame(minHeight: FullRoomLayout.turnlineHeaderHeight)
-            .overlay(alignment: .bottom) {
-                Rectangle().fill(LivePalette.line).frame(height: 1)
-            }
-
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 0) {
                     if model.usesHostedAuthority && !model.hostedPairs.isEmpty {
@@ -490,6 +499,69 @@ struct SystemDesignRoomView: View {
         }
         .background(LivePalette.paper)
         .accessibilityIdentifier(FullRoomAccessibility.turnline)
+    }
+
+    private func workspaceDivider(
+        baseWidth: CGFloat,
+        currentWidth: CGFloat,
+        totalWidth: CGFloat
+    ) -> some View {
+        ZStack {
+            Rectangle()
+                .fill(LivePalette.line)
+                .frame(width: FullRoomLayout.workspaceVisualDividerWidth)
+            Capsule()
+                .fill(LivePalette.violet.opacity(0.72))
+                .frame(width: 3, height: 42)
+                .opacity(isWorkspaceDividerHovered ? 1 : 0)
+        }
+        .frame(width: FullRoomLayout.workspaceDividerHitWidth)
+        .contentShape(Rectangle())
+        .onHover { hovering in
+            isWorkspaceDividerHovered = hovering
+            if hovering { NSCursor.resizeLeftRight.push() }
+            else { NSCursor.pop() }
+        }
+        .onDisappear {
+            guard isWorkspaceDividerHovered else { return }
+            NSCursor.pop()
+            isWorkspaceDividerHovered = false
+        }
+        .animation(.easeOut(duration: 0.14), value: isWorkspaceDividerHovered)
+        .gesture(
+            DragGesture(
+                minimumDistance: 1,
+                coordinateSpace: .named(
+                    FullRoomLayout.workspaceCoordinateSpaceName
+                )
+            )
+                .updating($splitDragTranslation) { value, state, _ in
+                    state = value.translation.width
+                }
+                .onEnded { value in
+                    preferredTurnlineWidth = FullRoomLayout.committedTurnlineWidth(
+                        baseWidth: baseWidth,
+                        dragTranslation: value.translation.width,
+                        workspaceWidth: totalWidth
+                    )
+                }
+        )
+        .onTapGesture(count: 2) {
+            preferredTurnlineWidth = nil
+        }
+        .help("Drag to resize the question and Turnline")
+        .accessibilityElement()
+        .accessibilityLabel("Resize question and Turnline pane")
+        .accessibilityValue(
+            "\(Int((currentWidth / max(totalWidth, 1) * 100).rounded())) percent, \(Int(currentWidth.rounded())) points wide"
+        )
+        .accessibilityAdjustableAction { direction in
+            let delta: CGFloat = direction == .increment ? 24 : -24
+            preferredTurnlineWidth = FullRoomLayout.clampedTurnlineWidth(
+                currentWidth + delta,
+                for: totalWidth
+            )
+        }
     }
 
     private var preparingEmptyState: some View {
@@ -900,9 +972,7 @@ struct SystemDesignRoomView: View {
                         minHeight: FullRoomLayout.minimumActionHitTarget
                     )
             }
-            .buttonStyle(.borderedProminent)
-            .buttonBorderShape(.capsule)
-            .tint(LivePalette.violet)
+            .buttonStyle(RoomPrimaryActionButtonStyle())
             .disabled(!model.canAct)
             .keyboardShortcut(.return, modifiers: [.command])
             .accessibilityIdentifier(FullRoomAccessibility.primaryAction)
@@ -917,7 +987,7 @@ struct SystemDesignRoomView: View {
                         .font(.system(.body, design: .rounded, weight: .semibold))
                         .frame(minWidth: 86, minHeight: FullRoomLayout.minimumActionHitTarget)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(RoomChromeButtonStyle())
                 .foregroundStyle(LivePalette.navy)
                 .disabled(model.isWorking)
                 .keyboardShortcut(.space, modifiers: [.command])
@@ -931,7 +1001,7 @@ struct SystemDesignRoomView: View {
                         .font(.system(.body, design: .rounded, weight: .semibold))
                         .frame(minWidth: 86, minHeight: FullRoomLayout.minimumActionHitTarget)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(RoomChromeButtonStyle())
                 .foregroundStyle(LivePalette.navy)
                 .disabled(!model.canRecordSegment)
                 .keyboardShortcut(.space, modifiers: [.command])
@@ -966,7 +1036,7 @@ struct SystemDesignRoomView: View {
                     .font(.system(.body, design: .rounded, weight: .medium))
                     .frame(minWidth: 70, minHeight: FullRoomLayout.minimumActionHitTarget)
             }
-            .buttonStyle(.plain)
+            .buttonStyle(RoomChromeButtonStyle(tint: LivePalette.warning))
             .foregroundStyle(LivePalette.warning)
             .accessibilityIdentifier(FullRoomAccessibility.endAction)
         }
@@ -983,7 +1053,7 @@ struct SystemDesignRoomView: View {
                     .horizontal,
                     FullRoomLayout.floorOutlineHorizontalInset
                 )
-                .padding(.vertical, 8)
+                .padding(.vertical, FullRoomLayout.floorOutlineVerticalInset)
         }
     }
 
@@ -1020,21 +1090,21 @@ struct SystemDesignRoomView: View {
     }
 
     private func recoveryBanner(_ message: String) -> some View {
-        HStack(spacing: 10) {
-            Image(systemName: "exclamationmark.triangle.fill")
+        VStack(alignment: .leading, spacing: 8) {
+            Label(message, systemImage: "exclamationmark.triangle.fill")
+                .font(.system(.caption, design: .rounded, weight: .medium))
                 .foregroundStyle(LivePalette.warning)
-                .accessibilityHidden(true)
-            Text(message)
-                .font(.system(.callout, design: .rounded, weight: .medium))
                 .fixedSize(horizontal: false, vertical: true)
-            Spacer()
             if model.needsGroqCredential {
                 Button("Add Groq key") {
                     model.presentCredentialSetup()
                 }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
             }
         }
-        .padding(.horizontal, 24)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 16)
         .padding(.vertical, 10)
         .background(LivePalette.warning.opacity(0.12))
         .overlay(alignment: .bottom) {
@@ -1043,26 +1113,25 @@ struct SystemDesignRoomView: View {
     }
 
     private func codexReadinessBanner(_ message: String) -> some View {
-        HStack(spacing: 10) {
-            Image(systemName: model.codexStatusIcon)
-                .foregroundStyle(LivePalette.warning)
-                .accessibilityHidden(true)
+        VStack(alignment: .leading, spacing: 8) {
             VStack(alignment: .leading, spacing: 2) {
-                Text(model.codexStatusTitle)
+                Label(model.codexStatusTitle, systemImage: model.codexStatusIcon)
                     .font(.system(.callout, design: .rounded, weight: .semibold))
+                    .foregroundStyle(LivePalette.warning)
                 Text(message)
                     .font(.system(.callout, design: .rounded))
                     .foregroundStyle(LivePalette.muted)
                     .fixedSize(horizontal: false, vertical: true)
             }
-            Spacer(minLength: 12)
             Button("Check Codex") {
                 Task { await model.checkCodex() }
             }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
             .disabled(model.isCheckingCodex)
             .accessibilityHint("Runs a private local compatibility and sign-in check")
         }
-        .padding(.horizontal, 24)
+        .padding(.horizontal, 16)
         .padding(.vertical, 10)
         .background(LivePalette.warning.opacity(0.1))
         .overlay(alignment: .bottom) {
@@ -1083,41 +1152,134 @@ struct FullRoomWorkspaceWidths: Equatable {
     }
 }
 
+struct FullRoomSplitDragPreview: Equatable {
+    let translation: CGFloat
+    let proposedTurnlineWidth: CGFloat
+}
+
+private struct RoomChromeButtonStyle: ButtonStyle {
+    var tint: Color = LivePalette.violet
+
+    func makeBody(configuration: Configuration) -> some View {
+        RoomChromeButtonBody(
+            configuration: configuration,
+            tint: tint
+        )
+    }
+
+    private struct RoomChromeButtonBody: View {
+        let configuration: ButtonStyleConfiguration
+        let tint: Color
+        @Environment(\.accessibilityReduceMotion) private var reduceMotion
+        @State private var isHovering = false
+
+        var body: some View {
+            configuration.label
+                .contentShape(RoundedRectangle(cornerRadius: 9))
+                .background {
+                    RoundedRectangle(cornerRadius: 9, style: .continuous)
+                        .fill(
+                            tint.opacity(
+                                configuration.isPressed
+                                    ? 0.16
+                                    : (isHovering ? 0.09 : 0)
+                            )
+                        )
+                }
+                .scaleEffect(
+                    reduceMotion
+                        ? 1
+                        : (configuration.isPressed ? 0.98 : (isHovering ? 1.01 : 1))
+                )
+                .onHover { isHovering = $0 }
+                .animation(
+                    reduceMotion ? nil : .easeOut(duration: 0.14),
+                    value: isHovering
+                )
+                .animation(
+                    reduceMotion ? nil : .easeOut(duration: 0.08),
+                    value: configuration.isPressed
+                )
+        }
+    }
+}
+
+private struct RoomPrimaryActionButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        RoomPrimaryActionButtonBody(configuration: configuration)
+    }
+
+    private struct RoomPrimaryActionButtonBody: View {
+        let configuration: ButtonStyleConfiguration
+        @Environment(\.isEnabled) private var isEnabled
+        @Environment(\.accessibilityReduceMotion) private var reduceMotion
+        @State private var isHovering = false
+
+        var body: some View {
+            configuration.label
+                .frame(height: FullRoomLayout.minimumActionHitTarget)
+                .foregroundStyle(
+                    isEnabled ? Color.white : LivePalette.violet.opacity(0.42)
+                )
+                .background {
+                    Capsule()
+                        .fill(
+                            isEnabled
+                                ? LivePalette.violet.opacity(
+                                    configuration.isPressed
+                                        ? 0.82
+                                        : (isHovering ? 0.92 : 1)
+                                )
+                                : LivePalette.violet.opacity(0.12)
+                        )
+                }
+                .contentShape(Capsule())
+                .scaleEffect(
+                    reduceMotion || !isEnabled
+                        ? 1
+                        : (configuration.isPressed ? 0.98 : 1)
+                )
+                .onHover { isHovering = $0 }
+                .animation(
+                    reduceMotion ? nil : .easeOut(duration: 0.12),
+                    value: isHovering
+                )
+        }
+    }
+}
+
 enum FullRoomLayout {
-    static let minimumWindowWidth: CGFloat = 1_080
+    static let minimumWindowWidth: CGFloat = 800
     static let defaultWindowWidth: CGFloat = 1_180
-    static let headerHeight: CGFloat = 70
-    static let questionTitleSize: CGFloat = 40
-    static let questionHorizontalPadding: CGFloat = 56
-    static let questionTopPadding: CGFloat = 48
-    static let questionBottomPadding: CGFloat = 12
-    static let questionStackSpacing: CGFloat = 24
+    static let headerHeight: CGFloat = 50
+    static let questionTitleSize: CGFloat = 32
+    static let questionHorizontalPadding: CGFloat = 32
+    static let questionTopPadding: CGFloat = 28
+    static let questionBottomPadding: CGFloat = 24
+    static let questionStackSpacing: CGFloat = 14
     static let questionLineLimit = 2
     static let questionMinimumScaleFactor: CGFloat = 0.82
-    /// Keeps the approved single-line mockup band unchanged.
-    static let questionBandOneLineHeight: CGFloat = 148
-    /// Reserves one full rounded 40-point title line without clipping.
-    static let questionAdditionalLineHeight: CGFloat = 48
+    static let questionBandOneLineHeight: CGFloat = 132
+    static let questionAdditionalLineHeight: CGFloat = 38
     static let questionBandMinimumHeight = questionBandOneLineHeight
-    static let turnlineHeaderHeight: CGFloat = 58
-    static let turnlineWidthFraction: CGFloat = 0.37
+    static let turnlineWidthFraction: CGFloat = 0.34
     static let boardWidthFraction: CGFloat = 1 - turnlineWidthFraction
     static let workspaceVisualDividerWidth: CGFloat = 1
-    static let turnlineMinimumWidth: CGFloat = 380
-    static let turnlineHorizontalPadding: CGFloat = 64
-    static let turnlineEntryGap: CGFloat = 42
-    static let turnlineBodyFontSize: CGFloat = 24
-    static let boardMinimumWidth: CGFloat = 620
-    static let floorRailHeight: CGFloat = 96
-    static let floorStatusWidth: CGFloat = 184
-    static let floorContentHorizontalPadding: CGFloat = 48
-    static let floorOutlineHorizontalInset: CGFloat = 24
+    static let workspaceDividerHitWidth: CGFloat = 13
+    static let turnlineMinimumWidth: CGFloat = 260
+    static let turnlineHorizontalPadding: CGFloat = 32
+    static let turnlineEntryGap: CGFloat = 24
+    static let turnlineBodyFontSize: CGFloat = 20
+    static let boardMinimumWidth: CGFloat = 483
+    static let floorRailHeight: CGFloat = 55
+    static let floorStatusWidth: CGFloat = 144
+    static let floorContentHorizontalPadding: CGFloat = 24
+    static let floorOutlineHorizontalInset: CGFloat = 16
+    static let floorOutlineVerticalInset: CGFloat = 4
     static let minimumActionHitTarget: CGFloat = 44
-    static let requiredWorkspaceHeight: CGFloat = 380
-    static let minimumWindowHeight = headerHeight
-        + questionBandMaximumHeight
-        + floorRailHeight
-        + requiredWorkspaceHeight
+    static let requiredWorkspaceHeight: CGFloat = 320
+    static let requiredTurnlineHeight: CGFloat = 200
+    static let minimumWindowHeight: CGFloat = 500
 
     static var questionBandMaximumHeight: CGFloat {
         questionBandHeight(forLineCount: questionLineLimit)
@@ -1126,18 +1288,60 @@ enum FullRoomLayout {
     /// The full-size-content window draws into the titlebar. This keeps the
     /// brand beyond the standard close/minimize/zoom group while the custom
     /// header occupies that same row instead of leaving a blank strip.
-    static let trafficLightClearance: CGFloat = 84
+    static let trafficLightClearance: CGFloat = 92
+    static let workspaceCoordinateSpaceName = "system-design-workspace"
+
+    static func turnlineBaseWidth(
+        for workspaceWidth: CGFloat,
+        preferredTurnlineWidth: CGFloat? = nil
+    ) -> CGFloat {
+        let totalWidth = max(0, workspaceWidth)
+        return clampedTurnlineWidth(
+            preferredTurnlineWidth ?? totalWidth * turnlineWidthFraction,
+            for: totalWidth
+        )
+    }
 
     static func workspaceWidths(
-        for workspaceWidth: CGFloat
+        for workspaceWidth: CGFloat,
+        preferredTurnlineWidth: CGFloat? = nil
     ) -> FullRoomWorkspaceWidths {
         let totalWidth = max(0, workspaceWidth)
-        let turnlineWidth = totalWidth * turnlineWidthFraction
+        let turnlineWidth = turnlineBaseWidth(
+            for: totalWidth,
+            preferredTurnlineWidth: preferredTurnlineWidth
+        )
         return FullRoomWorkspaceWidths(
             totalWidth: totalWidth,
             turnlineWidth: turnlineWidth,
             boardWidth: totalWidth - turnlineWidth,
             visualDividerWidth: workspaceVisualDividerWidth
+        )
+    }
+
+    static func splitDragPreview(
+        baseWidth: CGFloat,
+        dragTranslation: CGFloat,
+        workspaceWidth: CGFloat
+    ) -> FullRoomSplitDragPreview {
+        let proposedTurnlineWidth = clampedTurnlineWidth(
+            baseWidth + dragTranslation,
+            for: workspaceWidth
+        )
+        return FullRoomSplitDragPreview(
+            translation: proposedTurnlineWidth - baseWidth,
+            proposedTurnlineWidth: proposedTurnlineWidth
+        )
+    }
+
+    static func committedTurnlineWidth(
+        baseWidth: CGFloat,
+        dragTranslation: CGFloat,
+        workspaceWidth: CGFloat
+    ) -> CGFloat {
+        clampedTurnlineWidth(
+            baseWidth + dragTranslation,
+            for: workspaceWidth
         )
     }
 
@@ -1147,6 +1351,16 @@ enum FullRoomLayout {
 
     static func boardIdealWidth(for workspaceWidth: CGFloat) -> CGFloat {
         workspaceWidths(for: workspaceWidth).boardWidth
+    }
+
+    static func clampedTurnlineWidth(
+        _ proposedWidth: CGFloat,
+        for workspaceWidth: CGFloat
+    ) -> CGFloat {
+        let totalWidth = max(0, workspaceWidth)
+        let maximum = max(0, totalWidth - boardMinimumWidth)
+        let minimum = min(turnlineMinimumWidth, maximum)
+        return min(max(proposedWidth, minimum), maximum)
     }
 
     static func questionBandHeight(forLineCount lineCount: Int) -> CGFloat {
@@ -1159,12 +1373,23 @@ enum FullRoomLayout {
         for windowHeight: CGFloat,
         questionLineCount: Int = questionLineLimit
     ) -> CGFloat {
-        max(
+        _ = questionLineCount
+        return max(
             0,
             windowHeight
                 - headerHeight
-                - questionBandHeight(forLineCount: questionLineCount)
                 - floorRailHeight
+        )
+    }
+
+    static func minimumTurnlineHeight(
+        for windowHeight: CGFloat,
+        questionLineCount: Int = questionLineLimit
+    ) -> CGFloat {
+        max(
+            0,
+            minimumWorkspaceHeight(for: windowHeight)
+                - questionBandHeight(forLineCount: questionLineCount)
         )
     }
 }
@@ -1181,6 +1406,9 @@ struct FullRoomHeaderLayoutState: Equatable {
     let attention: FullRoomHeaderAttention
 
     var presentation: FullRoomHeaderPresentation {
+        if windowWidth < FullRoomHeaderStatusLayout.minimumWideHeaderWidth {
+            return .compact
+        }
         if attention != .none,
            windowWidth <= FullRoomHeaderLayout.attentionCompactMaximumWidth {
             return .compact

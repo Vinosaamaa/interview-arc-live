@@ -3,15 +3,15 @@ import XCTest
 @testable import InterviewArcLive
 
 final class SystemDesignRoomLayoutTests: XCTestCase {
-    func testSupportedWidthsUseTheDeterministicTurnlineBoardComposition() {
+    func testSupportedWidthsUseTheDefaultResizableTurnlineBoardComposition() {
         let contracts: [(
             total: CGFloat,
             turnline: CGFloat,
             board: CGFloat
         )] = [
-            (1_080, 399.6, 680.4),
-            (1_180, 436.6, 743.4),
-            (1_600, 592, 1_008),
+            (800, 272, 528),
+            (1_180, 401.2, 778.8),
+            (1_600, 544, 1_056),
         ]
 
         for contract in contracts {
@@ -52,22 +52,110 @@ final class SystemDesignRoomLayoutTests: XCTestCase {
         }
         XCTAssertEqual(
             FullRoomLayout.boardWidthFraction,
-            0.63,
+            0.66,
             accuracy: 0.001
         )
     }
 
-    func testWideWindowDoesNotCapTheTurnlineBelowTheApprovedFraction() {
+    func testWideWindowKeepsTheDefaultSplitUntilTheUserDragsIt() {
         let width: CGFloat = 1_600
 
         XCTAssertEqual(
             FullRoomLayout.turnlineIdealWidth(for: width),
-            592,
+            544,
             accuracy: 0.001
         )
         XCTAssertEqual(
             FullRoomLayout.boardIdealWidth(for: width),
-            1_008,
+            1_056,
+            accuracy: 0.001
+        )
+    }
+
+    func testUserSplitClampsToReadablePaneMinima() {
+        let width: CGFloat = 800
+
+        XCTAssertEqual(
+            FullRoomLayout.workspaceWidths(
+                for: width,
+                preferredTurnlineWidth: 120
+            ).turnlineWidth,
+            FullRoomLayout.turnlineMinimumWidth
+        )
+        XCTAssertEqual(
+            FullRoomLayout.workspaceWidths(
+                for: width,
+                preferredTurnlineWidth: 700
+            ).boardWidth,
+            FullRoomLayout.boardMinimumWidth
+        )
+        XCTAssertEqual(FullRoomLayout.workspaceDividerHitWidth, 13)
+    }
+
+    func testDividerCommitsStableWorkspaceTranslationExactlyOnce() {
+        let workspaceWidth: CGFloat = 1_180
+        let baseWidth = FullRoomLayout.turnlineBaseWidth(
+            for: workspaceWidth,
+            preferredTurnlineWidth: 420
+        )
+        let stableWidths = FullRoomLayout.workspaceWidths(
+            for: workspaceWidth,
+            preferredTurnlineWidth: baseWidth
+        )
+        let preview = FullRoomLayout.splitDragPreview(
+            baseWidth: baseWidth,
+            dragTranslation: 60,
+            workspaceWidth: workspaceWidth
+        )
+
+        XCTAssertEqual(baseWidth, 420, accuracy: 0.001)
+        XCTAssertEqual(stableWidths.turnlineWidth, 420, accuracy: 0.001)
+        XCTAssertEqual(stableWidths.boardWidth, 760, accuracy: 0.001)
+        XCTAssertEqual(preview.translation, 60, accuracy: 0.001)
+        XCTAssertEqual(preview.proposedTurnlineWidth, 480, accuracy: 0.001)
+        XCTAssertEqual(
+            FullRoomLayout.committedTurnlineWidth(
+                baseWidth: baseWidth,
+                dragTranslation: 60,
+                workspaceWidth: workspaceWidth
+            ),
+            480,
+            accuracy: 0.001
+        )
+        XCTAssertEqual(
+            FullRoomLayout.workspaceWidths(
+                for: workspaceWidth,
+                preferredTurnlineWidth: 480
+            ).turnlineWidth,
+            480,
+            accuracy: 0.001
+        )
+        XCTAssertEqual(
+            FullRoomLayout.workspaceCoordinateSpaceName,
+            "system-design-workspace"
+        )
+    }
+
+    func testDividerPreviewClampsWithoutRelayingOutEitherPane() {
+        let workspaceWidth: CGFloat = 800
+        let baseWidth = FullRoomLayout.turnlineBaseWidth(for: workspaceWidth)
+        let stableWidths = FullRoomLayout.workspaceWidths(for: workspaceWidth)
+        let preview = FullRoomLayout.splitDragPreview(
+            baseWidth: baseWidth,
+            dragTranslation: 400,
+            workspaceWidth: workspaceWidth
+        )
+
+        XCTAssertEqual(stableWidths.turnlineWidth, 272, accuracy: 0.001)
+        XCTAssertEqual(stableWidths.boardWidth, 528, accuracy: 0.001)
+        XCTAssertEqual(
+            preview.proposedTurnlineWidth,
+            workspaceWidth - FullRoomLayout.boardMinimumWidth,
+            accuracy: 0.001
+        )
+        XCTAssertEqual(
+            preview.translation,
+            preview.proposedTurnlineWidth - baseWidth,
             accuracy: 0.001
         )
     }
@@ -75,15 +163,16 @@ final class SystemDesignRoomLayoutTests: XCTestCase {
     func testMinimumWindowRetainsAUsableWorkspaceAndActionTargets() {
         XCTAssertEqual(
             FullRoomLayout.questionBandHeight(forLineCount: 1),
-            148
+            132
         )
         XCTAssertEqual(
             FullRoomLayout.questionBandHeight(forLineCount: 2),
-            196
+            170
         )
-        XCTAssertEqual(FullRoomLayout.questionBandMaximumHeight, 196)
-        XCTAssertEqual(FullRoomLayout.minimumWindowHeight, 742)
-        XCTAssertEqual(
+        XCTAssertEqual(FullRoomLayout.questionBandMaximumHeight, 170)
+        XCTAssertEqual(FullRoomLayout.minimumWindowWidth, 800)
+        XCTAssertEqual(FullRoomLayout.minimumWindowHeight, 500)
+        XCTAssertGreaterThanOrEqual(
             FullRoomLayout.minimumWorkspaceHeight(
                 for: FullRoomLayout.minimumWindowHeight,
                 questionLineCount: FullRoomLayout.questionLineLimit
@@ -91,11 +180,11 @@ final class SystemDesignRoomLayoutTests: XCTestCase {
             FullRoomLayout.requiredWorkspaceHeight
         )
         XCTAssertGreaterThanOrEqual(
-            FullRoomLayout.minimumWorkspaceHeight(
+            FullRoomLayout.minimumTurnlineHeight(
                 for: FullRoomLayout.minimumWindowHeight,
-                questionLineCount: 1
+                questionLineCount: FullRoomLayout.questionLineLimit
             ),
-            FullRoomLayout.requiredWorkspaceHeight
+            FullRoomLayout.requiredTurnlineHeight
         )
         XCTAssertGreaterThanOrEqual(FullRoomLayout.minimumActionHitTarget, 44)
         XCTAssertGreaterThanOrEqual(
@@ -107,13 +196,20 @@ final class SystemDesignRoomLayoutTests: XCTestCase {
             FullRoomLayout.questionBandMinimumHeight,
             FullRoomLayout.questionBandHeight(forLineCount: 1)
         )
-        XCTAssertEqual(FullRoomLayout.questionTitleSize, 40)
-        XCTAssertEqual(FullRoomLayout.turnlineHorizontalPadding, 64)
-        XCTAssertEqual(FullRoomLayout.turnlineEntryGap, 42)
-        XCTAssertEqual(FullRoomLayout.turnlineBodyFontSize, 24)
-        XCTAssertEqual(FullRoomLayout.floorRailHeight, 96)
-        XCTAssertEqual(FullRoomLayout.floorContentHorizontalPadding, 48)
-        XCTAssertEqual(FullRoomLayout.floorOutlineHorizontalInset, 24)
+        XCTAssertEqual(FullRoomLayout.headerHeight, 50)
+        XCTAssertEqual(FullRoomLayout.questionTitleSize, 32)
+        XCTAssertEqual(FullRoomLayout.turnlineHorizontalPadding, 32)
+        XCTAssertEqual(FullRoomLayout.turnlineEntryGap, 24)
+        XCTAssertEqual(FullRoomLayout.turnlineBodyFontSize, 20)
+        XCTAssertEqual(FullRoomLayout.floorRailHeight, 55)
+        XCTAssertEqual(FullRoomLayout.floorContentHorizontalPadding, 24)
+        XCTAssertEqual(FullRoomLayout.floorOutlineHorizontalInset, 16)
+        XCTAssertEqual(FullRoomLayout.floorOutlineVerticalInset, 4)
+        XCTAssertLessThanOrEqual(
+            FullRoomLayout.minimumActionHitTarget,
+            FullRoomLayout.floorRailHeight
+                - FullRoomLayout.floorOutlineVerticalInset * 2
+        )
     }
 
     func testCandidateTextMeetsWCAGBodyContrastAcrossRoomSurfaces() {
@@ -131,14 +227,14 @@ final class SystemDesignRoomLayoutTests: XCTestCase {
         )
     }
 
-    func testMinimumWidthUsesCompactHeaderForSpeechAndRoomAttention() {
+    func testMinimumWidthAlwaysUsesCompactHeader() {
         let normal = FullRoomHeaderLayout.state(
             windowWidth: FullRoomLayout.minimumWindowWidth,
             hasSpeechAttention: false,
             hasRoomAttention: false
         )
         XCTAssertEqual(normal.attention, .none)
-        XCTAssertFalse(normal.usesAttentionCompactHeader)
+        XCTAssertTrue(normal.usesAttentionCompactHeader)
 
         let speech = FullRoomHeaderLayout.state(
             windowWidth: FullRoomLayout.minimumWindowWidth,
@@ -208,7 +304,7 @@ final class SystemDesignRoomLayoutTests: XCTestCase {
         }
     }
 
-    func testMinimumWidthKeepsWideHeaderWithoutAttentionAndCompactWithIt() {
+    func testIntermediateWidthKeepsCompactHeaderWithAndWithoutAttention() {
         let normal = FullRoomHeaderLayout.state(
             windowWidth: 1_080,
             hasSpeechAttention: false,
@@ -220,7 +316,7 @@ final class SystemDesignRoomLayoutTests: XCTestCase {
             hasRoomAttention: true
         )
 
-        XCTAssertEqual(normal.presentation, .wide)
+        XCTAssertEqual(normal.presentation, .compact)
         XCTAssertEqual(attention.presentation, .compact)
         XCTAssertTrue(
             FullRoomHeaderAccessibility.personaLabel.contains("Staff Engineer")

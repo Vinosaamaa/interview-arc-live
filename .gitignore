@@ -2,6 +2,8 @@
 .swiftpm/
 DerivedData/
 dist/
+Web/BoardEditor/node_modules/
+Web/BoardEditor/dist/
 *.xcuserstate
 .DS_Store
 

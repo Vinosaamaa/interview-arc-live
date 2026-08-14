@@ -2,10 +2,12 @@ import Foundation
 import InterviewArcLiveCore
 
 enum BoardEditorTool: String, CaseIterable, Sendable {
+    case hand
     case select
     case box
     case connector
     case label
+    case line
     case pen
     case eraser
 }
@@ -24,6 +26,10 @@ enum BoardResizeHandle: String, CaseIterable, Sendable {
 }
 
 enum BoardEditorAction: Sendable {
+    case replaceDocument(
+        BoardDocument,
+        selectedElementID: BoardElementID?
+    )
     case createBox(frame: BoardRect, label: String, kind: BoardNodeKind)
     case connect(
         sourceBoxID: BoardElementID,
@@ -139,6 +145,18 @@ struct BoardEditorState: Equatable, Sendable {
 
     mutating func apply(_ action: BoardEditorAction) throws {
         switch action {
+        case .replaceDocument(let replacement, let selectedElementID):
+            guard replacement.schemaVersion == document.schemaVersion,
+                  replacement.canvas == document.canvas else {
+                throw BoardEditorError.invalidGesture
+            }
+            try commit(elements: replacement.elements)
+            self.selectedElementID = selectedElementID.flatMap { candidate in
+                document.elements.contains(where: { $0.id == candidate })
+                    ? candidate
+                    : nil
+            }
+
         case .createBox(let frame, let label, let kind):
             let id = nextElementID(prefix: "box")
             let box = BoardBox(id: id, frame: frame, label: label, kind: kind)

@@ -6,13 +6,39 @@ import XCTest
 
 @MainActor
 final class InterviewRoomPresentationCoordinatorTests: XCTestCase {
+    func testApplicationTerminationReplyWaitsForLocalDurability() async {
+        let preparation = TerminationPreparationFixture()
+        let gate = InterviewArcLiveTerminationGate {
+            await preparation.run()
+        }
+        var firstReply: Bool?
+        var secondReply: Bool?
+
+        XCTAssertEqual(
+            gate.requestTermination { firstReply = $0 },
+            .terminateLater
+        )
+        XCTAssertEqual(
+            gate.requestTermination { secondReply = $0 },
+            .terminateLater
+        )
+        await preparation.waitUntilStarted()
+        XCTAssertNil(firstReply)
+        XCTAssertNil(secondReply)
+
+        await preparation.release(result: true)
+        while firstReply == nil || secondReply == nil { await Task.yield() }
+        XCTAssertEqual(firstReply, true)
+        XCTAssertEqual(secondReply, true)
+    }
+
     func testCompactPanelUsesToolPaletteScale() {
         XCTAssertEqual(CompactPanelLayout.contentWidth, 580)
-        XCTAssertEqual(CompactPanelLayout.minimumContentHeight, 82)
+        XCTAssertEqual(CompactPanelLayout.minimumContentHeight, 56)
         XCTAssertEqual(CompactPanelLayout.maximumContentHeight, 180)
     }
 
-    func testFullWindowMinimumSizeUsesTheTwoLineQuestionBudget() {
+    func testFullWindowUsesTheRequestedCompactMinimumSize() {
         let coordinator = makeCoordinator()
         defer { coordinator.prepareForTermination() }
 
@@ -24,14 +50,105 @@ final class InterviewRoomPresentationCoordinatorTests: XCTestCase {
             coordinator.fullWindow.contentMinSize.width,
             FullRoomLayout.minimumWindowWidth
         )
-        XCTAssertEqual(coordinator.fullWindow.contentMinSize.height, 742)
-        XCTAssertEqual(
+        XCTAssertEqual(coordinator.fullWindow.contentMinSize.width, 800)
+        XCTAssertEqual(coordinator.fullWindow.contentMinSize.height, 500)
+        XCTAssertGreaterThanOrEqual(
             FullRoomLayout.minimumWorkspaceHeight(
                 for: coordinator.fullWindow.contentMinSize.height,
                 questionLineCount: FullRoomLayout.questionLineLimit
             ),
             FullRoomLayout.requiredWorkspaceHeight
         )
+        XCTAssertGreaterThanOrEqual(
+            FullRoomLayout.minimumTurnlineHeight(
+                for: coordinator.fullWindow.contentMinSize.height,
+                questionLineCount: FullRoomLayout.questionLineLimit
+            ),
+            FullRoomLayout.requiredTurnlineHeight
+        )
+    }
+
+    func testTitlebarDoubleClickRequestsWindowZoom() {
+        let height: CGFloat = 700
+        XCTAssertTrue(
+            FullRoomTitlebarInteraction.shouldZoom(
+                clickCount: 2,
+                location: NSPoint(x: 500, y: 675),
+                windowHeight: height,
+                standardButtonFrames: [NSRect(x: 12, y: 664, width: 54, height: 16)]
+            )
+        )
+        XCTAssertFalse(
+            FullRoomTitlebarInteraction.shouldZoom(
+                clickCount: 1,
+                location: NSPoint(x: 500, y: 675),
+                windowHeight: height,
+                standardButtonFrames: []
+            )
+        )
+        XCTAssertFalse(
+            FullRoomTitlebarInteraction.shouldZoom(
+                clickCount: 2,
+                location: NSPoint(x: 500, y: 620),
+                windowHeight: height,
+                standardButtonFrames: []
+            )
+        )
+        XCTAssertFalse(
+            FullRoomTitlebarInteraction.shouldZoom(
+                clickCount: 2,
+                location: NSPoint(x: 24, y: 675),
+                windowHeight: height,
+                standardButtonFrames: [NSRect(x: 12, y: 664, width: 54, height: 16)]
+            )
+        )
+    }
+
+    func testTrafficLightsCenterInTheFiftyPointRoomHeader() throws {
+        let coordinator = makeCoordinator()
+        defer { coordinator.prepareForTermination() }
+        coordinator.fullWindow.contentView?.layoutSubtreeIfNeeded()
+        let expectedCenterY = coordinator.fullWindow.frame.height
+            - FullRoomLayout.headerHeight / 2
+
+        for type in [
+            NSWindow.ButtonType.closeButton,
+            .miniaturizeButton,
+            .zoomButton,
+        ] {
+            let button = try XCTUnwrap(
+                coordinator.fullWindow.standardWindowButton(type)
+            )
+            let center = button.convert(
+                NSPoint(x: button.bounds.midX, y: button.bounds.midY),
+                to: nil
+            )
+            XCTAssertEqual(center.y, expectedCenterY, accuracy: 0.5)
+        }
+    }
+
+    func testScreenTransitionDoesNotMutateAWindowDuringLiveDrag() throws {
+        let coordinator = makeCoordinator()
+        defer { coordinator.prepareForTermination() }
+        let visibleFrame = try XCTUnwrap(NSScreen.main?.visibleFrame)
+        let frame = NSRect(
+            x: visibleFrame.maxX - 450,
+            y: visibleFrame.midY - 310,
+            width: 900,
+            height: 620
+        )
+        coordinator.fullWindow.setFrame(frame, display: false)
+        let frameBeforeCallback = coordinator.fullWindow.frame
+        XCTAssertGreaterThan(frameBeforeCallback.maxX, visibleFrame.maxX)
+
+        coordinator.windowDidChangeScreen(
+            Notification(
+                name: NSWindow.didChangeScreenNotification,
+                object: coordinator.fullWindow
+            )
+        )
+
+        XCTAssertEqual(coordinator.fullWindow.frame, frameBeforeCallback)
     }
 
     func testCoordinatorOwnsOneFullWindowAndOneNonactivatingPanelWithSharedModel() {
@@ -272,7 +389,7 @@ final class InterviewRoomPresentationCoordinatorTests: XCTestCase {
     }
 
     func testCompactPanelSizingIsBoundedAndPreservesTopEdge() {
-        XCTAssertEqual(CompactPanelLayout.boundedContentHeight(50), 82)
+        XCTAssertEqual(CompactPanelLayout.boundedContentHeight(50), 56)
         XCTAssertEqual(CompactPanelLayout.boundedContentHeight(120), 120)
         XCTAssertEqual(CompactPanelLayout.boundedContentHeight(600), 180)
 
@@ -370,5 +487,32 @@ final class InterviewRoomPresentationCoordinatorTests: XCTestCase {
             frameAutosaveName: "InterviewArcLiveTests.TransientFrame",
             compactDynamicTypeSizeOverride: compactDynamicTypeSizeOverride
         )
+    }
+}
+
+private actor TerminationPreparationFixture {
+    private var started = false
+    private var startContinuation: CheckedContinuation<Void, Never>?
+    private var resultContinuation: CheckedContinuation<Bool, Never>?
+
+    func run() async -> Bool {
+        started = true
+        startContinuation?.resume()
+        startContinuation = nil
+        return await withCheckedContinuation { continuation in
+            resultContinuation = continuation
+        }
+    }
+
+    func waitUntilStarted() async {
+        if started { return }
+        await withCheckedContinuation { continuation in
+            startContinuation = continuation
+        }
+    }
+
+    func release(result: Bool) {
+        resultContinuation?.resume(returning: result)
+        resultContinuation = nil
     }
 }
