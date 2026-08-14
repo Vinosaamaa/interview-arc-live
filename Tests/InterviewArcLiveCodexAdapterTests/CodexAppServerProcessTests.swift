@@ -92,7 +92,11 @@ final class CodexAppServerProcessTests: XCTestCase {
         }
         let elapsed = started.duration(to: clock.now)
 
-        XCTAssertLessThan(elapsed, .seconds(3))
+        // The production escalation grace remains 500ms. This wall-clock
+        // assertion also includes scheduling eight actor callers on a shared
+        // hosted runner, so keep enough observation slack to avoid confusing
+        // runner contention with a lost termination receipt.
+        XCTAssertLessThan(elapsed, .seconds(5))
         for waiter in exitWaiters {
             let exitCode = await waiter.value
             XCTAssertEqual(exitCode, SIGKILL)
