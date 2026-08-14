@@ -25,6 +25,7 @@ import {
 import {
   boardChromeActionConfigurations,
   boardChromeLayout,
+  createBoardToolbarGeometryAdapter,
 } from "./board-chrome.js";
 import "./style.css";
 
@@ -740,23 +741,14 @@ const BoardChromeControls = ({ controls, onAction }) => {
     if (!controlsElement || !shell) return undefined;
 
     let frame = 0;
+    let toolbarAdapter;
     const updateLayout = () => {
       cancelAnimationFrame(frame);
       frame = requestAnimationFrame(() => {
         const shellRect = shell.getBoundingClientRect();
-        const toolbarRect = shell
-          .querySelector(".App-toolbar-container")
-          ?.getBoundingClientRect();
         const next = boardChromeLayout({
           viewportWidth: shellRect.width,
-          toolbar: toolbarRect
-            ? {
-              left: toolbarRect.left - shellRect.left,
-              right: toolbarRect.right - shellRect.left,
-              top: toolbarRect.top - shellRect.top,
-              bottom: toolbarRect.bottom - shellRect.top,
-            }
-            : null,
+          toolbar: toolbarAdapter?.bounds(shell) ?? null,
           controlsWidth: controlsElement.getBoundingClientRect().width,
         });
         setLayout((current) => (
@@ -772,14 +764,16 @@ const BoardChromeControls = ({ controls, onAction }) => {
     const resizeObserver = new ResizeObserver(updateLayout);
     resizeObserver.observe(shell);
     resizeObserver.observe(controlsElement);
-    const mutationObserver = new MutationObserver(updateLayout);
-    mutationObserver.observe(shell, { childList: true, subtree: true });
+    toolbarAdapter = createBoardToolbarGeometryAdapter({
+      root: shell,
+      onChange: updateLayout,
+    });
     updateLayout();
 
     return () => {
       cancelAnimationFrame(frame);
       resizeObserver.disconnect();
-      mutationObserver.disconnect();
+      toolbarAdapter.disconnect();
     };
   }, []);
 
