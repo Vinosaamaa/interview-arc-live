@@ -534,7 +534,7 @@ private final class RuntimeProbe: NSObject,
             else {
                 return false
             }
-            return containsRuntimeProbeBox(event)
+            return containsMovedRuntimeProbeBox(event)
                 && containsRuntimeProbeQueue(event)
                 && containsBoundRuntimeProbeConnector(event)
         }
