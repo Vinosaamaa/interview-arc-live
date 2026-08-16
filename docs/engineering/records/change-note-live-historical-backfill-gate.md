@@ -23,12 +23,12 @@ capabilities: ["bounded-historical-publication","residual-link-authorization"]
 amends: []
 supersedes: []
 learningRefs: []
-sources: [{"label":"Live historical backfill issue #52","url":"https://github.com/Vinosaamaa/interview-arc-live/issues/52","kind":"issue"}]
-verification: {"state":"verified","evidenceRefs":["issue:52","parser:passed"]}
+sources: [{"label":"Live historical backfill issue #52","url":"https://github.com/Vinosaamaa/interview-arc-live/issues/52","kind":"issue"},{"label":"Live pull request #57","url":"https://github.com/Vinosaamaa/interview-arc-live/pull/57","kind":"pull-request"}]
+verification: {"state":"verified","evidenceRefs":["issue:52","pull-request:57","parser:passed"]}
 visibility: public-safe
 publicationEligibility: eligible
 issue: 52
-pr: null
+pr: 57
 release: null
 run: null
 ---
