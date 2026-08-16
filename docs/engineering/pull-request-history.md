@@ -88,6 +88,18 @@ An accepted rich-record file and exact revision are immutable in place and are n
 
 Each rich-record Markdown file is limited to 65,536 UTF-8 bytes so pull-request policy validation remains bounded.
 
+## Historical backfill protocol
+
+A backfill coordinator uses the same contracts. Each publication pull request keeps its own forward-authored `reconstructed: false` receipt and selects `None` with a concrete reason because the batch publishes historical evidence without asserting a new current architecture change. It also adds exactly one `docs/engineering/backfill/pr-<current-pr-number>.json` manifest conforming to `docs/contracts/engineering-historical-backfill-batch.schema.json`.
+
+The required validation gate rejects unmanifested files, modifications or deletions of accepted history, repository/path/PR mismatches, forward receipts masquerading as reconstructed history, dangling rich records, and material receipts whose exact `id@revision` targets are missing or have the wrong type. Rich owners land before, or in the same bounded batch as, the receipts that depend on them.
+
+`recordRefs` enumerates the exact union of rich revisions used by every receipt in the batch, including already-accepted owners. `addedRecordRefs` is its schema-bounded subset added by this pull request.
+
+The authorization URL is not merely format-checked. Hosted validation reads the owning-repository comment, requires repository-owner authorship, and requires the exact sentence `I authorize publication of this bounded historical Engineering backfill batch under the residual-link policy.` This authorization approves the identified bounded batch; it does not authorize history rewrites, evidence deletion, visibility changes, or later batches.
+
+The batch manifest is review metadata, not narrative content. Canonical historical receipts and rich Markdown remain the only content sources.
+
 ## Diagrams
 
 Receipts do not require diagrams. A rich record may include a repository-native, public-safe diagram when verified structure, data flow, control flow, ownership, or before/after architecture is materially clearer visually. The coordinator authors that diagram from evidence and links it from the rich record; CI never invents a diagram from a diff.

@@ -12,6 +12,8 @@ WORKFLOW = Path(__file__).parents[2] / ".github" / "workflows" / "swift.yml"
 PACKAGE_SCRIPT = Path(__file__).parents[2] / "scripts" / "package-app.sh"
 BUILD_RECEIPT_SCRIPT = Path(__file__).parents[2] / "scripts" / "build-product-receipt.sh"
 SCHEMA = Path(__file__).parents[2] / "docs" / "contracts" / "engineering-pull-request-receipt.schema.json"
+HISTORICAL_SCHEMA = Path(__file__).parents[2] / "docs" / "contracts" / "engineering-historical-backfill-batch.schema.json"
+PROTOCOL = Path(__file__).parents[2] / "docs" / "engineering" / "pull-request-history.md"
 CURRENT_RECEIPT = Path(__file__).parents[2] / "docs" / "engineering" / "changes" / "pr-42.md"
 SPEC = importlib.util.spec_from_file_location("engineering_impact", SCRIPT)
 MODULE = importlib.util.module_from_spec(SPEC)
@@ -527,6 +529,80 @@ Adopted complete pull-request receipts and a curated Engineering record for the 
             with self.assertRaisesRegex(ValueError, "invalid or oversized"):
                 list(MODULE.iter_frontmatters_at("head", [path]))
         process.stdout.read.assert_not_called()
+
+    def test_historical_batch_contract_and_owner_authorization(self):
+        schema = json.loads(HISTORICAL_SCHEMA.read_text(encoding="utf-8"))
+        self.assertEqual(
+            schema["$id"],
+            "urn:interview-arc:contracts:engineering-historical-backfill-batch:1",
+        )
+        self.assertEqual(schema["properties"]["receiptPaths"]["maxItems"], 20)
+        protocol = PROTOCOL.read_text(encoding="utf-8")
+        self.assertIn("engineering-historical-backfill-batch.schema.json", protocol)
+        self.assertIn(MODULE.HISTORICAL_AUTHORIZATION, protocol)
+        authorization_url = (
+            "https://github.com/Vinosaamaa/interview-arc-live/issues/52#issuecomment-5310182290"
+        )
+        manifest = {
+            "schemaVersion": 1,
+            "repository": "interview-arc-live",
+            "pullRequest": 57,
+            "privacyAuthorizationUrl": authorization_url,
+            "receiptPaths": ["docs/engineering/changes/pr-7.md"],
+            "recordRefs": [],
+            "addedRecordRefs": [],
+        }
+        historical_receipts = [{
+            "path": "docs/engineering/changes/pr-7.md",
+            "pr": 7,
+            "repository": "interview-arc-live",
+            "classification": "none",
+            "richRecordRefs": [],
+            "reconstructed": True,
+        }]
+        changed_files = [
+            "docs/engineering/changes/pr-57.md",
+            "docs/engineering/backfill/pr-57.json",
+            "docs/engineering/changes/pr-7.md",
+        ]
+        self.assertEqual(
+            MODULE.validate_historical_batch(
+                manifest=manifest,
+                manifest_path="docs/engineering/backfill/pr-57.json",
+                pull_request_number=57,
+                repository="interview-arc-live",
+                repository_full_name="Vinosaamaa/interview-arc-live",
+                changed_files=changed_files,
+                historical_receipts=historical_receipts,
+                added_record_refs=[],
+                added_reconstructed=[],
+                base_existing_paths=[],
+            ),
+            {"historicalReceiptCount": 1, "historicalRecordCount": 0},
+        )
+        with self.assertRaisesRegex(ValueError, "add-only"):
+            MODULE.validate_historical_batch(
+                manifest=manifest,
+                manifest_path="docs/engineering/backfill/pr-57.json",
+                pull_request_number=57,
+                repository="interview-arc-live",
+                repository_full_name="Vinosaamaa/interview-arc-live",
+                changed_files=changed_files,
+                historical_receipts=historical_receipts,
+                added_record_refs=[],
+                added_reconstructed=[],
+                base_existing_paths=["docs/engineering/changes/pr-7.md"],
+            )
+        with self.assertRaisesRegex(ValueError, "owner privacy authorization"):
+            MODULE.verify_historical_authorization(
+                manifest,
+                "Vinosaamaa/interview-arc-live",
+                load_comment=lambda *_: {
+                    "html_url": authorization_url,
+                    "author_association": "CONTRIBUTOR",
+                    "body": MODULE.HISTORICAL_AUTHORIZATION,
+                },
+            )
 
 
 if __name__ == "__main__":
