@@ -420,6 +420,7 @@ final class HostedPracticeSessionTests: XCTestCase {
         let snapshot = await fixture.session.open()
 
         XCTAssertEqual(snapshot.elapsedSeconds(localNow: 1_005_000), 35)
+        XCTAssertEqual(snapshot.elapsedSeconds(localNow: 1_006_000), 36)
         XCTAssertEqual(snapshot.activity?.activity.timer?.accumulatedSeconds, 10)
     }
 

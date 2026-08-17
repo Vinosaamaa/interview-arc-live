@@ -37,6 +37,11 @@ public final class VoiceCoreSegmentRecorder: SegmentRecording {
     private var unexpectedTerminationHandler: (@MainActor @Sendable () -> Void)?
     private var didReportUnexpectedTermination = false
 
+    public var onMetering: (@MainActor (VoiceCoreRecordingMetering) -> Void)? {
+        get { driver.onMetering }
+        set { driver.onMetering = newValue }
+    }
+
     public convenience init() {
         self.init(
             driver: AnswerRecorderDriver(),
