@@ -39,6 +39,7 @@ final class InterviewArcLiveApp: NSObject, NSApplicationDelegate {
         hostedController: try? HostedPracticeController.makeDefault()
     )
     private var presentationCoordinator: InterviewRoomPresentationCoordinator?
+    private var behavioralRoomWindowController: BehavioralRoomWindowController?
     private var activationRefreshTask: Task<Void, Never>?
     private var terminationGate: InterviewArcLiveTerminationGate?
 
@@ -106,6 +107,14 @@ final class InterviewArcLiveApp: NSObject, NSApplicationDelegate {
     @objc
     private func showInterviewRoom(_ sender: Any?) {
         presentationCoordinator?.reopen()
+    }
+
+    @objc
+    private func showBehavioralRoom(_ sender: Any?) {
+        if behavioralRoomWindowController == nil {
+            behavioralRoomWindowController = BehavioralRoomWindowController()
+        }
+        behavioralRoomWindowController?.present()
     }
 
     @objc
@@ -306,6 +315,14 @@ final class InterviewArcLiveApp: NSObject, NSApplicationDelegate {
         )
         show.target = self
         menu.addItem(show)
+        let behavioral = NSMenuItem(
+            title: "Behavioral Room (local)",
+            action: #selector(showBehavioralRoom(_:)),
+            keyEquivalent: "b"
+        )
+        behavioral.keyEquivalentModifierMask = [.command, .shift]
+        behavioral.target = self
+        menu.addItem(behavioral)
         NSApp.windowsMenu = menu
         return root
     }

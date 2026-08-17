@@ -80,7 +80,16 @@ The exact system-design preflight is still a design decision. Until approved, Li
 
 ![Behavioral room concept](./behavioral-room.png)
 
-This surface follows the private Behavioral Evidence Foundation proposed in [Interview Arc issue #201](https://github.com/Vinosaamaa/interview-arc/issues/201).
+Local layout references:
+
+- [STAR bank](./behavioral-room-star.png)
+- [Project overview](./behavioral-room-project.png)
+- [Resume claim](./behavioral-room-resume.png)
+- [Coached discovery](./behavioral-room-coach.png)
+
+This surface follows the private Behavioral Evidence Foundation proposed in [Interview Arc issue #201](https://github.com/Vinosaamaa/interview-arc/issues/201). A local Behavioral room can open without hosted `/live/v1` behavioral writes; those writes wait on [Interview Arc issue #389](https://github.com/Vinosaamaa/interview-arc/issues/389). The owner-scoped evidence API remains issue #201.
+
+Question families for the local sidecar are STAR bank, project overview, resume claim, focused deep dive, and labeled practice scenarios. Project and claim kits bind `projectId` / `sourceClaimId`, never titles. Hosted lease, turn-pair, clip, and finish for `type=behavioral` are not shipped in this slice.
 
 ### Cold answer and evidence boundary
 
