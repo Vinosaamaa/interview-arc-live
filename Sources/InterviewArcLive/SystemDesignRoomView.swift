@@ -454,6 +454,9 @@ struct SystemDesignRoomView: View {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 0) {
                     if model.usesHostedAuthority && !model.hostedPairs.isEmpty {
+                        if let opening = model.localOpeningInterviewerTurn {
+                            turnlineEntry(.interviewer(opening), isLast: false)
+                        }
                         ForEach(Array(model.hostedPairs.enumerated()), id: \.element.id) {
                             index, pair in
                             hostedTurnlineEntry(
@@ -1174,8 +1177,12 @@ struct SystemDesignRoomView: View {
 
     private var turnlineSummary: String {
         if model.usesHostedAuthority, !model.hostedPairs.isEmpty {
-            let count = model.hostedPairs.count * 2
-            return count == 1 ? "1 HOSTED TURN" : "\(count) HOSTED TURNS"
+            let hostedCount = model.hostedPairs.count * 2
+            if model.localOpeningInterviewerTurn != nil {
+                let count = hostedCount + 1
+                return count == 1 ? "1 SAVED TURN" : "\(count) SAVED TURNS"
+            }
+            return hostedCount == 1 ? "1 HOSTED TURN" : "\(hostedCount) HOSTED TURNS"
         }
         guard let snapshot = model.snapshot else {
             return "RESTORING SESSION"

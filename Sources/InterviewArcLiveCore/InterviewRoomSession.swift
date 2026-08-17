@@ -112,6 +112,7 @@ public enum InterviewRoomCommand: Codable, Sendable, Equatable {
         boardAttachment: CandidateTurnBoardAttachment
     )
     case retryInterviewerResponse(commandID: CommandID)
+    case requestOpeningInterviewerTurn(commandID: CommandID)
     case finish(commandID: CommandID)
 
     var commandID: CommandID {
@@ -147,6 +148,7 @@ public enum InterviewRoomCommand: Codable, Sendable, Equatable {
              .handOff(let commandID, _),
              .handOffWithBoard(let commandID, _, _),
              .retryInterviewerResponse(let commandID),
+             .requestOpeningInterviewerTurn(let commandID),
              .finish(let commandID):
             commandID
         }
@@ -453,6 +455,12 @@ public actor InterviewRoomSession {
 
         case .retryInterviewerResponse(let commandID):
             snapshot = try await retryInterviewerResponse(
+                commandID: commandID,
+                fingerprint: fingerprint
+            )
+
+        case .requestOpeningInterviewerTurn(let commandID):
+            snapshot = try await requestOpeningInterviewerTurn(
                 commandID: commandID,
                 fingerprint: fingerprint
             )
@@ -1085,7 +1093,8 @@ public actor InterviewRoomSession {
              .handOffSegments,
              .handOffSegmentsWithBoard,
              .completeEndpointGrace,
-             .retryInterviewerResponse:
+             .retryInterviewerResponse,
+             .requestOpeningInterviewerTurn:
             preconditionFailure("Provider commands use their durable two-stage paths")
 
         case .finish:
@@ -1420,6 +1429,31 @@ public actor InterviewRoomSession {
         commandID: CommandID,
         fingerprint: String
     ) async throws -> InterviewRoomSnapshot {
+        if manifest.phase == .interviewerProcessing, manifest.turns.isEmpty {
+            let receipt = AppliedCommandRecord(
+                commandID: commandID,
+                payloadFingerprint: fingerprint,
+                resultingRevision: manifest.revision + 1
+            )
+            let pendingRetry = SessionManifest(
+                sessionID: manifest.sessionID,
+                activityID: manifest.activityID,
+                activityPrompt: manifest.activityPrompt,
+                phase: .interviewerProcessing,
+                turnMode: manifest.turnMode,
+                turns: [],
+                segments: manifest.segments,
+                endpointEvaluations: manifest.endpointEvaluations,
+                endpointGraces: manifest.endpointGraces,
+                interviewerUtterances: manifest.interviewerUtterances,
+                board: manifest.board,
+                candidateNotes: manifest.candidateNotes,
+                revision: manifest.revision + 1,
+                appliedCommands: manifest.appliedCommands + [receipt]
+            )
+            try await persist(pendingRetry)
+            return try await completeOpeningInterviewerResponse()
+        }
         guard manifest.phase == .interviewerProcessing,
               case .candidate(let candidate) = manifest.turns.last else {
             throw invalidTransition("retryInterviewerResponse")
@@ -1448,6 +1482,96 @@ public actor InterviewRoomSession {
         try await persist(pendingRetry)
 
         return try await completeInterviewerResponse(for: candidate)
+    }
+
+    /// Opening is one durable Interviewer Turn with no Candidate Turn. The
+    /// processing receipt is saved before provider work; retry keeps the same
+    /// Opening Turn identity.
+    private func requestOpeningInterviewerTurn(
+        commandID: CommandID,
+        fingerprint: String
+    ) async throws -> InterviewRoomSnapshot {
+        guard manifest.phase == .ready, manifest.turns.isEmpty else {
+            throw invalidTransition("requestOpeningInterviewerTurn")
+        }
+        let receipt = AppliedCommandRecord(
+            commandID: commandID,
+            payloadFingerprint: fingerprint,
+            resultingRevision: manifest.revision + 1
+        )
+        let pending = SessionManifest(
+            sessionID: manifest.sessionID,
+            activityID: manifest.activityID,
+            activityPrompt: manifest.activityPrompt,
+            phase: .interviewerProcessing,
+            turnMode: manifest.turnMode,
+            turns: [],
+            segments: manifest.segments,
+            endpointEvaluations: manifest.endpointEvaluations,
+            endpointGraces: manifest.endpointGraces,
+            interviewerUtterances: manifest.interviewerUtterances,
+            board: manifest.board,
+            candidateNotes: manifest.candidateNotes,
+            revision: manifest.revision + 1,
+            appliedCommands: manifest.appliedCommands + [receipt]
+        )
+        try await persist(pending)
+        return try await completeOpeningInterviewerResponse()
+    }
+
+    private func completeOpeningInterviewerResponse() async throws -> InterviewRoomSnapshot {
+        let openingCommandID = Self.openingInterviewerCommandID
+        let responseTurnID = Self.turnID(
+            sessionID: manifest.sessionID,
+            commandID: openingCommandID,
+            role: "interviewer"
+        )
+        let request = InterviewerRequest(
+            sessionID: manifest.sessionID,
+            activityID: manifest.activityID,
+            activityPrompt: manifest.activityPrompt,
+            candidateTurn: nil,
+            priorVisibleTurns: [],
+            responseTurnID: responseTurnID
+        )
+        let response = try await interviewerRuntime.respond(to: request)
+        guard !response.displayMarkdown.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              !response.spokenText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              response.displayMarkdown.utf8.count
+                <= CanonicalInterviewerResponse.maximumDisplayMarkdownUTF8Bytes,
+              response.spokenText.utf8.count
+                <= CanonicalInterviewerResponse.maximumSpokenTextUTF8Bytes else {
+            throw InterviewRoomSessionError.invalidInterviewerResponse
+        }
+
+        let interviewer = InterviewerTurn(
+            id: responseTurnID,
+            commandID: openingCommandID,
+            replyToTurnID: nil,
+            response: response
+        )
+        let utterance = Self.makeInterviewerUtterance(
+            sessionID: manifest.sessionID,
+            turn: interviewer
+        )
+        let completed = SessionManifest(
+            sessionID: manifest.sessionID,
+            activityID: manifest.activityID,
+            activityPrompt: manifest.activityPrompt,
+            phase: .interviewerTurn,
+            turnMode: manifest.turnMode,
+            turns: [.interviewer(interviewer)],
+            segments: manifest.segments,
+            endpointEvaluations: manifest.endpointEvaluations,
+            endpointGraces: manifest.endpointGraces,
+            interviewerUtterances: manifest.interviewerUtterances + [utterance],
+            board: manifest.board,
+            candidateNotes: manifest.candidateNotes,
+            revision: manifest.revision + 1,
+            appliedCommands: manifest.appliedCommands
+        )
+        try await persist(completed)
+        return InterviewRoomSnapshot(manifest: completed)
     }
 
     private func completeInterviewerResponse(
@@ -1860,6 +1984,18 @@ public actor InterviewRoomSession {
             pairEnd = candidateIndex
         }
 
+        let remaining = turns[..<pairEnd]
+        if remaining.count == 1,
+           case .interviewer(let opening) = remaining[remaining.startIndex],
+           opening.replyToTurnID == nil,
+           selectedReversed.count < maximumTurnCount {
+            let openingByteCount = opening.displayMarkdown.utf8.count
+                + opening.spokenText.utf8.count
+            if openingByteCount <= maximumByteCount - selectedByteCount {
+                selectedReversed.append(remaining[remaining.startIndex])
+            }
+        }
+
         return Array(selectedReversed.reversed())
     }
 
@@ -1969,6 +2105,8 @@ public actor InterviewRoomSession {
             fields: [source.rawValue, operation]
         ))
     }
+
+    static let openingInterviewerCommandID = CommandID("opening-interviewer")
 
     private static func segmentID(
         sessionID: SessionID,
@@ -2300,6 +2438,24 @@ public actor InterviewRoomSession {
         }
 
         var index = 0
+        if case .interviewer(let opening)? = manifest.turns.first,
+           opening.replyToTurnID == nil {
+            guard !opening.displayMarkdown
+                    .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  opening.displayMarkdown.utf8.count
+                    <= CanonicalInterviewerResponse.maximumDisplayMarkdownUTF8Bytes,
+                  !opening.spokenText
+                    .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  opening.spokenText.utf8.count
+                    <= CanonicalInterviewerResponse.maximumSpokenTextUTF8Bytes,
+                  opening.commandID == Self.openingInterviewerCommandID else {
+                throw InterviewRoomSessionError.invalidManifest(
+                    reason: "opening interviewer turn is invalid"
+                )
+            }
+            index = 1
+        }
+
         while index + 1 < manifest.turns.count {
             guard case .candidate(let candidate) = manifest.turns[index],
                   case .interviewer(let interviewer) = manifest.turns[index + 1],
@@ -2336,7 +2492,7 @@ public actor InterviewRoomSession {
                     reason: "only an interviewer-processing session may end with a candidate"
                 )
             }
-        } else if manifest.phase == .interviewerProcessing {
+        } else if manifest.phase == .interviewerProcessing, !manifest.turns.isEmpty {
             throw InterviewRoomSessionError.invalidManifest(
                 reason: "interviewer-processing phase requires a pending candidate"
             )
@@ -2804,7 +2960,7 @@ public actor InterviewRoomSession {
         }
         if manifest.phase == .interviewerTurn && manifest.turns.isEmpty {
             throw InterviewRoomSessionError.invalidManifest(
-                reason: "interviewer phase requires a completed turn pair"
+                reason: "interviewer phase requires a completed interviewer turn"
             )
         }
     }

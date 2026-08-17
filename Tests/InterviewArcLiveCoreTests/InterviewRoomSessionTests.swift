@@ -83,6 +83,355 @@ final class InterviewRoomSessionTests: XCTestCase {
         )
     }
 
+    func testOpeningInterviewerTurnPersistsWithoutCandidateThenGivesFloorWithoutAnotherRequest() async throws {
+        let store = InMemorySessionManifestStore()
+        let runtime = CountingInterviewerRuntime(
+            response: CanonicalInterviewerResponse(
+                displayMarkdown: "Design a **global notification** system. What scale first?",
+                spokenText: "Design a global notification system. What scale first?"
+            )
+        )
+        let sessionID = SessionID("session-opening-1")
+        let session = try await InterviewRoomSession.start(
+            sessionID: sessionID,
+            activityID: "activity-opening-1",
+            activityPrompt: try fixtureActivityPrompt(),
+            manifestStore: store,
+            interviewerRuntime: runtime
+        )
+
+        let opened = try await session.execute(
+            .requestOpeningInterviewerTurn(commandID: CommandID("local-opening-0"))
+        )
+        XCTAssertEqual(opened.phase, .interviewerTurn)
+        XCTAssertEqual(opened.turns.count, 1)
+        guard case .interviewer(let opening) = opened.turns[0] else {
+            return XCTFail("Expected one Opening Interviewer Turn")
+        }
+        XCTAssertNil(opening.replyToTurnID)
+        XCTAssertEqual(opening.commandID, InterviewRoomSession.openingInterviewerCommandID)
+        XCTAssertEqual(
+            opening.displayMarkdown,
+            "Design a **global notification** system. What scale first?"
+        )
+        XCTAssertEqual(
+            opening.spokenText,
+            "Design a global notification system. What scale first?"
+        )
+        let openingRequests = await runtime.requests()
+        XCTAssertEqual(openingRequests.count, 1)
+        XCTAssertTrue(try XCTUnwrap(openingRequests.first).isOpening)
+        XCTAssertNil(try XCTUnwrap(openingRequests.first).candidateTurn)
+        XCTAssertTrue(try XCTUnwrap(openingRequests.first).priorVisibleTurns.isEmpty)
+        XCTAssertEqual(try XCTUnwrap(openingRequests.first).responseTurnID, opening.id)
+
+        let floor = try await session.execute(
+            .giveCandidateFloor(commandID: CommandID("give-floor-after-opening"))
+        )
+        XCTAssertEqual(floor.phase, .candidateFloor)
+        XCTAssertEqual(floor.turns.count, 1)
+        let callsAfterFloor = await runtime.invocationCount()
+        XCTAssertEqual(callsAfterFloor, 1)
+
+        do {
+            _ = try await session.execute(
+                .requestOpeningInterviewerTurn(commandID: CommandID("second-opening"))
+            )
+            XCTFail("Expected a second opening request to fail")
+        } catch {
+            XCTAssertEqual(
+                error as? InterviewRoomSessionError,
+                .invalidTransition(
+                    command: "requestOpeningInterviewerTurn",
+                    phase: .candidateFloor
+                )
+            )
+        }
+    }
+
+    func testOpeningProviderFailureStaysProcessingAndRetryKeepsOpeningIdentity() async throws {
+        let store = InMemorySessionManifestStore()
+        let sessionID = SessionID("session-opening-retry")
+        let runtime = SequencedInterviewerRuntime(
+            results: [
+                .failure(.unavailable),
+                .success(
+                    CanonicalInterviewerResponse(
+                        displayMarkdown: "Let’s start with **requirements**.",
+                        spokenText: "Let’s start with requirements."
+                    )
+                ),
+            ]
+        )
+        let session = try await InterviewRoomSession.start(
+            sessionID: sessionID,
+            activityID: "activity-opening-retry",
+            activityPrompt: try fixtureActivityPrompt(),
+            manifestStore: store,
+            interviewerRuntime: runtime
+        )
+
+        do {
+            _ = try await session.execute(
+                .requestOpeningInterviewerTurn(commandID: CommandID("local-opening-0"))
+            )
+            XCTFail("Expected opening provider failure")
+        } catch {
+            XCTAssertEqual(error as? RuntimeFixtureError, .unavailable)
+        }
+
+        let pending = await session.snapshot()
+        XCTAssertEqual(pending.phase, .interviewerProcessing)
+        XCTAssertTrue(pending.turns.isEmpty)
+        let durablePending = try XCTUnwrap(try await store.load(sessionID: sessionID))
+        XCTAssertEqual(durablePending.phase, .interviewerProcessing)
+        XCTAssertTrue(durablePending.turns.isEmpty)
+
+        let duplicate = try await session.execute(
+            .requestOpeningInterviewerTurn(commandID: CommandID("local-opening-0"))
+        )
+        XCTAssertEqual(duplicate.phase, .interviewerProcessing)
+        XCTAssertTrue(duplicate.turns.isEmpty)
+        XCTAssertEqual(await runtime.invocationCount(), 1)
+
+        let restored = try await InterviewRoomSession.restore(
+            sessionID: sessionID,
+            manifestStore: store,
+            interviewerRuntime: runtime
+        )
+        let completed = try await restored.execute(
+            .retryInterviewerResponse(commandID: CommandID("retry-opening"))
+        )
+        XCTAssertEqual(completed.phase, .interviewerTurn)
+        XCTAssertEqual(completed.turns.count, 1)
+        guard case .interviewer(let opening) = completed.turns[0] else {
+            return XCTFail("Expected Opening Interviewer Turn after retry")
+        }
+        XCTAssertNil(opening.replyToTurnID)
+        XCTAssertEqual(opening.commandID, InterviewRoomSession.openingInterviewerCommandID)
+        let requests = await runtime.requests()
+        XCTAssertEqual(requests.count, 2)
+        XCTAssertTrue(requests.allSatisfy(\.isOpening))
+        XCTAssertEqual(requests[0].responseTurnID, requests[1].responseTurnID)
+        XCTAssertEqual(requests[1].responseTurnID, opening.id)
+    }
+
+    func testHandOffAfterOpeningIncludesOpeningTurnInPriorVisibleHistory() async throws {
+        let store = InMemorySessionManifestStore()
+        let runtime = CountingInterviewerRuntime(
+            response: CanonicalInterviewerResponse(
+                displayMarkdown: "What fails at **10x** traffic?",
+                spokenText: "What fails at 10x traffic?"
+            )
+        )
+        let session = try await InterviewRoomSession.start(
+            sessionID: SessionID("session-opening-history"),
+            activityID: "activity-opening-history",
+            activityPrompt: try fixtureActivityPrompt(),
+            manifestStore: store,
+            interviewerRuntime: runtime
+        )
+        let opened = try await session.execute(
+            .requestOpeningInterviewerTurn(commandID: CommandID("local-opening-0"))
+        )
+        guard case .interviewer(let opening) = opened.turns[0] else {
+            return XCTFail("Expected Opening Interviewer Turn")
+        }
+        _ = try await session.execute(
+            .giveCandidateFloor(commandID: CommandID("floor-after-opening"))
+        )
+        let completed = try await session.execute(
+            .handOff(
+                commandID: CommandID("handoff-after-opening"),
+                transcript: CandidateTranscript(
+                    body: "I would start with a durable notification log.",
+                    quality: .verified
+                )
+            )
+        )
+        XCTAssertEqual(completed.turns.count, 3)
+        guard case .interviewer(let openingAgain) = completed.turns[0],
+              case .candidate(let candidate) = completed.turns[1],
+              case .interviewer(let reply) = completed.turns[2] else {
+            return XCTFail("Expected opening then a matching candidate/interviewer pair")
+        }
+        XCTAssertNil(openingAgain.replyToTurnID)
+        XCTAssertEqual(reply.replyToTurnID, candidate.id)
+        XCTAssertEqual(reply.commandID, candidate.commandID)
+        let requests = await runtime.requests()
+        XCTAssertEqual(requests.count, 2)
+        XCTAssertTrue(requests[0].isOpening)
+        XCTAssertFalse(requests[1].isOpening)
+        XCTAssertEqual(requests[1].candidateTurn, candidate)
+        XCTAssertEqual(requests[1].priorVisibleTurns, [.interviewer(opening)])
+        XCTAssertEqual(requests[1].responseTurnID, reply.id)
+    }
+
+    func testRestoreAcceptsOpeningOnlyOpeningPlusPairAndRejectsInvalidLeftover() async throws {
+        let prompt = try fixtureActivityPrompt()
+        let opening = InterviewerTurn(
+            id: TurnID("opening-restore"),
+            commandID: InterviewRoomSession.openingInterviewerCommandID,
+            replyToTurnID: nil,
+            response: CanonicalInterviewerResponse(
+                displayMarkdown: "State the prompt and invite questions.",
+                spokenText: "State the prompt and invite questions."
+            )
+        )
+        let candidate = CandidateTurn(
+            id: TurnID("opening-restore-candidate"),
+            commandID: CommandID("opening-restore-handoff"),
+            transcript: CandidateTranscript(body: "Durable candidate.", quality: .verified)
+        )
+        let reply = InterviewerTurn(
+            id: TurnID("opening-restore-reply"),
+            commandID: candidate.commandID,
+            replyToTurnID: candidate.id,
+            response: CanonicalInterviewerResponse(
+                displayMarkdown: "What is the write path?",
+                spokenText: "What is the write path?"
+            )
+        )
+        let runtime = DeterministicInterviewerRuntime(
+            response: CanonicalInterviewerResponse(
+                displayMarkdown: "Unused.",
+                spokenText: "Unused."
+            )
+        )
+
+        let openingOnly = SessionManifest(
+            sessionID: SessionID("restore-opening-only"),
+            activityID: "activity-restore-opening-only",
+            activityPrompt: prompt,
+            phase: .interviewerTurn,
+            turnMode: .manual,
+            turns: [.interviewer(opening)],
+            revision: 1,
+            appliedCommands: []
+        )
+        let restoredOpening = try await InterviewRoomSession.restore(
+            sessionID: openingOnly.sessionID,
+            manifestStore: InMemorySessionManifestStore(manifests: [openingOnly]),
+            interviewerRuntime: runtime
+        )
+        XCTAssertEqual(await restoredOpening.snapshot().turns.count, 1)
+
+        let openingPlusPair = SessionManifest(
+            sessionID: SessionID("restore-opening-pair"),
+            activityID: "activity-restore-opening-pair",
+            activityPrompt: prompt,
+            phase: .interviewerTurn,
+            turnMode: .manual,
+            turns: [.interviewer(opening), .candidate(candidate), .interviewer(reply)],
+            revision: 1,
+            appliedCommands: []
+        )
+        let restoredPair = try await InterviewRoomSession.restore(
+            sessionID: openingPlusPair.sessionID,
+            manifestStore: InMemorySessionManifestStore(manifests: [openingPlusPair]),
+            interviewerRuntime: runtime
+        )
+        XCTAssertEqual(await restoredPair.snapshot().turns.count, 3)
+
+        let pendingOpening = SessionManifest(
+            sessionID: SessionID("restore-opening-processing"),
+            activityID: "activity-restore-opening-processing",
+            activityPrompt: prompt,
+            phase: .interviewerProcessing,
+            turnMode: .manual,
+            turns: [],
+            revision: 1,
+            appliedCommands: []
+        )
+        let restoredPending = try await InterviewRoomSession.restore(
+            sessionID: pendingOpening.sessionID,
+            manifestStore: InMemorySessionManifestStore(manifests: [pendingOpening]),
+            interviewerRuntime: runtime
+        )
+        XCTAssertEqual(await restoredPending.snapshot().phase, .interviewerProcessing)
+
+        try await assertRestoreRejects(
+            SessionManifest(
+                sessionID: SessionID("restore-opening-leftover"),
+                activityID: "activity-restore-opening-leftover",
+                activityPrompt: prompt,
+                phase: .interviewerTurn,
+                turnMode: .manual,
+                turns: [.interviewer(opening), .candidate(candidate)],
+                revision: 1,
+                appliedCommands: []
+            )
+        )
+        try await assertRestoreRejects(
+            SessionManifest(
+                sessionID: SessionID("restore-opening-wrong-command"),
+                activityID: "activity-restore-opening-wrong-command",
+                activityPrompt: prompt,
+                phase: .interviewerTurn,
+                turnMode: .manual,
+                turns: [
+                    .interviewer(
+                        InterviewerTurn(
+                            id: TurnID("opening-wrong-command"),
+                            commandID: CommandID("not-opening-command"),
+                            replyToTurnID: nil,
+                            response: CanonicalInterviewerResponse(
+                                displayMarkdown: "Invalid opening identity.",
+                                spokenText: "Invalid opening identity."
+                            )
+                        )
+                    ),
+                ],
+                revision: 1,
+                appliedCommands: []
+            )
+        )
+    }
+
+    func testHistoricalRequiredReplyToTurnIDStillDecodesAndOpeningOmitsReply() throws {
+        let candidate = CandidateTurn(
+            id: TurnID("legacy-reply-candidate"),
+            commandID: CommandID("legacy-reply-command"),
+            transcript: CandidateTranscript(body: "Legacy candidate.", quality: .verified)
+        )
+        let reply = InterviewerTurn(
+            id: TurnID("legacy-reply-interviewer"),
+            commandID: candidate.commandID,
+            replyToTurnID: candidate.id,
+            response: CanonicalInterviewerResponse(
+                displayMarkdown: "Legacy follow-up.",
+                spokenText: "Legacy follow-up."
+            )
+        )
+        let encodedReply = try JSONEncoder().encode(reply)
+        let replyObject = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: encodedReply) as? [String: Any]
+        )
+        XCTAssertEqual(replyObject["replyToTurnID"] as? String, candidate.id.rawValue)
+        let decodedReply = try JSONDecoder().decode(InterviewerTurn.self, from: encodedReply)
+        XCTAssertEqual(decodedReply.replyToTurnID, candidate.id)
+
+        let opening = InterviewerTurn(
+            id: TurnID("legacy-opening"),
+            commandID: InterviewRoomSession.openingInterviewerCommandID,
+            replyToTurnID: nil,
+            response: CanonicalInterviewerResponse(
+                displayMarkdown: "Opening copy.",
+                spokenText: "Opening copy."
+            )
+        )
+        let encodedOpening = try JSONEncoder().encode(opening)
+        var openingObject = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: encodedOpening) as? [String: Any]
+        )
+        openingObject.removeValue(forKey: "replyToTurnID")
+        let decodedOpening = try JSONDecoder().decode(
+            InterviewerTurn.self,
+            from: try JSONSerialization.data(withJSONObject: openingObject)
+        )
+        XCTAssertNil(decodedOpening.replyToTurnID)
+    }
+
     func testDuplicateCommandIDIsIdempotentAndChangedPayloadIsRejected() async throws {
         let store = InMemorySessionManifestStore()
         let runtime = CountingInterviewerRuntime(
@@ -279,7 +628,7 @@ final class InterviewRoomSessionTests: XCTestCase {
         let requests = await runtime.requests()
         let finalRequest = try XCTUnwrap(requests.last)
         XCTAssertEqual(finalRequest.activityPrompt, prompt)
-        XCTAssertEqual(finalRequest.candidateTurn.transcript.body, exactCandidate)
+        XCTAssertEqual(finalRequest.candidateTurn?.transcript.body, exactCandidate)
         XCTAssertEqual(
             finalRequest.priorVisibleTurns,
             Array(visibleBeforeFinalHandOff.suffix(InterviewerRequest.maximumPriorVisibleTurns))
