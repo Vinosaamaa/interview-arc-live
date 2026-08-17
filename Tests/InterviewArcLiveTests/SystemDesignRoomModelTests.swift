@@ -110,6 +110,33 @@ final class SystemDesignRoomModelTests: XCTestCase {
         )
     }
 
+    func testHostedRefreshOpensTheLocalCoordinatorOnlyOnceActivityExists() {
+        XCTAssertFalse(
+            SystemDesignRoomModel.shouldOpenLocalCoordinator(
+                hasHostedActivity: false,
+                hasCoordinator: false
+            )
+        )
+        XCTAssertFalse(
+            SystemDesignRoomModel.shouldOpenLocalCoordinator(
+                hasHostedActivity: false,
+                hasCoordinator: true
+            )
+        )
+        XCTAssertFalse(
+            SystemDesignRoomModel.shouldOpenLocalCoordinator(
+                hasHostedActivity: true,
+                hasCoordinator: true
+            )
+        )
+        XCTAssertTrue(
+            SystemDesignRoomModel.shouldOpenLocalCoordinator(
+                hasHostedActivity: true,
+                hasCoordinator: false
+            )
+        )
+    }
+
     func testMuteStateAndPreferenceFollowControllerWhenDurableStopFails() async throws {
         let suiteName = "InterviewArcLiveTests.mute.\(UUID().uuidString)"
         let preferences = try XCTUnwrap(UserDefaults(suiteName: suiteName))

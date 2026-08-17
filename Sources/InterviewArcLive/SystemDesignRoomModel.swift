@@ -1266,9 +1266,7 @@ final class SystemDesignRoomModel: ObservableObject {
         await hostedController.saveToken(value, untilQuit: untilQuit)
         hostedSnapshot = hostedController.snapshot
         isLiveIntegrationSetupPresented = hostedController.isConnectionSetupPresented
-        if hostedSnapshot.activity != nil, coordinator == nil {
-            await open()
-        }
+        await openIfHostedActivityIsUnbound()
     }
 
     func disconnectLiveIntegration() async {
@@ -1284,6 +1282,24 @@ final class SystemDesignRoomModel: ObservableObject {
         await hostedController.refresh()
         hostedSnapshot = hostedController.snapshot
         errorMessage = hostedController.errorMessage
+        await openIfHostedActivityIsUnbound()
+    }
+
+    /// Launch returned early when Today had no System Design activity.
+    /// Refresh (and a later token save) must bind the local room once one appears.
+    static func shouldOpenLocalCoordinator(
+        hasHostedActivity: Bool,
+        hasCoordinator: Bool
+    ) -> Bool {
+        hasHostedActivity && !hasCoordinator
+    }
+
+    private func openIfHostedActivityIsUnbound() async {
+        guard Self.shouldOpenLocalCoordinator(
+            hasHostedActivity: hostedSnapshot.activity != nil,
+            hasCoordinator: coordinator != nil
+        ) else { return }
+        await open()
     }
 
     func prepareHostedForTermination() async -> Bool {
