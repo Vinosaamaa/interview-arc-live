@@ -1,4 +1,5 @@
 import Foundation
+import InterviewArcLiveCore
 import InterviewArcLiveHostedClient
 
 @MainActor
@@ -239,6 +240,10 @@ final class HostedPracticeController: ObservableObject {
             errorMessage = "Interview Arc is offline. Local recovery data is retained."
         case .recoveryRequired(let code):
             errorMessage = "Hosted recovery is required before recording (\(code))."
+            LiveDebugTrace.event(
+                "hosted.connection",
+                ["connection": snapshot.connection.debugCode]
+            )
         case .noOpenSystemDesignActivity:
             errorMessage = "Add a System Design activity to Today in Interview Arc."
         case .loading, .readOnly, .writable:

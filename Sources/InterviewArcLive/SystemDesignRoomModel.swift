@@ -1086,7 +1086,13 @@ final class SystemDesignRoomModel: ObservableObject {
         isCheckingCodex = true
         errorMessage = nil
         errorWasCodexFailure = false
-        defer { isWorking = false }
+        defer {
+            isWorking = false
+            LiveDebugTrace.event(
+                "room.open.end",
+                ["ok": coordinator == nil ? "false" : "true"]
+            )
+        }
 
         async let codexCheck = codexRuntime.preflight()
 
@@ -1095,6 +1101,10 @@ final class SystemDesignRoomModel: ObservableObject {
         var launchActivityID = "local-system-design-tracer"
         if let hostedController {
             hostedSnapshot = await hostedController.open()
+            LiveDebugTrace.event(
+                "room.open.hosted",
+                ["connection": hostedSnapshot.connection.debugCode]
+            )
             switch hostedSnapshot.connection {
             case .signedOut:
                 isLiveIntegrationSetupPresented = true
@@ -1112,9 +1122,11 @@ final class SystemDesignRoomModel: ObservableObject {
                 statusMessage = hostedController.errorMessage
                     ?? "Hosted recovery needs attention"
                 errorMessage = hostedController.errorMessage
-                isCheckingCodex = false
-                _ = await codexCheck
-                return
+                if hostedSnapshot.activity == nil {
+                    isCheckingCodex = false
+                    _ = await codexCheck
+                    return
+                }
             case .loading:
                 statusMessage = "Reading Interview Arc Today…"
             case .readOnly, .writable:
@@ -1259,6 +1271,10 @@ final class SystemDesignRoomModel: ObservableObject {
         defer { isCheckingCodex = false }
 
         applyCodexReadiness(await codexRuntime.preflight())
+        LiveDebugTrace.event(
+            "codex.preflight",
+            ["ok": isCodexReady ? "true" : "false"]
+        )
     }
 
     func saveLiveIntegrationToken(_ value: String, untilQuit: Bool) async {
@@ -1358,6 +1374,10 @@ final class SystemDesignRoomModel: ObservableObject {
     }
 
     func recordSegment() async {
+        LiveDebugTrace.event(
+            "room.record",
+            ["ok": canRecordSegment ? "true" : "false"]
+        )
         guard let coordinator else { return }
         guard hasUsableGroqCredential else {
             presentCredentialSetup()
@@ -1553,6 +1573,13 @@ final class SystemDesignRoomModel: ObservableObject {
     }
 
     func performPrimaryAction() async {
+        LiveDebugTrace.event(
+            "room.handoff",
+            [
+                "phase": snapshot?.phase.rawValue ?? "none",
+                "ok": canAct ? "true" : "false",
+            ]
+        )
         guard let coordinator, let snapshot else { return }
         if snapshot.phase == .candidateFloor,
            boardAttachmentForHandOff == nil {
@@ -1926,16 +1953,19 @@ final class SystemDesignRoomModel: ObservableObject {
 
         do {
             try await credentialStore.saveAndVerify(value)
+            LiveDebugTrace.event("groq.save", ["ok": "true"])
             credentialState = .readyFromKeychain
             statusMessage = segments.contains(where: { $0.transcriptionAction != nil })
                 ? "Groq key saved to Keychain · transcribe the affected segment"
                 : status(for: snapshot)
             return true
         } catch let error as LiveGroqCredentialStoreError {
+            LiveDebugTrace.event("groq.save", ["ok": "false"])
             credentialState = .unusable
             credentialErrorMessage = error.localizedDescription
             return false
         } catch {
+            LiveDebugTrace.event("groq.save", ["ok": "false"])
             credentialState = .unusable
             credentialErrorMessage = "macOS Keychain could not save the Groq API key."
             return false
