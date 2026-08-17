@@ -1,0 +1,36 @@
+{
+  "schemaVersion": 1,
+  "repository": "interview-arc-live",
+  "pullRequest": 62,
+  "privacyAuthorizationUrl": "https://github.com/Vinosaamaa/interview-arc-live/issues/52#issuecomment-5310182290",
+  "receiptPaths": [
+    "docs/engineering/changes/pr-4.md",
+    "docs/engineering/changes/pr-6.md",
+    "docs/engineering/changes/pr-10.md",
+    "docs/engineering/changes/pr-12.md",
+    "docs/engineering/changes/pr-14.md",
+    "docs/engineering/changes/pr-20.md",
+    "docs/engineering/changes/pr-22.md",
+    "docs/engineering/changes/pr-30.md"
+  ],
+  "recordRefs": [
+    "adr-live-0001-separate-live-application@1",
+    "adr-live-0004-durable-segmented-speech@1",
+    "adr-live-0005-codex-app-server-private-runtime@1",
+    "feature-retrospective-live-issue-11@1",
+    "adr-live-0006-local-interviewer-speech@1",
+    "adr-live-0007-retained-full-and-compact-presentations@1",
+    "adr-live-0008-session-owned-board-revisions-and-exports@1",
+    "adr-live-0009-local-excalidraw-board-editor-adapter@1"
+  ],
+  "addedRecordRefs": [
+    "adr-live-0001-separate-live-application@1",
+    "adr-live-0004-durable-segmented-speech@1",
+    "adr-live-0005-codex-app-server-private-runtime@1",
+    "feature-retrospective-live-issue-11@1",
+    "adr-live-0006-local-interviewer-speech@1",
+    "adr-live-0007-retained-full-and-compact-presentations@1",
+    "adr-live-0008-session-owned-board-revisions-and-exports@1",
+    "adr-live-0009-local-excalidraw-board-editor-adapter@1"
+  ]
+}
