@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "repository": "interview-arc-live",
+  "pullRequest": 65,
+  "privacyAuthorizationUrl": "https://github.com/Vinosaamaa/interview-arc-live/issues/52#issuecomment-5310182290",
+  "receiptPaths": [
+    "docs/engineering/changes/pr-36.md",
+    "docs/engineering/changes/pr-37.md",
+    "docs/engineering/changes/pr-38.md",
+    "docs/engineering/changes/pr-39.md",
+    "docs/engineering/changes/pr-40.md"
+  ],
+  "recordRefs": [
+    "adr-live-0009-local-excalidraw-board-editor-adapter@1"
+  ],
+  "addedRecordRefs": []
+}
