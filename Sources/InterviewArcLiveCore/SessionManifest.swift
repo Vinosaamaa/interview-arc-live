@@ -46,6 +46,7 @@ public struct TurnID: RawRepresentable, Codable, Hashable, Sendable, CustomStrin
 /// Additional specialties belong here only after their prompt contract exists.
 public enum ActivitySpecialty: String, Codable, Sendable, Equatable {
     case systemDesign = "system_design"
+    case coding = "coding"
     /// issue-70-behavioral-specialty: local Behavioral room prompt. Hosted `/live/v1` writes wait on interview-arc#389.
     case behavioral = "behavioral"
 }

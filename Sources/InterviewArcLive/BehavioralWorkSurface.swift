@@ -184,7 +184,7 @@ struct BehavioralProjectKit: Equatable, Sendable {
     /// Stable project identity. Titles are never binding authority.
     let projectId: String
     let sections: [BehavioralProfileSection]
-    let selectedSectionKey: String
+    var selectedSectionKey: String
     let conspicuousGap: String?
 }
 
@@ -206,7 +206,7 @@ struct BehavioralResumeClaimKit: Equatable, Sendable {
     let sourceClaimId: String
     let projectId: String
     let sections: [BehavioralProfileSection]
-    let selectedSectionKey: String
+    var selectedSectionKey: String
     let contraryNote: String?
     let conspicuousGap: String?
 }
