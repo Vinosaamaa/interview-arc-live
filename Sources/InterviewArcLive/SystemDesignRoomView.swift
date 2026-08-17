@@ -1048,7 +1048,7 @@ struct SystemDesignRoomView: View {
                     wideMinimumWidth: 132
                 )
             }
-            .buttonStyle(RoomPrimaryActionButtonStyle())
+            .buttonStyle(RoomChromeButtonStyle())
             .disabled(!model.canAct)
             .keyboardShortcut(.return, modifiers: [.command])
             .accessibilityIdentifier(FullRoomAccessibility.primaryAction)
@@ -1314,50 +1314,6 @@ private struct RoomChromeButtonStyle: ButtonStyle {
                 .animation(
                     reduceMotion ? nil : .easeOut(duration: 0.08),
                     value: configuration.isPressed
-                )
-        }
-    }
-}
-
-private struct RoomPrimaryActionButtonStyle: ButtonStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        RoomPrimaryActionButtonBody(configuration: configuration)
-    }
-
-    private struct RoomPrimaryActionButtonBody: View {
-        let configuration: ButtonStyleConfiguration
-        @Environment(\.isEnabled) private var isEnabled
-        @Environment(\.accessibilityReduceMotion) private var reduceMotion
-        @State private var isHovering = false
-
-        var body: some View {
-            configuration.label
-                .frame(height: FullRoomLayout.minimumActionHitTarget)
-                .foregroundStyle(
-                    isEnabled ? Color.white : LivePalette.violet.opacity(0.42)
-                )
-                .background {
-                    Capsule()
-                        .fill(
-                            isEnabled
-                                ? LivePalette.violet.opacity(
-                                    configuration.isPressed
-                                        ? 0.82
-                                        : (isHovering ? 0.92 : 1)
-                                )
-                                : LivePalette.violet.opacity(0.12)
-                        )
-                }
-                .contentShape(Capsule())
-                .scaleEffect(
-                    reduceMotion || !isEnabled
-                        ? 1
-                        : (configuration.isPressed ? 0.98 : 1)
-                )
-                .onHover { isHovering = $0 }
-                .animation(
-                    reduceMotion ? nil : .easeOut(duration: 0.12),
-                    value: isHovering
                 )
         }
     }
@@ -1802,7 +1758,12 @@ private struct LiveWaveform: View {
                 levelCount: levels.count
             )
             for (level, x) in zip(levels, barPositions) {
-                let height = max(3, level * size.height * (isActive ? 0.88 : 0.55))
+                let height = FullRoomWaveformLayout.barHeight(
+                    level: level,
+                    canvasHeight: size.height,
+                    isActive: isActive
+                )
+                guard height > 0 else { continue }
                 var bar = Path()
                 bar.move(to: CGPoint(x: x, y: center - height / 2))
                 bar.addLine(to: CGPoint(x: x, y: center + height / 2))
@@ -1820,6 +1781,16 @@ private struct LiveWaveform: View {
 enum FullRoomWaveformLayout {
     static let traceCoverageFraction: CGFloat = 0.58
     static let horizontalInset: CGFloat = 10
+    static let activeHeightFraction: CGFloat = 0.88
+
+    static func barHeight(
+        level: Double,
+        canvasHeight: CGFloat,
+        isActive: Bool
+    ) -> CGFloat {
+        guard isActive else { return 0 }
+        return max(3, CGFloat(level) * canvasHeight * activeHeightFraction)
+    }
 
     static func barXPositions(
         width: CGFloat,
