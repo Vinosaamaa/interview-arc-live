@@ -104,6 +104,11 @@ public struct LiveActivitySummary: Codable, Equatable, Sendable, Identifiable {
     public let revision: Int
     public let timer: LiveTimer?
     public let result: LiveResultProjection
+
+    var isOpenLiveRoomActivity: Bool {
+        (type == .systemDesign || type == .leetcode)
+            && (lifecycle == .planned || lifecycle == .running)
+    }
 }
 
 public struct LiveTodayProjection: Codable, Equatable, Sendable {
@@ -116,17 +121,40 @@ public struct LiveTodayProjection: Codable, Equatable, Sendable {
     public let activities: [LiveActivitySummary]
 
     public var selectedSystemDesignActivity: LiveActivitySummary? {
+        selectedOpenActivity(of: .systemDesign)
+    }
+
+    public var selectedCodingActivity: LiveActivitySummary? {
+        selectedOpenActivity(of: .leetcode)
+    }
+
+    /// Focus wins when it is an open System Design or LeetCode activity.
+    /// Otherwise prefer System Design, then LeetCode, matching the shipping
+    /// System Design-first room.
+    public var selectedLiveWorkSurface: LiveActivityType? {
+        if let focused = focus.activityId,
+           let activity = activities.first(where: { $0.id == focused }),
+           activity.isOpenLiveRoomActivity {
+            return activity.type
+        }
+        if selectedSystemDesignActivity != nil { return .systemDesign }
+        if selectedCodingActivity != nil { return .leetcode }
+        return nil
+    }
+
+    public func selectedOpenActivity(
+        of type: LiveActivityType
+    ) -> LiveActivitySummary? {
         if let focused = focus.activityId,
            let activity = activities.first(where: {
                $0.id == focused
-                   && $0.type == .systemDesign
-                   && ($0.lifecycle == .planned || $0.lifecycle == .running)
+                   && $0.type == type
+                   && $0.isOpenLiveRoomActivity
            }) {
             return activity
         }
         return activities.first {
-            $0.type == .systemDesign
-                && ($0.lifecycle == .planned || $0.lifecycle == .running)
+            $0.type == type && $0.isOpenLiveRoomActivity
         }
     }
 }

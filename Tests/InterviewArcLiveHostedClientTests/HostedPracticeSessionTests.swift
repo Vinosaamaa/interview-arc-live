@@ -471,6 +471,70 @@ final class HostedPracticeSessionTests: XCTestCase {
         )
     }
 
+    func testSelectedCodingActivityUsesFocusedLeetCodeAndDoesNotStealSystemDesign() {
+        XCTAssertEqual(
+            HostedFixtures.todayMixed.selectedSystemDesignActivity?.id,
+            "activity-1"
+        )
+        XCTAssertEqual(
+            HostedFixtures.todayMixed.selectedCodingActivity?.id,
+            "activity-code"
+        )
+        XCTAssertEqual(HostedFixtures.todayMixed.selectedLiveWorkSurface, .systemDesign)
+        XCTAssertEqual(
+            HostedFixtures.todayCodingFocus.selectedLiveWorkSurface,
+            .leetcode
+        )
+        XCTAssertEqual(
+            HostedFixtures.todayCodingFocus.selectedCodingActivity?.id,
+            "activity-code"
+        )
+        XCTAssertEqual(
+            HostedFixtures.todayCodingFocus.selectedSystemDesignActivity?.id,
+            "activity-1"
+        )
+        XCTAssertNil(HostedFixtures.todayCodingOnly.selectedSystemDesignActivity)
+        XCTAssertEqual(
+            HostedFixtures.todayCodingOnly.selectedCodingActivity?.id,
+            "activity-code"
+        )
+        XCTAssertEqual(HostedFixtures.todayCodingOnly.selectedLiveWorkSurface, .leetcode)
+    }
+
+    func testDefaultOpenStillBindsSystemDesignWhenLeetCodeAlsoExists() async throws {
+        let fixture = try HostedSessionFixture()
+        await fixture.transport.includeCodingActivity()
+
+        let snapshot = await fixture.session.open()
+
+        XCTAssertEqual(snapshot.activityID, "activity-1")
+        XCTAssertEqual(snapshot.boundSpecialty, .systemDesign)
+        XCTAssertEqual(snapshot.connection, .writable)
+    }
+
+    func testOpenSelectingLeetCodeBindsCodingActivity() async throws {
+        let fixture = try HostedSessionFixture()
+        await fixture.transport.includeCodingActivity()
+
+        let snapshot = await fixture.session.open(selecting: .leetcode)
+
+        XCTAssertEqual(snapshot.activityID, "activity-code")
+        XCTAssertEqual(snapshot.boundSpecialty, .leetcode)
+        XCTAssertEqual(snapshot.connection, .writable)
+        XCTAssertEqual(snapshot.question, "Two Sum")
+    }
+
+    func testOpenPreferredBindsFocusedLeetCodeActivity() async throws {
+        let fixture = try HostedSessionFixture()
+        await fixture.transport.serveCodingFocus()
+
+        let snapshot = await fixture.session.openPreferred()
+
+        XCTAssertEqual(snapshot.activityID, "activity-code")
+        XCTAssertEqual(snapshot.boundSpecialty, .leetcode)
+        XCTAssertEqual(snapshot.connection, .writable)
+    }
+
     func testRefreshSwitchesAuthorityAndAcquiresFreshSelectedLease() async throws {
         let fixture = try HostedSessionFixture()
         _ = await fixture.session.open()
@@ -638,6 +702,8 @@ private actor HostedFixtureTransport: LiveV1Transport {
     private var rejectReceiptLookup = false
     private var commandRejection: (code: String, retryable: Bool)?
     private var useNextActivity = false
+    private var includeCoding = false
+    private var codingFocus = false
     private var heldLease: LiveLeaseGrant?
     private var committedPairs: [LivePair] = []
     private var clips: [LiveClip] = []
@@ -652,6 +718,11 @@ private actor HostedFixtureTransport: LiveV1Transport {
         commandRejection = (code, retryable)
     }
     func selectNextActivity() { useNextActivity = true }
+    func includeCodingActivity() { includeCoding = true }
+    func serveCodingFocus() {
+        includeCoding = true
+        codingFocus = true
+    }
     func paths() -> [String] { recorded.map(\.path) }
     func commandBodies() -> [Data] {
         recorded.filter { $0.path.hasSuffix("/commands") }.compactMap(\.body)
@@ -660,17 +731,26 @@ private actor HostedFixtureTransport: LiveV1Transport {
     func send(_ request: LiveV1Request) async throws -> LiveV1HTTPResponse {
         recorded.append(request)
         if request.path == "/live/v1/today" {
-            return response(
-                useNextActivity
-                    ? HostedFixtures.todayWithNextFocus
-                    : HostedFixtures.today
-            )
+            let today: LiveTodayProjection
+            if useNextActivity {
+                today = HostedFixtures.todayWithNextFocus
+            } else if codingFocus {
+                today = HostedFixtures.todayCodingFocus
+            } else if includeCoding {
+                today = HostedFixtures.todayMixed
+            } else {
+                today = HostedFixtures.today
+            }
+            return response(today)
         }
         if request.path == "/live/v1/activities/activity-1" {
             return response(activityProjection(HostedFixtures.activity))
         }
         if request.path == "/live/v1/activities/activity-2" {
             return response(activityProjection(HostedFixtures.nextActivity))
+        }
+        if request.path == "/live/v1/activities/activity-code" {
+            return response(activityProjection(HostedFixtures.codingActivity))
         }
         if request.path.contains("/receipts/") {
             if rejectReceiptLookup {
@@ -862,7 +942,9 @@ private actor HostedFixtureTransport: LiveV1Transport {
                 operation: operation,
                 base: request.path.contains("activity-2")
                     ? HostedFixtures.nextActivity
-                    : HostedFixtures.activity,
+                    : request.path.contains("activity-code")
+                        ? HostedFixtures.codingActivity
+                        : HostedFixtures.activity,
                 lease: lease,
                 selectedNextActivityID: selectedNextActivityID,
                 clip: clips.last
@@ -1142,5 +1224,98 @@ private enum HostedFixtures {
         ),
         sessions: today.sessions,
         activities: [nextSummary]
+    )
+    static let codingSummary = LiveActivitySummary(
+        id: "activity-code",
+        questionId: "1",
+        date: "2026-08-11",
+        source: "fixture",
+        type: .leetcode,
+        title: "Two Sum",
+        prompt: "Two Sum",
+        allocatedSeconds: 2_400,
+        sessionId: "session-1",
+        lifecycle: .planned,
+        revision: 1,
+        timer: LiveTimer(
+            accumulatedSeconds: 0,
+            startedAt: nil,
+            runningSince: nil,
+            completed: false,
+            completedAt: nil,
+            revision: 0
+        ),
+        result: LiveResultProjection(value: nil, revision: 0)
+    )
+    static let codingDetail = LiveActivityDetail(
+        id: codingSummary.id,
+        questionId: codingSummary.questionId,
+        date: codingSummary.date,
+        source: codingSummary.source,
+        type: codingSummary.type,
+        title: codingSummary.title,
+        prompt: codingSummary.prompt,
+        allocatedSeconds: codingSummary.allocatedSeconds,
+        sessionId: codingSummary.sessionId,
+        lifecycle: codingSummary.lifecycle,
+        revision: codingSummary.revision,
+        timer: codingSummary.timer,
+        result: codingSummary.result,
+        textEvidenceSatisfied: false
+    )
+    static let codingActivity = LiveActivityProjection(
+        protocolVersion: 1,
+        serverTime: 1_000_000,
+        ownerRevision: 8,
+        workbench: workbench,
+        focus: LiveFocus(
+            activityId: codingSummary.id,
+            sessionId: "session-1",
+            focusedAt: 990_000
+        ),
+        session: today.sessions[0],
+        activity: codingDetail,
+        lease: LiveLeaseSummary(
+            active: false,
+            holderPresent: false,
+            expiresAt: nil
+        ),
+        pairs: [],
+        clips: []
+    )
+    static let todayMixed = LiveTodayProjection(
+        protocolVersion: 1,
+        serverTime: 1_000_000,
+        ownerRevision: 8,
+        workbench: workbench,
+        focus: focus,
+        sessions: today.sessions,
+        activities: [summary, codingSummary, nextSummary]
+    )
+    static let todayCodingFocus = LiveTodayProjection(
+        protocolVersion: 1,
+        serverTime: 1_000_000,
+        ownerRevision: 8,
+        workbench: workbench,
+        focus: LiveFocus(
+            activityId: codingSummary.id,
+            sessionId: "session-1",
+            focusedAt: 990_000
+        ),
+        sessions: today.sessions,
+        activities: [summary, codingSummary, nextSummary]
+    )
+    static let todayCodingOnly = LiveTodayProjection(
+        protocolVersion: 1,
+        serverTime: 1_000_000,
+        ownerRevision: 8,
+        workbench: workbench,
+        focus: LiveFocus(
+            activityId: codingSummary.id,
+            sessionId: "session-1",
+            focusedAt: 990_000
+        ),
+        sessions: today.sessions,
+        activities: [codingSummary]
     )
 }

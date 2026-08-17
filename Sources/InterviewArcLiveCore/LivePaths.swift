@@ -31,4 +31,18 @@ public enum LivePaths {
         try applicationSupportRoot(fileManager: fileManager)
             .appendingPathComponent("SessionManifests", isDirectory: true)
     }
+
+    public static func codingSourcesDirectory(
+        fileManager: FileManager = .default
+    ) throws -> URL {
+        try applicationSupportRoot(fileManager: fileManager)
+            .appendingPathComponent("CodingSources", isDirectory: true)
+    }
+
+    public static func workspaceLinkFile(
+        fileManager: FileManager = .default
+    ) throws -> URL {
+        try applicationSupportRoot(fileManager: fileManager)
+            .appendingPathComponent("WorkspaceLink.json", isDirectory: false)
+    }
 }

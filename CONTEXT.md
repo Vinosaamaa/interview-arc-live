@@ -126,6 +126,26 @@ Session. Audio exports are derived from it and never replace it.
 The specialty-specific artifact area: system-design Board, coding workspace,
 or behavioral Story Kit.
 
+### Coding Source File
+
+The one evolving Java file bound to a coding Interview Room Session. Its
+identity is `practice/leetcode/solutions/<four-digit-number>-<canonical-slug>.java`
+when both the public number and slug are known. Live never invents a LeetCode
+number. If Application Support `WorkspaceLink.json` names an Interview Arc
+checkout, that checkout file is edited; otherwise Live keeps a private copy
+under `CodingSources/<activityId>/`.
+
+### Locally Verified
+
+The only success label a local Java harness run may show. It is not LeetCode
+Accepted and never changes the hosted result.
+
+### Workspace Link
+
+The runtime Application Support file `WorkspaceLink.json` that may name an
+Interview Arc checkout through `interviewArcRepositoryRoot`. Personal paths
+stay out of Git.
+
 ### Board Document
 
 The versioned, bounded canonical editable source for one system-design Board.

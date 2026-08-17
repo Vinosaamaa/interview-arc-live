@@ -40,6 +40,13 @@ The six-hour website session countdown is Today’s parent-session timer, not a 
 
 ![Coding room concept](./coding-room.png)
 
+Native room mockups for [issue #69](https://github.com/Vinosaamaa/interview-arc-live/issues/69):
+
+- [Full room](./coding-room-native-full.png)
+- [No coding activity gate](./coding-room-native-gate.png)
+- [Quick run drawer](./coding-room-native-run.png)
+- [Compact capsule](./coding-room-native-compact.png)
+
 The coding room combines the live transcript with one evolving source file. The editor is a real workspace, not a decorative code preview.
 
 ### Preflight and source identity

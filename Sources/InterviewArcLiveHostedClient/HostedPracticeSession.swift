@@ -31,6 +31,7 @@ public struct HostedPracticeSnapshot: Equatable, Sendable {
     public let hasQuarantinedOperations: Bool
     public let lastLiveInvalidationRevision: Int
     public let localToServerOffsetMilliseconds: LiveEpochMilliseconds
+    public let boundSpecialty: LiveActivityType
 
     public init(
         connection: HostedPracticeConnection,
@@ -40,7 +41,8 @@ public struct HostedPracticeSnapshot: Equatable, Sendable {
         pendingOperationCount: Int = 0,
         hasQuarantinedOperations: Bool = false,
         lastLiveInvalidationRevision: Int = 0,
-        localToServerOffsetMilliseconds: LiveEpochMilliseconds = 0
+        localToServerOffsetMilliseconds: LiveEpochMilliseconds = 0,
+        boundSpecialty: LiveActivityType = .systemDesign
     ) {
         self.connection = connection
         self.today = today
@@ -50,6 +52,7 @@ public struct HostedPracticeSnapshot: Equatable, Sendable {
         self.hasQuarantinedOperations = hasQuarantinedOperations
         self.lastLiveInvalidationRevision = lastLiveInvalidationRevision
         self.localToServerOffsetMilliseconds = localToServerOffsetMilliseconds
+        self.boundSpecialty = boundSpecialty
     }
 
     public var question: String? {
@@ -109,6 +112,7 @@ public actor HostedPracticeSession {
     private var installation: LiveInstallationIdentity?
     private var fingerprint: String?
     private var lastRenewedAt: LiveEpochMilliseconds?
+    private var boundSpecialty: LiveActivityType = .systemDesign
     private var state = HostedPracticeSnapshot(connection: .signedOut)
 
     public init(
@@ -131,8 +135,36 @@ public actor HostedPracticeSession {
 
     public func snapshot() -> HostedPracticeSnapshot { state }
 
+    public func readToday() async throws -> LiveTodayProjection {
+        try await client.today()
+    }
+
     @discardableResult
-    public func open(acquireWriterLease: Bool = true) async -> HostedPracticeSnapshot {
+    public func openPreferred(
+        acquireWriterLease: Bool = true
+    ) async -> HostedPracticeSnapshot {
+        do {
+            let today = try await client.today()
+            boundSpecialty = Self.liveRoomSpecialty(
+                today.selectedLiveWorkSurface ?? .systemDesign
+            )
+        } catch LiveIntegrationTokenStoreError.missingToken {
+            boundSpecialty = .systemDesign
+        } catch {
+            boundSpecialty = .systemDesign
+        }
+        return await open(
+            acquireWriterLease: acquireWriterLease,
+            selecting: boundSpecialty
+        )
+    }
+
+    @discardableResult
+    public func open(
+        acquireWriterLease: Bool = true,
+        selecting type: LiveActivityType = .systemDesign
+    ) async -> HostedPracticeSnapshot {
+        boundSpecialty = Self.liveRoomSpecialty(type)
         state = copy(connection: .loading)
         do {
             let fingerprint = try await tokenReader.credentialFingerprint()
@@ -154,8 +186,9 @@ public actor HostedPracticeSession {
                 pendingOperationCount: pending.count,
                 hasQuarantinedOperations: quarantined,
                 localToServerOffsetMilliseconds: authority.serverTime
-                    - clock.epochMilliseconds()
-            )
+                    - clock.epochMilliseconds(),
+                    boundSpecialty: boundSpecialty
+                )
 
             guard !quarantined else {
                 state = copy(
@@ -180,7 +213,8 @@ public actor HostedPracticeSession {
                     pendingOperationCount: 0,
                     hasQuarantinedOperations: quarantined,
                     localToServerOffsetMilliseconds:
-                        authority.serverTime - clock.epochMilliseconds()
+                        authority.serverTime - clock.epochMilliseconds(),
+                    boundSpecialty: boundSpecialty
                 )
                 return state
             }
@@ -191,8 +225,9 @@ public actor HostedPracticeSession {
                 pendingOperationCount: 0,
                 hasQuarantinedOperations: quarantined,
                 localToServerOffsetMilliseconds:
-                    activity.serverTime - clock.epochMilliseconds()
-            )
+                    activity.serverTime - clock.epochMilliseconds(),
+                    boundSpecialty: boundSpecialty
+                )
             if acquireWriterLease && (
                 activity.activity.lifecycle == .planned
                     || activity.activity.lifecycle == .running
@@ -222,8 +257,9 @@ public actor HostedPracticeSession {
                 hasQuarantinedOperations: true,
                 lastLiveInvalidationRevision: state.lastLiveInvalidationRevision,
                 localToServerOffsetMilliseconds:
-                    authority.serverTime - clock.epochMilliseconds()
-            )
+                    authority.serverTime - clock.epochMilliseconds(),
+                    boundSpecialty: boundSpecialty
+                )
             throw HostedPracticeSessionError.recoveryRequired(
                 "credential_changed"
             )
@@ -232,7 +268,9 @@ public actor HostedPracticeSession {
             authority = try await readAuthority()
         }
 
-        guard let selectedID = authority.today.selectedSystemDesignActivity?.id,
+        guard let selectedID = authority.today.selectedOpenActivity(
+            of: boundSpecialty
+        )?.id,
               let activity = authority.activity else {
             if state.lease != nil { try await releaseLease() }
             state = HostedPracticeSnapshot(
@@ -240,8 +278,9 @@ public actor HostedPracticeSession {
                 today: authority.today,
                 hasQuarantinedOperations: state.hasQuarantinedOperations,
                 localToServerOffsetMilliseconds:
-                    authority.serverTime - clock.epochMilliseconds()
-            )
+                    authority.serverTime - clock.epochMilliseconds(),
+                    boundSpecialty: boundSpecialty
+                )
             return state
         }
 
@@ -259,8 +298,9 @@ public actor HostedPracticeSession {
                 hasQuarantinedOperations: state.hasQuarantinedOperations,
                 lastLiveInvalidationRevision: state.lastLiveInvalidationRevision,
                 localToServerOffsetMilliseconds:
-                    activity.serverTime - clock.epochMilliseconds()
-            )
+                    activity.serverTime - clock.epochMilliseconds(),
+                    boundSpecialty: boundSpecialty
+                )
             if activity.activity.lifecycle == .planned
                 || activity.activity.lifecycle == .running {
                 try await acquireLease()
@@ -280,8 +320,9 @@ public actor HostedPracticeSession {
             hasQuarantinedOperations: state.hasQuarantinedOperations,
             lastLiveInvalidationRevision: state.lastLiveInvalidationRevision,
             localToServerOffsetMilliseconds:
-                activity.serverTime - clock.epochMilliseconds()
-        )
+                activity.serverTime - clock.epochMilliseconds(),
+                    boundSpecialty: boundSpecialty
+                )
         return state
     }
 
@@ -345,8 +386,9 @@ public actor HostedPracticeSession {
             hasQuarantinedOperations: state.hasQuarantinedOperations,
             lastLiveInvalidationRevision: state.lastLiveInvalidationRevision,
             localToServerOffsetMilliseconds:
-                response.activity.serverTime - clock.epochMilliseconds()
-        )
+                response.activity.serverTime - clock.epochMilliseconds(),
+                    boundSpecialty: boundSpecialty
+                )
     }
 
     public func renewLease() async throws {
@@ -505,8 +547,9 @@ public actor HostedPracticeSession {
             hasQuarantinedOperations: state.hasQuarantinedOperations,
             lastLiveInvalidationRevision: state.lastLiveInvalidationRevision,
             localToServerOffsetMilliseconds:
-                activity.serverTime - clock.epochMilliseconds()
-        )
+                activity.serverTime - clock.epochMilliseconds(),
+                    boundSpecialty: boundSpecialty
+                )
         try await acquireLease()
     }
 
@@ -550,13 +593,19 @@ public actor HostedPracticeSession {
 
     private func readAuthority() async throws -> HostedAuthorityRead {
         let today = try await client.today()
-        guard let selectedID = today.selectedSystemDesignActivity?.id else {
+        guard let selectedID = today.selectedOpenActivity(of: boundSpecialty)?.id else {
             return HostedAuthorityRead(today: today, activity: nil)
         }
         return HostedAuthorityRead(
             today: today,
             activity: try await client.activity(selectedID)
         )
+    }
+
+    private static func liveRoomSpecialty(
+        _ type: LiveActivityType
+    ) -> LiveActivityType {
+        type == .leetcode ? .leetcode : .systemDesign
     }
 
     private func recover(
@@ -1117,8 +1166,9 @@ public actor HostedPracticeSession {
             lastLiveInvalidationRevision: lastLiveInvalidationRevision
                 ?? state.lastLiveInvalidationRevision,
             localToServerOffsetMilliseconds: localToServerOffsetMilliseconds
-                ?? state.localToServerOffsetMilliseconds
-        )
+                ?? state.localToServerOffsetMilliseconds,
+                    boundSpecialty: boundSpecialty
+                )
     }
 }
 

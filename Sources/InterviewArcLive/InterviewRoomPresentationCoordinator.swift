@@ -1,5 +1,7 @@
 import AppKit
+import Combine
 import InterviewArcLiveCore
+import InterviewArcLiveHostedClient
 import SwiftUI
 
 enum InterviewRoomPresentationState: Equatable {
@@ -70,19 +72,32 @@ final class PresentationFrameAdjustmentGuard {
     }
 }
 
+enum InterviewRoomPresentedSpecialty: Equatable {
+    case systemDesign
+    case coding
+}
+
+@MainActor
+final class InterviewRoomPresentationSelection: ObservableObject {
+    @Published var specialty: InterviewRoomPresentedSpecialty = .systemDesign
+}
+
 /// Owns the two process-level Presentations while the interview model remains
 /// the single interaction writer. Hiding a Presentation never tears down its
 /// hosting tree or creates session/provider state.
 @MainActor
 final class InterviewRoomPresentationCoordinator: NSObject, NSWindowDelegate {
     let model: SystemDesignRoomModel
+    let codingModel: CodingRoomModel?
+    let hostedController: HostedPracticeController?
+    let presentationSelection = InterviewRoomPresentationSelection()
 
     private(set) var presentationState: InterviewRoomPresentationState = .notStarted
     private(set) var didRequestModelOpen = false
     private(set) var fullWindow: NSWindow!
     private(set) var compactPanel: NSPanel!
 
-    private var fullHostingController: NSHostingController<SystemDesignRoomView>!
+    private var fullHostingController: NSHostingController<FullInterviewRoomRoot>!
     private var compactHostingController: CompactRoomHostingController!
     private var fullContainerController: FullRoomContainerController!
     private let frameAutosaveName: String
@@ -96,6 +111,8 @@ final class InterviewRoomPresentationCoordinator: NSObject, NSWindowDelegate {
     private var closeAlert: NSAlert?
     private var modelOpenTask: Task<Void, Never>?
     private var compactSizeReconciliationTask: Task<Void, Never>?
+    private var hostedSpecialtyObservation: AnyCancellable?
+    private var isBindingPresentation = false
     private var savedFullFrame: NSRect?
     private var savedCompactOrigin: NSPoint?
     private weak var savedFullFirstResponder: NSResponder?
@@ -103,10 +120,14 @@ final class InterviewRoomPresentationCoordinator: NSObject, NSWindowDelegate {
 
     init(
         model: SystemDesignRoomModel,
+        codingModel: CodingRoomModel? = nil,
+        hostedController: HostedPracticeController? = nil,
         frameAutosaveName: String = "InterviewArcLive.SystemDesignRoom",
         compactDynamicTypeSizeOverride: DynamicTypeSize? = nil
     ) {
         self.model = model
+        self.codingModel = codingModel
+        self.hostedController = hostedController
         self.frameAutosaveName = frameAutosaveName
         self.compactDynamicTypeSizeOverride = compactDynamicTypeSizeOverride
         super.init()
@@ -126,12 +147,38 @@ final class InterviewRoomPresentationCoordinator: NSObject, NSWindowDelegate {
         ObjectIdentifier(compactHostingController)
     }
 
+    var presentedSpecialty: InterviewRoomPresentedSpecialty {
+        presentationSelection.specialty
+    }
+
     var fullHostedModelIdentity: ObjectIdentifier {
-        ObjectIdentifier(fullHostingController.rootView.model)
+        activeSessionIdentity
     }
 
     var compactHostedModelIdentity: ObjectIdentifier {
-        ObjectIdentifier(compactHostingController.rootView.model)
+        activeSessionIdentity
+    }
+
+    var activeSessionIdentity: ObjectIdentifier {
+        switch presentationSelection.specialty {
+        case .systemDesign:
+            ObjectIdentifier(model)
+        case .coding:
+            ObjectIdentifier(codingModel ?? model)
+        }
+    }
+
+    func adoptPresentedSpecialty(_ specialty: InterviewRoomPresentedSpecialty) {
+        presentationSelection.specialty = specialty
+    }
+
+    private var activeSnapshot: InterviewRoomSnapshot? {
+        switch presentationSelection.specialty {
+        case .systemDesign:
+            model.snapshot
+        case .coding:
+            codingModel?.snapshot
+        }
     }
 
     var fallbackFirstResponder: NSResponder {
@@ -151,7 +198,7 @@ final class InterviewRoomPresentationCoordinator: NSObject, NSWindowDelegate {
         didRequestModelOpen = true
         modelOpenTask = Task { @MainActor [weak self] in
             guard let self else { return }
-            await model.open()
+            await bindPreferredPresentation()
         }
     }
 
@@ -220,7 +267,7 @@ final class InterviewRoomPresentationCoordinator: NSObject, NSWindowDelegate {
         case .endInterview:
             isResolvingCloseChoice = true
             defer { isResolvingCloseChoice = false }
-            let didFinish = await model.finishInterview()
+            let didFinish = await finishActiveInterview()
 
             guard presentationState != .terminated else { return }
 
@@ -250,6 +297,7 @@ final class InterviewRoomPresentationCoordinator: NSObject, NSWindowDelegate {
         closeAlert = nil
         compactSizeReconciliationTask?.cancel()
         compactSizeReconciliationTask = nil
+        hostedSpecialtyObservation = nil
         compactPanel.orderOut(nil)
         fullWindow.orderOut(nil)
         // Do not finish the Session or cancel/replay durable provider work.
@@ -261,7 +309,7 @@ final class InterviewRoomPresentationCoordinator: NSObject, NSWindowDelegate {
         guard sender === fullWindow else { return true }
         if presentationState == .terminated
             || isAllowingFullWindowClose
-            || model.snapshot?.phase == .completed {
+            || activeSnapshot?.phase == .completed {
             return true
         }
         if isResolvingCloseChoice {
@@ -357,8 +405,10 @@ final class InterviewRoomPresentationCoordinator: NSObject, NSWindowDelegate {
     }
 
     private func installPresentations() {
-        let fullRoot = SystemDesignRoomView(
-            model: model,
+        let fullRoot = FullInterviewRoomRoot(
+            systemDesign: model,
+            selection: presentationSelection,
+            coding: codingModel,
             onCollapse: { [weak self] in self?.collapse() }
         )
         fullHostingController = NSHostingController(rootView: fullRoot)
@@ -401,8 +451,10 @@ final class InterviewRoomPresentationCoordinator: NSObject, NSWindowDelegate {
         fullWindow = full
         savedFullFrame = full.frame
 
-        let compactRoot = CompactSystemDesignRoomView(
-            model: model,
+        let compactRoot = CompactInterviewRoomRoot(
+            systemDesign: model,
+            selection: presentationSelection,
+            coding: codingModel,
             onExpand: { [weak self] in self?.expand() },
             dynamicTypeSizeOverride: compactDynamicTypeSizeOverride
         )
@@ -643,6 +695,89 @@ final class InterviewRoomPresentationCoordinator: NSObject, NSWindowDelegate {
         prepareForTermination()
     }
 
+    private func bindPreferredPresentation() async {
+        isBindingPresentation = true
+        defer {
+            isBindingPresentation = false
+            observeHostedSpecialty()
+        }
+        if let hostedController, codingModel != nil {
+            let snapshot = await hostedController.openPreferred()
+            await adoptHostedSnapshot(snapshot, openIfNeeded: true)
+            return
+        }
+        presentationSelection.specialty = .systemDesign
+        await model.open()
+    }
+
+    private func observeHostedSpecialty() {
+        guard hostedSpecialtyObservation == nil,
+              let hostedController,
+              codingModel != nil else { return }
+        hostedSpecialtyObservation = hostedController.$snapshot.sink {
+            [weak self] snapshot in
+            guard let self, self.didStart, !self.isBindingPresentation else { return }
+            Task { @MainActor [weak self] in
+                await self?.handleHostedSnapshotChange(snapshot)
+            }
+        }
+    }
+
+    private func handleHostedSnapshotChange(
+        _ snapshot: HostedPracticeSnapshot
+    ) async {
+        guard !isBindingPresentation else { return }
+        if snapshot.connection == .signedOut {
+            return
+        }
+        if snapshot.connection == .loading { return }
+        isBindingPresentation = true
+        defer { isBindingPresentation = false }
+        if let hostedController,
+           snapshot.boundSpecialty != .leetcode,
+           snapshot.today?.selectedLiveWorkSurface == .leetcode {
+            let preferred = await hostedController.openPreferred()
+            await adoptHostedSnapshot(preferred, openIfNeeded: true)
+            return
+        }
+        await adoptHostedSnapshot(snapshot, openIfNeeded: true)
+    }
+
+    private func adoptHostedSnapshot(
+        _ snapshot: HostedPracticeSnapshot,
+        openIfNeeded: Bool
+    ) async {
+        guard snapshot.connection != .loading else { return }
+        if Self.shouldPresentCoding(snapshot) {
+            presentationSelection.specialty = .coding
+            if openIfNeeded, codingModel?.snapshot == nil, !(codingModel?.isWorking ?? false) {
+                await codingModel?.open()
+            }
+            return
+        }
+        presentationSelection.specialty = .systemDesign
+        if openIfNeeded, model.snapshot == nil, !model.isWorking {
+            await model.open()
+        }
+    }
+
+    static func shouldPresentCoding(_ snapshot: HostedPracticeSnapshot) -> Bool {
+        snapshot.boundSpecialty == .leetcode
+            || snapshot.today?.selectedLiveWorkSurface == .leetcode
+    }
+
+    private func finishActiveInterview() async -> Bool {
+        switch presentationSelection.specialty {
+        case .coding:
+            if let codingModel {
+                return await codingModel.finishInterview()
+            }
+            return false
+        case .systemDesign:
+            return await model.finishInterview()
+        }
+    }
+
     private static func squaredDistance(
         from lhs: NSPoint,
         to rhs: NSPoint
@@ -650,6 +785,59 @@ final class InterviewRoomPresentationCoordinator: NSObject, NSWindowDelegate {
         let dx = lhs.x - rhs.x
         let dy = lhs.y - rhs.y
         return dx * dx + dy * dy
+    }
+}
+
+struct FullInterviewRoomRoot: View {
+    @ObservedObject var systemDesign: SystemDesignRoomModel
+    @ObservedObject var selection: InterviewRoomPresentationSelection
+    let coding: CodingRoomModel?
+    let onCollapse: () -> Void
+
+    var body: some View {
+        switch selection.specialty {
+        case .systemDesign:
+            SystemDesignRoomView(model: systemDesign, onCollapse: onCollapse)
+        case .coding:
+            if let coding {
+                CodingRoomView(model: coding, onCollapse: onCollapse)
+            } else {
+                SystemDesignRoomView(model: systemDesign, onCollapse: onCollapse)
+            }
+        }
+    }
+}
+
+struct CompactInterviewRoomRoot: View {
+    @ObservedObject var systemDesign: SystemDesignRoomModel
+    @ObservedObject var selection: InterviewRoomPresentationSelection
+    let coding: CodingRoomModel?
+    let onExpand: () -> Void
+    let dynamicTypeSizeOverride: DynamicTypeSize?
+
+    var body: some View {
+        switch selection.specialty {
+        case .systemDesign:
+            CompactSystemDesignRoomView(
+                model: systemDesign,
+                onExpand: onExpand,
+                dynamicTypeSizeOverride: dynamicTypeSizeOverride
+            )
+        case .coding:
+            if let coding {
+                CompactCodingRoomView(
+                    model: coding,
+                    onExpand: onExpand,
+                    dynamicTypeSizeOverride: dynamicTypeSizeOverride
+                )
+            } else {
+                CompactSystemDesignRoomView(
+                    model: systemDesign,
+                    onExpand: onExpand,
+                    dynamicTypeSizeOverride: dynamicTypeSizeOverride
+                )
+            }
+        }
     }
 }
 
@@ -701,7 +889,7 @@ private final class FullInterviewWindow: NSWindow {
 }
 
 private final class CompactRoomHostingController:
-    NSHostingController<CompactSystemDesignRoomView>
+    NSHostingController<CompactInterviewRoomRoot>
 {
     var onLayout: (() -> Void)?
 
@@ -712,10 +900,10 @@ private final class CompactRoomHostingController:
 }
 
 private final class FullRoomContainerController: NSViewController {
-    let hostingController: NSHostingController<SystemDesignRoomView>
+    let hostingController: NSHostingController<FullInterviewRoomRoot>
     let fallbackFirstResponder = StableFallbackFirstResponderView()
 
-    init(hostingController: NSHostingController<SystemDesignRoomView>) {
+    init(hostingController: NSHostingController<FullInterviewRoomRoot>) {
         self.hostingController = hostingController
         super.init(nibName: nil, bundle: nil)
     }

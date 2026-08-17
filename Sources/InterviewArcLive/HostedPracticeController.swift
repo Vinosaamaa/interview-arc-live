@@ -73,7 +73,29 @@ final class HostedPracticeController: ObservableObject {
     var canWrite: Bool { snapshot.connection == .writable }
     var hasHostedActivity: Bool { snapshot.activity != nil }
 
-    func open() async -> HostedPracticeSnapshot {
+    func open(
+        selecting type: LiveActivityType = .systemDesign
+    ) async -> HostedPracticeSnapshot {
+        let specialty = type == .leetcode ? .leetcode : .systemDesign
+        tokenReadiness = await tokenStore.readiness()
+        guard tokenReadiness == .ready || tokenReadiness == .readyUntilQuit else {
+            isConnectionSetupPresented = true
+            snapshot = HostedPracticeSnapshot(
+                connection: .signedOut,
+                boundSpecialty: specialty
+            )
+            return snapshot
+        }
+        isWorking = true
+        errorMessage = nil
+        defer { isWorking = false }
+        snapshot = await session.open(selecting: specialty)
+        applyConnectionState()
+        if snapshot.activity != nil { startBackgroundRecovery() }
+        return snapshot
+    }
+
+    func openPreferred() async -> HostedPracticeSnapshot {
         tokenReadiness = await tokenStore.readiness()
         guard tokenReadiness == .ready || tokenReadiness == .readyUntilQuit else {
             isConnectionSetupPresented = true
@@ -83,7 +105,7 @@ final class HostedPracticeController: ObservableObject {
         isWorking = true
         errorMessage = nil
         defer { isWorking = false }
-        snapshot = await session.open()
+        snapshot = await session.openPreferred()
         applyConnectionState()
         if snapshot.activity != nil { startBackgroundRecovery() }
         return snapshot
@@ -99,7 +121,7 @@ final class HostedPracticeController: ObservableObject {
             if untilQuit { try await tokenStore.useUntilQuit(value) }
             else { try await tokenStore.saveAndVerify(value) }
             tokenReadiness = await tokenStore.readiness()
-            snapshot = await session.open()
+            snapshot = await session.open(selecting: snapshot.boundSpecialty)
             applyConnectionState()
             if snapshot.activity != nil { startBackgroundRecovery() }
             if snapshot.connection != .signedOut {
@@ -240,7 +262,9 @@ final class HostedPracticeController: ObservableObject {
         case .recoveryRequired(let code):
             errorMessage = "Hosted recovery is required before recording (\(code))."
         case .noOpenSystemDesignActivity:
-            errorMessage = "Add a System Design activity to Today in Interview Arc."
+            errorMessage = snapshot.boundSpecialty == .leetcode
+                ? "Add a LeetCode activity to Today in Interview Arc."
+                : "Add a System Design activity to Today in Interview Arc."
         case .loading, .readOnly, .writable:
             errorMessage = nil
         }

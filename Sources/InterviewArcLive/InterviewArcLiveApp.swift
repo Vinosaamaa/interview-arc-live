@@ -35,12 +35,20 @@ final class InterviewArcLiveTerminationGate {
 final class InterviewArcLiveApp: NSObject, NSApplicationDelegate {
     private static var retainedDelegate: InterviewArcLiveApp?
 
-    private let model = SystemDesignRoomModel(
-        hostedController: try? HostedPracticeController.makeDefault()
-    )
+    private let hostedController: HostedPracticeController?
+    private let model: SystemDesignRoomModel
+    private let codingModel: CodingRoomModel
     private var presentationCoordinator: InterviewRoomPresentationCoordinator?
     private var activationRefreshTask: Task<Void, Never>?
     private var terminationGate: InterviewArcLiveTerminationGate?
+
+    override init() {
+        let hosted = try? HostedPracticeController.makeDefault()
+        hostedController = hosted
+        model = SystemDesignRoomModel(hostedController: hosted)
+        codingModel = CodingRoomModel(hostedController: hosted)
+        super.init()
+    }
 
     static func main() {
         let application = NSApplication.shared
@@ -54,14 +62,21 @@ final class InterviewArcLiveApp: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         installMainMenu()
-        terminationGate = InterviewArcLiveTerminationGate { [weak model] in
-            guard let model else { return true }
+        terminationGate = InterviewArcLiveTerminationGate { [weak self] in
+            guard let self else { return true }
             guard await model.prepareLocalPersistenceForTermination() else {
+                return false
+            }
+            guard await codingModel.prepareLocalPersistenceForTermination() else {
                 return false
             }
             return await model.prepareHostedForTermination()
         }
-        let coordinator = InterviewRoomPresentationCoordinator(model: model)
+        let coordinator = InterviewRoomPresentationCoordinator(
+            model: model,
+            codingModel: codingModel,
+            hostedController: hostedController
+        )
         presentationCoordinator = coordinator
         coordinator.start()
     }
