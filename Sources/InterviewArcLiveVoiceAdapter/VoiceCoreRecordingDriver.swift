@@ -78,6 +78,7 @@ final class AnswerRecorderDriver: VoiceCoreRecordingDriving {
     }
 
     private func beginMetering() {
+        meteringCancellable?.cancel()
         meteringCancellable = Publishers.CombineLatest(
             recorder.$powerHistory,
             recorder.$elapsedSeconds
