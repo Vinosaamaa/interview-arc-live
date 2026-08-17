@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "repository": "interview-arc-live",
+  "pullRequest": 64,
+  "privacyAuthorizationUrl": "https://github.com/Vinosaamaa/interview-arc-live/issues/52#issuecomment-5310182290",
+  "receiptPaths": [
+    "docs/engineering/changes/pr-2.md",
+    "docs/engineering/changes/pr-8.md",
+    "docs/engineering/changes/pr-15.md",
+    "docs/engineering/changes/pr-18.md",
+    "docs/engineering/changes/pr-21.md",
+    "docs/engineering/changes/pr-23.md",
+    "docs/engineering/changes/pr-25.md",
+    "docs/engineering/changes/pr-26.md",
+    "docs/engineering/changes/pr-27.md",
+    "docs/engineering/changes/pr-28.md",
+    "docs/engineering/changes/pr-29.md"
+  ],
+  "recordRefs": [
+    "adr-live-0004-durable-segmented-speech@1",
+    "adr-live-0006-local-interviewer-speech@1",
+    "adr-live-0007-retained-full-and-compact-presentations@1",
+    "adr-live-0008-session-owned-board-revisions-and-exports@1"
+  ],
+  "addedRecordRefs": []
+}
