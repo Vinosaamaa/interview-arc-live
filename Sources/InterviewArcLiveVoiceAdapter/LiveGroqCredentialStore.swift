@@ -1,6 +1,7 @@
 import Foundation
 import InterviewArcLiveCore
 import InterviewArcVoiceCore
+import Security
 
 public enum LiveGroqCredentialReadiness: Equatable, Sendable {
     /// A durable Keychain credential is available.
@@ -37,6 +38,7 @@ public enum LiveGroqCredentialStoreError: Error, Equatable, LocalizedError, Send
 
 public actor LiveGroqCredentialStore: GroqCredentialReading {
     public static let keychainService = "dev.interviewarc.live"
+    public static let keychainAccount = "groq-api-key"
 
     private let backend: LiveGroqCredentialBackend
     private let verificationPolicy = CredentialSaveVerificationPolicy()
@@ -45,12 +47,7 @@ public actor LiveGroqCredentialStore: GroqCredentialReading {
     private var credentialUntilQuit: String?
 
     public init() {
-        let keychain = KeychainStore(service: Self.keychainService)
-        backend = LiveGroqCredentialBackend(
-            read: { try keychain.value(for: .groqAPIKey) },
-            save: { try keychain.set($0, for: .groqAPIKey) },
-            remove: { try keychain.remove(.groqAPIKey) }
-        )
+        backend = Self.securityBackend()
     }
 
     init(backend: LiveGroqCredentialBackend) {
@@ -168,6 +165,69 @@ public actor LiveGroqCredentialStore: GroqCredentialReading {
         } catch {
             throw LiveGroqCredentialStoreError.rollbackFailed
         }
+    }
+
+    private static func securityBackend() -> LiveGroqCredentialBackend {
+        LiveGroqCredentialBackend(
+            read: {
+                var query = baseQuery()
+                query[kSecReturnData as String] = true
+                query[kSecMatchLimit as String] = kSecMatchLimitOne
+                var item: CFTypeRef?
+                let status = SecItemCopyMatching(query as CFDictionary, &item)
+                return try LiveGenericPasswordRead.value(status: status, item: item)
+            },
+            save: { value in
+                let data = Data(value.utf8)
+                let update = [kSecValueData as String: data]
+                let base = baseQuery()
+                let status = SecItemUpdate(
+                    base as CFDictionary,
+                    update as CFDictionary
+                )
+                if status == errSecItemNotFound {
+                    var insert = base
+                    insert[kSecValueData as String] = data
+                    insert[kSecAttrAccessible as String] =
+                        kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+                    guard SecItemAdd(insert as CFDictionary, nil) == errSecSuccess else {
+                        throw LiveGroqCredentialStoreError.keychainUnavailable
+                    }
+                } else if status != errSecSuccess {
+                    throw LiveGroqCredentialStoreError.keychainUnavailable
+                }
+            },
+            remove: {
+                let status = SecItemDelete(baseQuery() as CFDictionary)
+                guard status == errSecSuccess || status == errSecItemNotFound else {
+                    throw LiveGroqCredentialStoreError.keychainUnavailable
+                }
+            }
+        )
+    }
+
+    private nonisolated static func baseQuery() -> [String: Any] {
+        [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: keychainService,
+            kSecAttrAccount as String: keychainAccount,
+        ]
+    }
+}
+
+enum LiveGenericPasswordRead: Sendable {
+    /// Maps a `MatchLimitOne` generic-password read. `errSecItemNotFound` is a
+    /// missing item, not Keychain unavailability. Do not use `MatchLimitAll`.
+    static func value(status: OSStatus, item: CFTypeRef?) throws -> String? {
+        if status == errSecItemNotFound {
+            return nil
+        }
+        guard status == errSecSuccess,
+              let data = item as? Data,
+              let value = String(data: data, encoding: .utf8) else {
+            throw LiveGroqCredentialStoreError.keychainUnavailable
+        }
+        return value
     }
 }
 

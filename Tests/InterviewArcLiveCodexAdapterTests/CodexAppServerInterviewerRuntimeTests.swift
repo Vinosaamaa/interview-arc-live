@@ -13,6 +13,13 @@ final class CodexAppServerInterviewerRuntimeTests: XCTestCase {
         )
     }
 
+    func testCLIProtocolPinMatchesCurrentlyTestedCodex() {
+        XCTAssertEqual(
+            CodexAppServerInterviewerRuntime.testedCLIVersion,
+            "codex-cli 0.148.0-alpha.9"
+        )
+    }
+
     func testPreflightInitializesChecksOnlyAuthPresenceAndReapsBeforeReturning() async throws {
         let connection = ScriptedCodexConnection(lines: Self.authenticationLines())
         let launcher = FixtureCodexLauncher(connection: connection)
