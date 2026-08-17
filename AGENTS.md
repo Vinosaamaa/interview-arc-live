@@ -56,6 +56,15 @@ as ADRs instead of duplicating narrative across guides.
   available. A CLT-only Fastlane may use focused build/typecheck, JS/runtime,
   and headed-app proof instead; do not install full Xcode solely for local
   XCTest. Hosted XCTest must pass before merge.
+- All Live worktrees share the existing workspace cache at
+  `.cache/interview-arc-live-swift`. Derive it from the workspace root, source
+  its `env.sh` when present, and pass
+  `--cache-path "$INTERVIEW_ARC_LIVE_SWIFTPM_CACHE"` to `swift build`,
+  `swift test`, and other SwiftPM `swift` subcommands. The environment also
+  owns the Clang and Swift module caches. Never create
+  per-worktree, per-agent, per-issue, or timestamped clones; move or recreate
+  the cache; or commit cache contents, environment internals, or machine-
+  specific absolute paths.
 - Recording, transcription, persistence, privacy, synchronization, signing,
   and recovery changes use the Reliability lane.
 - Do not merge, install, or release without explicit user authorization.
