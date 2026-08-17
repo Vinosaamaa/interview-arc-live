@@ -1284,6 +1284,9 @@ final class SystemDesignRoomModel: ObservableObject {
         await hostedController.refresh()
         hostedSnapshot = hostedController.snapshot
         errorMessage = hostedController.errorMessage
+        if hostedSnapshot.activity != nil, coordinator == nil {
+            await open()
+        }
     }
 
     func prepareHostedForTermination() async -> Bool {
