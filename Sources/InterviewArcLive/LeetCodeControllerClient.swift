@@ -20,7 +20,7 @@ enum LeetCodeControllerClient {
         _ request: LeetCodeControllerRequest,
         fileManager: FileManager = .default,
         nodeExecutable: URL? = nil,
-        execute: ((URL, [String], URL) async throws -> CodingProcessResult)? = nil
+        execute: CodingControllerExecute? = nil
     ) async -> Result<String, Error> {
         let script = controllerScriptURL(repositoryRoot: request.repositoryRoot)
         guard fileManager.fileExists(atPath: script.path) else {
@@ -87,7 +87,7 @@ enum LeetCodeControllerClient {
         command: CodingSubmissionCommand,
         fileManager: FileManager = .default,
         nodeExecutable: URL? = nil,
-        execute: ((URL, [String], URL) async throws -> CodingProcessResult)? = nil
+        execute: CodingControllerExecute? = nil
     ) async -> CodingSubmissionReceipt {
         guard command != .receipt else {
             assertionFailure("Receipt recovery must use recoverReceipt.")
@@ -140,7 +140,7 @@ enum LeetCodeControllerClient {
         invocationID: String,
         fileManager: FileManager = .default,
         nodeExecutable: URL? = nil,
-        execute: ((URL, [String], URL) async throws -> CodingProcessResult)? = nil
+        execute: CodingControllerExecute? = nil
     ) async -> CodingSubmissionReceipt {
         let command = CodingSubmissionCommand.receipt
         guard isValidInvocationID(invocationID) else {
@@ -184,7 +184,7 @@ enum LeetCodeControllerClient {
         command: CodingSubmissionCommand,
         fileManager: FileManager = .default,
         nodeExecutable: URL? = nil,
-        execute: ((URL, [String], URL) async throws -> CodingProcessResult)? = nil
+        execute: CodingControllerExecute? = nil
     ) async -> CodingSubmissionReceipt {
         let receipt = await submit(
             request,
@@ -251,7 +251,7 @@ enum LeetCodeControllerClient {
         currentDirectory: URL,
         invocationID: String,
         command: CodingSubmissionCommand,
-        execute: ((URL, [String], URL) async throws -> CodingProcessResult)?
+        execute: CodingControllerExecute?
     ) async -> CodingSubmissionReceipt {
         do {
             let result = try await run(
@@ -297,7 +297,7 @@ enum LeetCodeControllerClient {
         node: URL,
         arguments: [String],
         currentDirectory: URL,
-        execute: ((URL, [String], URL) async throws -> CodingProcessResult)?
+        execute: CodingControllerExecute?
     ) async throws -> CodingProcessResult {
         if let execute {
             return try await execute(node, arguments, currentDirectory)

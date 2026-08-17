@@ -98,8 +98,8 @@ final class CodingRoomModel: ObservableObject {
     private let preferences: UserDefaults
     private let hostedController: HostedPracticeController?
     private let applicationSupportRoot: URL?
-    private let harnessExecute: ((URL, [String], URL, [String: String]?) async throws -> CodingProcessResult)?
-    private let controllerExecute: ((URL, [String], URL) async throws -> CodingProcessResult)?
+    nonisolated private let harnessExecute: CodingHarnessExecute?
+    nonisolated private let controllerExecute: CodingControllerExecute?
     private var hostedSnapshotObservation: AnyCancellable?
     private var credentialState: CredentialState = .checking
     private var errorWasCodexFailure = false
@@ -124,8 +124,8 @@ final class CodingRoomModel: ObservableObject {
         hostedController: HostedPracticeController? = nil,
         applicationSupportRoot: URL? = nil,
         initialHostedSnapshot: HostedPracticeSnapshot? = nil,
-        harnessExecute: ((URL, [String], URL, [String: String]?) async throws -> CodingProcessResult)? = nil,
-        controllerExecute: ((URL, [String], URL) async throws -> CodingProcessResult)? = nil
+        harnessExecute: CodingHarnessExecute? = nil,
+        controllerExecute: CodingControllerExecute? = nil
     ) {
         self.credentialStore = credentialStore
         self.codexRuntime = codexRuntime ?? Self.makeDefaultCodexRuntime()
@@ -1334,6 +1334,7 @@ final class CodingRoomModel: ObservableObject {
             command: command
         )
 
+        let execute = controllerExecute
         let receipt = await LeetCodeControllerClient.submitRecoveringAmbiguousOutput(
             LeetCodeControllerRequest(
                 repositoryRoot: repositoryRoot,
@@ -1344,7 +1345,7 @@ final class CodingRoomModel: ObservableObject {
             invocationID: invocationID,
             command: command,
             nodeExecutable: controllerNodeExecutable,
-            execute: controllerExecute
+            execute: execute
         )
         latestSubmissionReceipt = receipt
         outputFocus = .submission
@@ -1363,6 +1364,7 @@ final class CodingRoomModel: ObservableObject {
         isOpeningLeetCode = true
         defer { isOpeningLeetCode = false }
         let title = hostedSnapshot.activity?.activity.title ?? question
+        let execute = controllerExecute
         let result = await LeetCodeControllerClient.openProblem(
             LeetCodeControllerRequest(
                 repositoryRoot: repositoryRoot,
@@ -1370,7 +1372,7 @@ final class CodingRoomModel: ObservableObject {
                 title: title
             ),
             nodeExecutable: controllerNodeExecutable,
-            execute: controllerExecute
+            execute: execute
         )
         switch result {
         case .success(let message):
@@ -1545,6 +1547,7 @@ final class CodingRoomModel: ObservableObject {
         outputFocus = .harness
         latestRunReceipt = .running(identity: identity, commandClass: commandClass)
 
+        let execute = harnessExecute
         let receipt = await CodingHarnessClient.run(
             CodingHarnessInvocation(
                 repositoryRoot: repositoryRoot,
@@ -1556,7 +1559,7 @@ final class CodingRoomModel: ObservableObject {
             ),
             identity: identity,
             nodeExecutable: harnessNodeExecutable,
-            execute: harnessExecute,
+            execute: execute,
             onOutput: { [weak self] chunk in
                 Task { @MainActor in
                     self?.appendHarnessStream(
@@ -1639,6 +1642,7 @@ final class CodingRoomModel: ObservableObject {
         isControllerWarming = true
         defer { isControllerWarming = false }
         let title = hostedSnapshot.activity?.activity.title ?? question
+        let execute = controllerExecute
         let result = await LeetCodeControllerClient.openProblem(
             LeetCodeControllerRequest(
                 repositoryRoot: repositoryRoot,
@@ -1646,7 +1650,7 @@ final class CodingRoomModel: ObservableObject {
                 title: title
             ),
             nodeExecutable: controllerNodeExecutable,
-            execute: controllerExecute
+            execute: execute
         )
         switch result {
         case .success(let message):

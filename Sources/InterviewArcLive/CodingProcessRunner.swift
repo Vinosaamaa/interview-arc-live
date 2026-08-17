@@ -6,6 +6,14 @@ struct CodingProcessResult: Equatable, Sendable {
     var stderr: String
 }
 
+typealias CodingControllerExecute = @Sendable (
+    URL, [String], URL
+) async throws -> CodingProcessResult
+
+typealias CodingHarnessExecute = @Sendable (
+    URL, [String], URL, [String: String]?
+) async throws -> CodingProcessResult
+
 struct CodingProcessStreamEvent: Equatable, Sendable {
     enum Kind: Equatable, Sendable { case stdout, stderr }
     var kind: Kind

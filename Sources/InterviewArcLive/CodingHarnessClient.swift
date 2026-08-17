@@ -71,7 +71,7 @@ enum CodingHarnessClient {
         identity: String = UUID().uuidString.lowercased(),
         fileManager: FileManager = .default,
         nodeExecutable: URL? = nil,
-        execute: ((URL, [String], URL, [String: String]?) async throws -> CodingProcessResult)? = nil,
+        execute: CodingHarnessExecute? = nil,
         onOutput: (@Sendable (String) -> Void)? = nil
     ) async -> CodingHarnessReceipt {
         let commandClass = invocation.commandClass

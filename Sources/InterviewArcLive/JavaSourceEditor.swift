@@ -148,7 +148,7 @@ enum JavaSyntaxHighlighter {
 
     private static func enumerateWords(
         in text: NSString,
-        body: (String, NSRange) -> Void
+        body: @escaping (String, NSRange) -> Void
     ) {
         let fullRange = NSRange(location: 0, length: text.length)
         text.enumerateSubstrings(
