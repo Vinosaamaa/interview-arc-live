@@ -7,7 +7,8 @@ import InterviewArcLiveCore
 @MainActor
 func makeCompletionBlockingRoomModel(
     boardArtifactStore: PrivateBoardArtifactStore? = nil,
-    preferences: UserDefaults = .standard
+    preferences: UserDefaults = .standard,
+    hostedController: HostedPracticeController? = nil
 ) async throws -> (
     model: SystemDesignRoomModel,
     store: CompletionBlockingManifestStore
@@ -36,7 +37,8 @@ func makeCompletionBlockingRoomModel(
             activityPrompt: prompt,
             preferences: preferences,
             initialCoordinator: coordinator,
-            boardArtifactStore: boardArtifactStore
+            boardArtifactStore: boardArtifactStore,
+            hostedController: hostedController
         ),
         store
     )

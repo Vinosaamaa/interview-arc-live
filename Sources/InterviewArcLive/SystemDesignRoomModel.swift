@@ -184,11 +184,14 @@ final class SystemDesignRoomModel: ObservableObject {
     private let preferences: UserDefaults
     private var boardArtifactStore: PrivateBoardArtifactStore?
     private let boardRenderer: DeterministicBoardRenderer
+    private let recording: (any SegmentRecording)?
+    private let transcriber: (any SegmentTranscribing)?
+    private let manifestStore: (any SessionManifestStore)?
     private let hostedController: HostedPracticeController?
     private var hostedSnapshotObservation: AnyCancellable?
     private var credentialState: CredentialState = .checking
     private var errorWasCodexFailure = false
-    private var coordinator: SegmentSpeechCoordinator?
+    private(set) var coordinator: SegmentSpeechCoordinator?
     private var interviewerSpeechCoordinator: InterviewerSpeechCoordinator?
     private var speechPreparationTask: Task<Void, Never>?
     private var audioPlayer: AVAudioPlayer?
@@ -214,7 +217,10 @@ final class SystemDesignRoomModel: ObservableObject {
         initialCoordinator: SegmentSpeechCoordinator? = nil,
         boardArtifactStore: PrivateBoardArtifactStore? = nil,
         boardRenderer: DeterministicBoardRenderer = DeterministicBoardRenderer(),
-        hostedController: HostedPracticeController? = nil
+        hostedController: HostedPracticeController? = nil,
+        recording: (any SegmentRecording)? = nil,
+        transcriber: (any SegmentTranscribing)? = nil,
+        manifestStore: (any SessionManifestStore)? = nil
     ) {
         self.credentialStore = credentialStore
         self.codexRuntime = codexRuntime ?? Self.makeDefaultCodexRuntime()
@@ -224,6 +230,9 @@ final class SystemDesignRoomModel: ObservableObject {
         self.boardArtifactStore = boardArtifactStore
         self.boardRenderer = boardRenderer
         self.hostedController = hostedController
+        self.recording = recording
+        self.transcriber = transcriber
+        self.manifestStore = manifestStore
         coordinator = initialCoordinator
         isSpeechMuted = preferences.bool(
             forKey: Self.speechMutedPreferenceKey
@@ -1152,19 +1161,37 @@ final class SystemDesignRoomModel: ObservableObject {
         }
 
         do {
-            let opened = try await SegmentSpeechCoordinator.openLocal(
-                sessionID: launchSessionID,
-                activityID: launchActivityID,
-                activityPrompt: launchPrompt,
-                turnMode: .manual,
-                interviewerRuntime: codexRuntime,
-                recording: VoiceCoreSegmentRecorder(),
-                transcriber: VoiceCoreSegmentTranscriber(),
-                credentialReader: credentialStore,
-                semanticEndpointClassifier: GroqEndpointClassifier(
-                    credentialReader: credentialStore
+            let opened: SegmentSpeechCoordinator
+            if let recording, let transcriber, let manifestStore {
+                opened = try await SegmentSpeechCoordinator.open(
+                    sessionID: launchSessionID,
+                    activityID: launchActivityID,
+                    activityPrompt: launchPrompt,
+                    turnMode: .manual,
+                    manifestStore: manifestStore,
+                    interviewerRuntime: codexRuntime,
+                    recording: recording,
+                    transcriber: transcriber,
+                    credentialReader: credentialStore,
+                    semanticEndpointClassifier: GroqEndpointClassifier(
+                        credentialReader: credentialStore
+                    )
                 )
-            )
+            } else {
+                opened = try await SegmentSpeechCoordinator.openLocal(
+                    sessionID: launchSessionID,
+                    activityID: launchActivityID,
+                    activityPrompt: launchPrompt,
+                    turnMode: .manual,
+                    interviewerRuntime: codexRuntime,
+                    recording: VoiceCoreSegmentRecorder(),
+                    transcriber: VoiceCoreSegmentTranscriber(),
+                    credentialReader: credentialStore,
+                    semanticEndpointClassifier: GroqEndpointClassifier(
+                        credentialReader: credentialStore
+                    )
+                )
+            }
             coordinator = opened
             opened.setSnapshotHandler { [weak self, weak opened] nextSnapshot in
                 guard let self,
@@ -1266,7 +1293,9 @@ final class SystemDesignRoomModel: ObservableObject {
         await hostedController.saveToken(value, untilQuit: untilQuit)
         hostedSnapshot = hostedController.snapshot
         isLiveIntegrationSetupPresented = hostedController.isConnectionSetupPresented
-        await openIfHostedActivityIsUnbound()
+        if hostedSnapshot.activity != nil, coordinator == nil {
+            await open()
+        }
     }
 
     func disconnectLiveIntegration() async {
@@ -1282,24 +1311,9 @@ final class SystemDesignRoomModel: ObservableObject {
         await hostedController.refresh()
         hostedSnapshot = hostedController.snapshot
         errorMessage = hostedController.errorMessage
-        await openIfHostedActivityIsUnbound()
-    }
-
-    /// Launch returned early when Today had no System Design activity.
-    /// Refresh (and a later token save) must bind the local room once one appears.
-    static func shouldOpenLocalCoordinator(
-        hasHostedActivity: Bool,
-        hasCoordinator: Bool
-    ) -> Bool {
-        hasHostedActivity && !hasCoordinator
-    }
-
-    private func openIfHostedActivityIsUnbound() async {
-        guard Self.shouldOpenLocalCoordinator(
-            hasHostedActivity: hostedSnapshot.activity != nil,
-            hasCoordinator: coordinator != nil
-        ) else { return }
-        await open()
+        if hostedSnapshot.activity != nil, coordinator == nil {
+            await open()
+        }
     }
 
     func prepareHostedForTermination() async -> Bool {

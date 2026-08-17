@@ -24,7 +24,7 @@ amends: []
 supersedes: []
 learningRefs: []
 sources: [{"label":"Issue #19","url":"https://github.com/Vinosaamaa/interview-arc-live/issues/19","kind":"issue"},{"label":"Pull request #67","url":"https://github.com/Vinosaamaa/interview-arc-live/pull/67","kind":"pull-request"}]
-verification: {"state":"verified","evidenceRefs":["issue:19","pull-request:67"]}
+verification: {"state":"verified","evidenceRefs":["issue:19","pull-request:67","test:SystemDesignRoomHostedRefreshTests"]}
 visibility: public-safe
 publicationEligibility: eligible
 issue: 19
@@ -38,4 +38,4 @@ Launch with no System Design activity returned before creating the local coordin
 
 ## Change
 
-`refreshHostedAuthority` now uses the same bind rule as a later integration-token save: when hosted Today has an activity and the local coordinator is missing, `open()` runs. An existing coordinator is left in place.
+`refreshHostedAuthority` now uses the same bind rule as a later integration-token save: when hosted Today has an activity and the local coordinator is missing, `open()` runs. An existing coordinator is left in place. Fixture tests drive a fake `/live/v1` transport from empty Today at launch to a planned/running System Design activity on refresh, and they keep a pre-bound coordinator.
