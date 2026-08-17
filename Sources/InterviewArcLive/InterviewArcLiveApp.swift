@@ -35,13 +35,18 @@ final class InterviewArcLiveTerminationGate {
 final class InterviewArcLiveApp: NSObject, NSApplicationDelegate {
     private static var retainedDelegate: InterviewArcLiveApp?
 
-    private let model = SystemDesignRoomModel(
-        hostedController: try? HostedPracticeController.makeDefault()
-    )
+    private let model: SystemDesignRoomModel
+    private let behavioralModel: BehavioralRoomModel
     private var presentationCoordinator: InterviewRoomPresentationCoordinator?
-    private var behavioralRoomWindowController: BehavioralRoomWindowController?
     private var activationRefreshTask: Task<Void, Never>?
     private var terminationGate: InterviewArcLiveTerminationGate?
+
+    override init() {
+        let hosted = try? HostedPracticeController.makeDefault()
+        model = SystemDesignRoomModel(hostedController: hosted)
+        behavioralModel = BehavioralRoomModel()
+        super.init()
+    }
 
     static func main() {
         let application = NSApplication.shared
@@ -55,14 +60,20 @@ final class InterviewArcLiveApp: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         installMainMenu()
-        terminationGate = InterviewArcLiveTerminationGate { [weak model] in
-            guard let model else { return true }
+        terminationGate = InterviewArcLiveTerminationGate { [weak self] in
+            guard let self else { return true }
             guard await model.prepareLocalPersistenceForTermination() else {
+                return false
+            }
+            guard await behavioralModel.prepareLocalPersistenceForTermination() else {
                 return false
             }
             return await model.prepareHostedForTermination()
         }
-        let coordinator = InterviewRoomPresentationCoordinator(model: model)
+        let coordinator = InterviewRoomPresentationCoordinator(
+            model: model,
+            behavioralModel: behavioralModel
+        )
         presentationCoordinator = coordinator
         coordinator.start()
     }
@@ -106,15 +117,12 @@ final class InterviewArcLiveApp: NSObject, NSApplicationDelegate {
 
     @objc
     private func showInterviewRoom(_ sender: Any?) {
-        presentationCoordinator?.reopen()
+        presentationCoordinator?.presentSystemDesignRoom()
     }
 
     @objc
     private func showBehavioralRoom(_ sender: Any?) {
-        if behavioralRoomWindowController == nil {
-            behavioralRoomWindowController = BehavioralRoomWindowController()
-        }
-        behavioralRoomWindowController?.present()
+        presentationCoordinator?.presentBehavioralRoom()
     }
 
     @objc

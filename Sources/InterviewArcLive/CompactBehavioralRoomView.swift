@@ -3,10 +3,21 @@ import SwiftUI
 struct CompactBehavioralRoomView: View {
     @ObservedObject var model: BehavioralRoomModel
     let onExpand: () -> Void
+    let dynamicTypeSizeOverride: DynamicTypeSize?
+
+    init(
+        model: BehavioralRoomModel,
+        onExpand: @escaping () -> Void,
+        dynamicTypeSizeOverride: DynamicTypeSize? = nil
+    ) {
+        self.model = model
+        self.onExpand = onExpand
+        self.dynamicTypeSizeOverride = dynamicTypeSizeOverride
+    }
 
     var body: some View {
         let presentation = model.compactPresentation
-        HStack(spacing: 12) {
+        let content = HStack(spacing: 12) {
             Button(action: onExpand) {
                 BehavioralCompactMark()
                     .frame(width: 28, height: 28)
@@ -71,6 +82,12 @@ struct CompactBehavioralRoomView: View {
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier(BehavioralRoomAccessibility.compactRoot)
         .accessibilityLabel("Interview Arc Live compact Behavioral controls")
+
+        if let dynamicTypeSizeOverride {
+            content.dynamicTypeSize(dynamicTypeSizeOverride)
+        } else {
+            content
+        }
     }
 }
 

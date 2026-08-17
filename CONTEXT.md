@@ -128,10 +128,11 @@ or behavioral Story Kit.
 
 ### Behavioral Room
 
-The local Behavioral specialty presentation of one Interview Room Session. It
-can open without hosted `/live/v1` behavioral writes. Hosted lease, turn-pair,
-clip, and finish wait on Interview Arc issue #389. The live sidecar never
-carries a preferred or model answer.
+The Behavioral specialty presentation of one Interview Room Session. Full and
+compact Presentations share the same session identity. It can open locally
+without hosted `/live/v1` behavioral writes. Hosted lease, turn-pair, clip,
+and finish wait on Interview Arc issue #389. The live sidecar never carries a
+preferred or model answer.
 
 ### STARL Coverage
 

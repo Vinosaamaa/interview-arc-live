@@ -73,11 +73,20 @@ enum BehavioralRoomAccessibility {
 
 struct BehavioralRoomView: View {
     @ObservedObject var model: BehavioralRoomModel
+    let onCollapse: () -> Void
     @State private var preferredTurnlineWidth: CGFloat?
     @State private var isWorkspaceDividerHovered = false
     @GestureState private var splitDragTranslation: CGFloat = 0
 
     private static let workspaceCoordinateSpaceName = "behavioral-workspace"
+
+    init(
+        model: BehavioralRoomModel,
+        onCollapse: @escaping () -> Void = {}
+    ) {
+        self.model = model
+        self.onCollapse = onCollapse
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -143,9 +152,6 @@ struct BehavioralRoomView: View {
                 onUseUntilQuit: model.useGroqCredentialUntilQuit
             )
         }
-        .task {
-            await model.open()
-        }
     }
 
     private var header: some View {
@@ -189,6 +195,7 @@ struct BehavioralRoomView: View {
                 .font(.system(.callout, design: .rounded, weight: .medium))
                 .foregroundStyle(BehavioralRoomPalette.navy)
                 .lineLimit(1)
+            collapseButton
         }
         .padding(.leading, FullRoomLayout.trafficLightClearance)
         .padding(.trailing, 22)
@@ -198,6 +205,20 @@ struct BehavioralRoomView: View {
         .overlay(alignment: .bottom) {
             Rectangle().fill(BehavioralRoomPalette.line).frame(height: 1)
         }
+    }
+
+    private var collapseButton: some View {
+        Button(action: onCollapse) {
+            Image(systemName: "arrow.down.right.and.arrow.up.left")
+                .frame(
+                    width: FullRoomLayout.minimumActionHitTarget,
+                    height: FullRoomLayout.minimumActionHitTarget
+                )
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier(FullRoomAccessibility.collapse)
+        .accessibilityLabel("Collapse to compact controls")
+        .accessibilityHint("Keeps the same Behavioral room in compact controls")
     }
 
     private var questionBand: some View {

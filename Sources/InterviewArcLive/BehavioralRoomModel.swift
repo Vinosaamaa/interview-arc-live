@@ -491,6 +491,14 @@ final class BehavioralRoomModel: ObservableObject {
         }
     }
 
+    func prepareLocalPersistenceForTermination() async -> Bool {
+        guard !isWorking else {
+            errorMessage = "A room operation is still finishing. Quit was cancelled so it can complete safely."
+            return false
+        }
+        return true
+    }
+
     func presentCredentialSetup() {
         credentialErrorMessage = nil
         isCredentialSetupPresented = true

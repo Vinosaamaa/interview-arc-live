@@ -141,6 +141,30 @@ final class BehavioralRoomModelTests: XCTestCase {
             item.action.map(NSStringFromSelector),
             "showBehavioralRoom:"
         )
+        XCTAssertEqual(item.keyEquivalent, "b")
+    }
+
+    func testCoordinatorPresentsBehavioralWithoutASecondWindowController() {
+        let behavioral = BehavioralRoomModel()
+        let coordinator = InterviewRoomPresentationCoordinator(
+            model: SystemDesignRoomModel(),
+            behavioralModel: behavioral,
+            frameAutosaveName: "InterviewArcLiveTests.BehavioralPresentation"
+        )
+        defer { coordinator.prepareForTermination() }
+
+        coordinator.adoptPresentedSpecialty(.behavioral)
+        coordinator.expand()
+        XCTAssertEqual(coordinator.presentedSpecialty, .behavioral)
+        XCTAssertEqual(
+            coordinator.fullHostedModelIdentity,
+            ObjectIdentifier(behavioral)
+        )
+        XCTAssertEqual(coordinator.presentationState, .full)
+        XCTAssertEqual(
+            coordinator.fullWindow.identifier?.rawValue,
+            "interview-room-full"
+        )
     }
 
     func testLocalSessionUsesBehavioralSpecialtyWithoutHostedWrites() async throws {
