@@ -178,7 +178,8 @@ final class HostedPracticeSessionTests: XCTestCase {
                 "/live/v1/activities/activity-1/lease/acquire",
             ]
         )
-        XCTAssertEqual(await fixture.transport.commandBodies(), [])
+        let commandBodies = await fixture.transport.commandBodies()
+        XCTAssertEqual(commandBodies, [])
     }
 
     func testCredentialChangeQuarantineNeverAcquiresWritableLease() async throws {
