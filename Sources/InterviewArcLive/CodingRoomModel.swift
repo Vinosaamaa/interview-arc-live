@@ -1516,7 +1516,8 @@ final class CodingRoomModel: ObservableObject {
         harnessGeneration += 1
         let generation = harnessGeneration
         let task = Task { @MainActor [weak self] in
-            await self?.runHarness(commandClass: commandClass, generation: generation)
+            guard let self else { return }
+            await self.runHarness(commandClass: commandClass, generation: generation)
         }
         harnessRunTask = task
         await task.value

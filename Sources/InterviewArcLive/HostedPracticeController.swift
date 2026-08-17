@@ -76,7 +76,7 @@ final class HostedPracticeController: ObservableObject {
     func open(
         selecting type: LiveActivityType = .systemDesign
     ) async -> HostedPracticeSnapshot {
-        let specialty = type == .leetcode ? .leetcode : .systemDesign
+        let specialty: LiveActivityType = type == .leetcode ? .leetcode : .systemDesign
         tokenReadiness = await tokenStore.readiness()
         guard tokenReadiness == .ready || tokenReadiness == .readyUntilQuit else {
             isConnectionSetupPresented = true
