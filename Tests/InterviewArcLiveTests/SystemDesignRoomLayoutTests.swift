@@ -447,6 +447,33 @@ final class SystemDesignRoomLayoutTests: XCTestCase {
             XCTAssertGreaterThanOrEqual(positions.first ?? -1, 0)
             XCTAssertLessThanOrEqual(positions.last ?? .infinity, width)
         }
+
+        XCTAssertEqual(
+            FullRoomWaveformLayout.barHeight(
+                level: 0.66,
+                canvasHeight: 40,
+                isActive: false
+            ),
+            0
+        )
+        XCTAssertEqual(
+            FullRoomWaveformLayout.barHeight(
+                level: 0.5,
+                canvasHeight: 40,
+                isActive: true
+            ),
+            max(3, 0.5 * 40 * FullRoomWaveformLayout.activeHeightFraction),
+            accuracy: 0.001
+        )
+        XCTAssertEqual(
+            FullRoomWaveformLayout.barHeight(
+                level: 0.01,
+                canvasHeight: 40,
+                isActive: true
+            ),
+            3,
+            accuracy: 0.001
+        )
     }
 
     func testFullRoomAccessibilityIdentifiersAreStableAndUnique() {
