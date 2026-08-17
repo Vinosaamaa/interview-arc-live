@@ -52,8 +52,10 @@ as ADRs instead of duplicating narrative across guides.
 - Link PRs with `Refs #<issue>`; merge does not close an issue automatically.
 - Preserve unrelated dirty files and never commit generated credentials,
   recordings, transcripts, model artifacts, or local session state.
-- Run `swift test` for core/client changes. Run a parse or build check when the
-  executable changes. CI is the canonical clean macOS package environment.
+- Run local `swift test` when a compatible full Xcode/XCTest toolchain is
+  available. A CLT-only Fastlane may use focused build/typecheck, JS/runtime,
+  and headed-app proof instead; do not install full Xcode solely for local
+  XCTest. Hosted XCTest must pass before merge.
 - Recording, transcription, persistence, privacy, synchronization, signing,
   and recovery changes use the Reliability lane.
 - Do not merge, install, or release without explicit user authorization.
