@@ -58,6 +58,14 @@ as ADRs instead of duplicating narrative across guides.
   and recovery changes use the Reliability lane.
 - Do not merge, install, or release without explicit user authorization.
 
+## Fastlane
+
+When the user says `fastlane`, `fast fix`, `fast iteration`, or explicitly asks
+to skip unnecessary work, read and follow `docs/agents/fastlane.md`. Prove UI
+and bundled-web fixes in one exact disposable app before spending a hosted CI
+run. Fastlane shortens the feedback loop; it never weakens the Reliability,
+privacy, destructive-action, authorization, or release-integrity rules above.
+
 ## Agent skills
 
 ### Issue tracker
