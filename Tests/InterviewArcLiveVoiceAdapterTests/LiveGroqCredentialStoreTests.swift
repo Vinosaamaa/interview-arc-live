@@ -1,4 +1,5 @@
 import Foundation
+import Security
 import XCTest
 
 @testable import InterviewArcLiveVoiceAdapter
@@ -10,10 +11,46 @@ final class LiveGroqCredentialStoreTests: XCTestCase {
             LiveGroqCredentialStore.keychainService,
             "dev.interviewarc.live"
         )
+        XCTAssertEqual(
+            LiveGroqCredentialStore.keychainAccount,
+            "groq-api-key"
+        )
         XCTAssertNotEqual(
             LiveGroqCredentialStore.keychainService,
             "dev.interviewarc.voice"
         )
+    }
+
+    func testMissingGenericPasswordIsNotKeychainUnavailable() throws {
+        XCTAssertNil(
+            try LiveGenericPasswordRead.value(
+                status: errSecItemNotFound,
+                item: nil
+            )
+        )
+    }
+
+    func testParamStatusFromLegacyMatchAllIsKeychainUnavailable() {
+        do {
+            _ = try LiveGenericPasswordRead.value(
+                status: errSecParam,
+                item: nil
+            )
+            XCTFail("Expected errSecParam to be unavailable, not missing")
+        } catch let error as LiveGroqCredentialStoreError {
+            XCTAssertEqual(error, .keychainUnavailable)
+        } catch {
+            XCTFail("Unexpected error \(error)")
+        }
+    }
+
+    func testSuccessfulGenericPasswordReadReturnsUTF8Value() throws {
+        let stored = Data("public-test-key".utf8) as CFTypeRef
+        let value = try LiveGenericPasswordRead.value(
+            status: errSecSuccess,
+            item: stored
+        )
+        XCTAssertEqual(value, "public-test-key")
     }
 
     func testSaveVerifiesReadbackAndReportsReadiness() async throws {

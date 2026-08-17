@@ -26,7 +26,7 @@ public enum CodexAppServerRuntimeError: Error, Sendable, Equatable {
 /// events remain inside this Module; only the canonical response pair crosses
 /// the Interface.
 public actor CodexAppServerInterviewerRuntime: InterviewerRuntime {
-    public static let testedCLIVersion = "codex-cli 0.147.0-alpha.6.5"
+    public static let testedCLIVersion = "codex-cli 0.148.0-alpha.9"
     public static let defaultInterviewerModel = "gpt-5.6-terra"
 
     private static let commandTimeoutNanoseconds: UInt64 = 5_000_000_000
