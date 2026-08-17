@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "repository": "interview-arc-live",
+  "pullRequest": 63,
+  "privacyAuthorizationUrl": "https://github.com/Vinosaamaa/interview-arc-live/issues/52#issuecomment-5310182290",
+  "receiptPaths": [
+    "docs/engineering/changes/pr-35.md"
+  ],
+  "recordRefs": [
+    "change-note-live-issue-34@1"
+  ],
+  "addedRecordRefs": [
+    "change-note-live-issue-34@1"
+  ]
+}
