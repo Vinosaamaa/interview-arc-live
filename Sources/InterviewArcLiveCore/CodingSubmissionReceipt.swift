@@ -189,6 +189,5 @@ public struct CodingSubmissionReceipt: Sendable, Equatable {
         text.split(whereSeparator: \.isNewline)
             .map { $0.trimmingCharacters(in: .whitespaces) }
             .first { !$0.isEmpty }
-            .map(String.init)
     }
 }
