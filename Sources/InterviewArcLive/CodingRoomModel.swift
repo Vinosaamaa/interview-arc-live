@@ -17,6 +17,11 @@ enum CodingLanguage: String, CaseIterable, Identifiable, Sendable {
     var isEnabled: Bool { self == .java21 }
 }
 
+enum CodingRoomOutputFocus: Equatable, Sendable {
+    case harness
+    case submission
+}
+
 @MainActor
 final class CodingRoomModel: ObservableObject {
     @Published private(set) var snapshot: InterviewRoomSnapshot?
@@ -50,6 +55,10 @@ final class CodingRoomModel: ObservableObject {
     @Published private(set) var selectedLanguage = CodingLanguage.java21
     @Published private(set) var latestRunReceipt: CodingHarnessReceipt?
     @Published private(set) var isHarnessRunning = false
+    @Published private(set) var latestSubmissionReceipt: CodingSubmissionReceipt?
+    @Published private(set) var isSubmitting = false
+    @Published private(set) var outputFocus = CodingRoomOutputFocus.harness
+    @Published private(set) var isControllerWarming = false
     @Published private(set) var isOpeningLeetCode = false
     @Published private(set) var workSurfaceMessage: String?
 
@@ -89,6 +98,8 @@ final class CodingRoomModel: ObservableObject {
     private let preferences: UserDefaults
     private let hostedController: HostedPracticeController?
     private let applicationSupportRoot: URL?
+    private let harnessExecute: ((URL, [String], URL, [String: String]?) async throws -> CodingProcessResult)?
+    private let controllerExecute: ((URL, [String], URL) async throws -> CodingProcessResult)?
     private var hostedSnapshotObservation: AnyCancellable?
     private var credentialState: CredentialState = .checking
     private var errorWasCodexFailure = false
@@ -100,6 +111,8 @@ final class CodingRoomModel: ObservableObject {
     private var sourceSaveTask: Task<Void, Never>?
     private var pendingSourceText: String?
     private var didStartTimerAfterFileLoad = false
+    private var harnessRunTask: Task<Void, Never>?
+    private var harnessGeneration = 0
 
     init(
         credentialStore: LiveGroqCredentialStore = LiveGroqCredentialStore(),
@@ -110,7 +123,9 @@ final class CodingRoomModel: ObservableObject {
         initialCoordinator: SegmentSpeechCoordinator? = nil,
         hostedController: HostedPracticeController? = nil,
         applicationSupportRoot: URL? = nil,
-        initialHostedSnapshot: HostedPracticeSnapshot? = nil
+        initialHostedSnapshot: HostedPracticeSnapshot? = nil,
+        harnessExecute: ((URL, [String], URL, [String: String]?) async throws -> CodingProcessResult)? = nil,
+        controllerExecute: ((URL, [String], URL) async throws -> CodingProcessResult)? = nil
     ) {
         self.credentialStore = credentialStore
         self.codexRuntime = codexRuntime ?? Self.makeDefaultCodexRuntime()
@@ -119,6 +134,8 @@ final class CodingRoomModel: ObservableObject {
         self.preferences = preferences
         self.hostedController = hostedController
         self.applicationSupportRoot = applicationSupportRoot
+        self.harnessExecute = harnessExecute
+        self.controllerExecute = controllerExecute
         coordinator = initialCoordinator
         isSpeechMuted = preferences.bool(forKey: Self.speechMutedPreferenceKey)
         if let initialCoordinator {
@@ -590,6 +607,9 @@ final class CodingRoomModel: ObservableObject {
             await attachInterviewerSpeech(to: opened)
             if shouldLoadJavaFile {
                 await loadJavaSource()
+                Task { [weak self] in
+                    await self?.warmLeetCodeController()
+                }
             }
         } catch {
             statusMessage = "Local session unavailable"
@@ -1006,6 +1026,13 @@ final class CodingRoomModel: ObservableObject {
         isJavaFileLoaded = false
         didStartTimerAfterFileLoad = false
         latestRunReceipt = nil
+        latestSubmissionReceipt = nil
+        isHarnessRunning = false
+        isSubmitting = false
+        outputFocus = .harness
+        harnessRunTask?.cancel()
+        harnessRunTask = nil
+        harnessGeneration += 1
         errorMessage = nil
         statusMessage = "Opening the next hosted coding activity…"
     }
@@ -1253,8 +1280,75 @@ final class CodingRoomModel: ObservableObject {
         scheduleSourceSave()
     }
 
-    func quickRun() async { await runHarness(commandClass: .quickRun) }
-    func fullRun() async { await runHarness(commandClass: .fullRun) }
+    func bindLoadedJavaFileForTesting(fileURL: URL, text: String) {
+        sourceURL = fileURL
+        sourceText = text
+        sourceFileName = fileURL.lastPathComponent
+        isJavaFileLoaded = true
+        pendingSourceText = nil
+        sourceSavePresentation = "Saved locally"
+    }
+
+    func quickRun() async { await startHarnessRun(commandClass: .quickRun) }
+    func fullRun() async { await startHarnessRun(commandClass: .fullRun) }
+
+    func submitToLeetCode() async {
+        guard !isSubmitting else { return }
+        isSubmitting = true
+        defer { isSubmitting = false }
+        await flushSourceToDisk()
+        let command = nextSubmissionCommand()
+        let invocationID = LeetCodeControllerClient.makeInvocationID(
+            prefix: command == .retry ? "live-retry" : "live-submit"
+        )
+        guard let repositoryRoot = interviewArcRepositoryRoot else {
+            presentSubmissionFailure(
+                invocationID: invocationID,
+                command: command,
+                message: LeetCodeControllerError.controllerMissing.errorDescription
+                    ?? "Open LeetCode needs a linked Interview Arc checkout with the checked-in Playwright controller."
+            )
+            return
+        }
+        guard let problemURL = leetCodeProblemURL else {
+            presentSubmissionFailure(
+                invocationID: invocationID,
+                command: command,
+                message: LeetCodeControllerError.missingProblemURL.errorDescription
+                    ?? "This activity does not have a verified LeetCode URL."
+            )
+            return
+        }
+        guard let javaFile = sourceURL else {
+            presentSubmissionFailure(
+                invocationID: invocationID,
+                command: command,
+                message: "The Java file is not loaded."
+            )
+            return
+        }
+
+        outputFocus = .submission
+        latestSubmissionReceipt = .submitting(
+            invocationID: invocationID,
+            command: command
+        )
+
+        let receipt = await LeetCodeControllerClient.submitRecoveringAmbiguousOutput(
+            LeetCodeControllerRequest(
+                repositoryRoot: repositoryRoot,
+                problemURL: problemURL,
+                title: hostedSnapshot.activity?.activity.title ?? question
+            ),
+            javaFile: javaFile,
+            invocationID: invocationID,
+            command: command,
+            nodeExecutable: controllerNodeExecutable,
+            execute: controllerExecute
+        )
+        latestSubmissionReceipt = receipt
+        outputFocus = .submission
+    }
 
     func openLeetCode() async {
         guard !isOpeningLeetCode else { return }
@@ -1274,7 +1368,9 @@ final class CodingRoomModel: ObservableObject {
                 repositoryRoot: repositoryRoot,
                 problemURL: url,
                 title: title
-            )
+            ),
+            nodeExecutable: controllerNodeExecutable,
+            execute: controllerExecute
         )
         switch result {
         case .success(let message):
@@ -1282,6 +1378,48 @@ final class CodingRoomModel: ObservableObject {
         case .failure(let error):
             workSurfaceMessage = error.localizedDescription
         }
+    }
+
+    var outputDrawerTitle: String {
+        if focusedOutputIsSubmission {
+            return "Submit"
+        }
+        return latestRunReceipt?.commandClass.rawValue ?? "Output"
+    }
+
+    var outputDrawerSummary: String? {
+        if focusedOutputIsSubmission {
+            return latestSubmissionReceipt?.summaryLine
+        }
+        guard let receipt = latestRunReceipt else { return nil }
+        if receipt.outcome == .running {
+            return "\(receipt.commandClass.rawValue) · running"
+        }
+        return receipt.summaryLine
+    }
+
+    var outputDrawerIsSuccess: Bool {
+        if focusedOutputIsSubmission {
+            return latestSubmissionReceipt?.outcome.isAccepted == true
+        }
+        return latestRunReceipt?.outcome.isSuccess == true
+    }
+
+    var focusedOutputIsSubmission: Bool {
+        outputFocus == .submission || isSubmitting
+    }
+
+    var focusedOutputDiagnostics: String {
+        if focusedOutputIsSubmission {
+            let receipt = latestSubmissionReceipt
+            return receipt?.diagnostics.isEmpty == false
+                ? receipt?.diagnostics ?? ""
+                : receipt?.summaryLine ?? ""
+        }
+        let receipt = latestRunReceipt
+        return receipt?.diagnostics.isEmpty == false
+            ? receipt?.diagnostics ?? ""
+            : receipt?.summaryLine ?? ""
     }
 
     private func loadJavaSource() async {
@@ -1373,11 +1511,23 @@ final class CodingRoomModel: ObservableObject {
         }
     }
 
-    private func runHarness(commandClass: CodingHarnessCommandClass) async {
-        guard !isHarnessRunning else { return }
+    private func startHarnessRun(commandClass: CodingHarnessCommandClass) async {
+        harnessRunTask?.cancel()
+        harnessGeneration += 1
+        let generation = harnessGeneration
+        let task = Task { @MainActor [weak self] in
+            await self?.runHarness(commandClass: commandClass, generation: generation)
+        }
+        harnessRunTask = task
+        await task.value
+    }
+
+    private func runHarness(
+        commandClass: CodingHarnessCommandClass,
+        generation: Int
+    ) async {
         await flushSourceToDisk()
-        isHarnessRunning = true
-        defer { isHarnessRunning = false }
+        guard generation == harnessGeneration else { return }
         let identity = "run-\(UUID().uuidString.lowercased())"
         guard let repositoryRoot = interviewArcRepositoryRoot,
               let activityID = hostedSnapshot.activityID else {
@@ -1385,16 +1535,132 @@ final class CodingRoomModel: ObservableObject {
                 identity: identity,
                 commandClass: commandClass
             )
+            isHarnessRunning = false
+            outputFocus = .harness
             return
         }
-        latestRunReceipt = await CodingHarnessClient.run(
+
+        isHarnessRunning = true
+        outputFocus = .harness
+        latestRunReceipt = .running(identity: identity, commandClass: commandClass)
+
+        let receipt = await CodingHarnessClient.run(
             CodingHarnessInvocation(
                 repositoryRoot: repositoryRoot,
                 activityID: activityID,
-                commandClass: commandClass
+                commandClass: commandClass,
+                harnessStateRoot: applicationSupportRoot.map {
+                    $0.appendingPathComponent("leetcode-java-harnesses", isDirectory: true)
+                }
             ),
-            identity: identity
+            identity: identity,
+            nodeExecutable: harnessNodeExecutable,
+            execute: harnessExecute,
+            onOutput: { [weak self] chunk in
+                Task { @MainActor in
+                    self?.appendHarnessStream(
+                        chunk,
+                        identity: identity,
+                        commandClass: commandClass,
+                        generation: generation
+                    )
+                }
+            }
         )
+        guard generation == harnessGeneration else { return }
+        latestRunReceipt = receipt
+        isHarnessRunning = false
+        outputFocus = .harness
+    }
+
+    private func appendHarnessStream(
+        _ chunk: String,
+        identity: String,
+        commandClass: CodingHarnessCommandClass,
+        generation: Int
+    ) {
+        guard generation == harnessGeneration,
+              let current = latestRunReceipt,
+              current.identity == identity,
+              current.outcome == .running else {
+            return
+        }
+        let combined = [current.diagnostics, chunk]
+            .filter { !$0.isEmpty }
+            .joined(separator: current.diagnostics.hasSuffix("\n") || chunk.hasPrefix("\n") ? "" : "\n")
+        latestRunReceipt = CodingHarnessReceipt(
+            identity: identity,
+            commandClass: commandClass,
+            exitCode: -1,
+            outcome: .running,
+            diagnostics: cappedStreamDiagnostics(combined)
+        )
+    }
+
+    private func cappedStreamDiagnostics(_ text: String) -> String {
+        let lines = text.split(whereSeparator: \.isNewline)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+        return Array(lines.suffix(80)).joined(separator: "\n")
+    }
+
+    private func nextSubmissionCommand() -> CodingSubmissionCommand {
+        if case .accepted = latestSubmissionReceipt?.outcome {
+            return .retry
+        }
+        if case .rejected(verdict: _) = latestSubmissionReceipt?.outcome {
+            return .retry
+        }
+        return .submit
+    }
+
+    private func presentSubmissionFailure(
+        invocationID: String,
+        command: CodingSubmissionCommand,
+        message: String
+    ) {
+        outputFocus = .submission
+        workSurfaceMessage = message
+        latestSubmissionReceipt = CodingSubmissionReceipt(
+            invocationID: invocationID,
+            command: command,
+            outcome: .failed(code: nil, message: message),
+            diagnostics: message
+        )
+    }
+
+    private func warmLeetCodeController() async {
+        guard !isControllerWarming else { return }
+        guard let repositoryRoot = interviewArcRepositoryRoot,
+              let url = leetCodeProblemURL else {
+            return
+        }
+        isControllerWarming = true
+        defer { isControllerWarming = false }
+        let title = hostedSnapshot.activity?.activity.title ?? question
+        let result = await LeetCodeControllerClient.openProblem(
+            LeetCodeControllerRequest(
+                repositoryRoot: repositoryRoot,
+                problemURL: url,
+                title: title
+            ),
+            nodeExecutable: controllerNodeExecutable,
+            execute: controllerExecute
+        )
+        switch result {
+        case .success(let message):
+            workSurfaceMessage = message
+        case .failure(let error):
+            workSurfaceMessage = error.localizedDescription
+        }
+    }
+
+    private var harnessNodeExecutable: URL? {
+        harnessExecute == nil ? nil : URL(fileURLWithPath: "/usr/bin/true")
+    }
+
+    private var controllerNodeExecutable: URL? {
+        controllerExecute == nil ? nil : URL(fileURLWithPath: "/usr/bin/true")
     }
 
     private func attachInterviewerSpeech(

@@ -71,7 +71,8 @@ enum CodingHarnessClient {
         identity: String = UUID().uuidString.lowercased(),
         fileManager: FileManager = .default,
         nodeExecutable: URL? = nil,
-        execute: ((URL, [String], URL, [String: String]?) async throws -> CodingProcessResult)? = nil
+        execute: ((URL, [String], URL, [String: String]?) async throws -> CodingProcessResult)? = nil,
+        onOutput: (@Sendable (String) -> Void)? = nil
     ) async -> CodingHarnessReceipt {
         let commandClass = invocation.commandClass
         guard isHarnessScriptPresent(
@@ -131,12 +132,14 @@ enum CodingHarnessClient {
                     invocation.repositoryRoot,
                     environment
                 )
+                forwardOutput(result, to: onOutput)
             } else {
                 result = try await CodingProcessRunner.run(
                     executable: node,
                     arguments: arguments,
                     currentDirectory: invocation.repositoryRoot,
-                    environment: environment
+                    environment: environment,
+                    onOutput: streamingCallback(forwarding: onOutput)
                 )
             }
             return CodingHarnessReceipt.parse(
@@ -154,6 +157,28 @@ enum CodingHarnessClient {
                 stdout: "",
                 stderr: error.localizedDescription
             )
+        }
+    }
+
+    private static func streamingCallback(
+        forwarding onOutput: (@Sendable (String) -> Void)?
+    ) -> (@Sendable (CodingProcessStreamEvent) -> Void)? {
+        guard let onOutput else { return nil }
+        return { event in
+            onOutput(event.text)
+        }
+    }
+
+    private static func forwardOutput(
+        _ result: CodingProcessResult,
+        to onOutput: (@Sendable (String) -> Void)?
+    ) {
+        guard let onOutput else { return }
+        if !result.stdout.isEmpty {
+            onOutput(result.stdout)
+        }
+        if !result.stderr.isEmpty {
+            onOutput(result.stderr)
         }
     }
 }

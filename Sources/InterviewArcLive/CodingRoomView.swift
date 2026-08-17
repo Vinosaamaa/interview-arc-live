@@ -628,7 +628,10 @@ struct CodingRoomView: View {
                     codingGate
                 }
             }
-            if isOutputExpanded || model.latestRunReceipt != nil {
+            if isOutputExpanded
+                || model.latestRunReceipt != nil
+                || model.latestSubmissionReceipt != nil
+            {
                 outputDrawer
             }
         }
@@ -725,14 +728,14 @@ struct CodingRoomView: View {
     private var outputDrawer: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
-                Text(model.latestRunReceipt?.commandClass.rawValue ?? "Output")
+                Text(model.outputDrawerTitle)
                     .font(.system(.callout, design: .rounded, weight: .semibold))
                 Spacer()
-                if let receipt = model.latestRunReceipt {
-                    Text(receipt.summaryLine)
+                if let summary = model.outputDrawerSummary {
+                    Text(summary)
                         .font(.system(.caption, design: .rounded, weight: .semibold))
                         .foregroundStyle(
-                            receipt.outcome.isSuccess
+                            model.outputDrawerIsSuccess
                                 ? LivePalette.violet
                                 : LivePalette.warning
                         )
@@ -745,41 +748,74 @@ struct CodingRoomView: View {
                 }
                 .buttonStyle(.plain)
             }
-            if let receipt = model.latestRunReceipt, isOutputExpanded {
-                Text("Run \(receipt.identity) · \(receipt.commandClass.rawValue) · exit \(receipt.exitCode)")
+            if isOutputExpanded {
+                if model.focusedOutputIsSubmission, let receipt = model.latestSubmissionReceipt {
+                    Text("Submit \(receipt.invocationID) · \(receipt.command.rawValue)")
+                        .font(.system(.caption, design: .monospaced))
+                        .foregroundStyle(LivePalette.muted)
+                    ScrollView {
+                        Text(model.focusedOutputDiagnostics)
+                            .font(.system(.caption, design: .monospaced))
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .textSelection(.enabled)
+                    }
+                    .frame(maxHeight: 140)
+                } else if let receipt = model.latestRunReceipt {
+                    Text(
+                        receipt.outcome == .running
+                            ? "Run \(receipt.identity) · \(receipt.commandClass.rawValue)"
+                            : "Run \(receipt.identity) · \(receipt.commandClass.rawValue) · exit \(receipt.exitCode)"
+                    )
                     .font(.system(.caption, design: .monospaced))
                     .foregroundStyle(LivePalette.muted)
-                ScrollView {
-                    Text(receipt.diagnostics.isEmpty ? receipt.summaryLine : receipt.diagnostics)
-                        .font(.system(.caption, design: .monospaced))
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .textSelection(.enabled)
+                    ScrollView {
+                        Text(model.focusedOutputDiagnostics)
+                            .font(.system(.caption, design: .monospaced))
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .textSelection(.enabled)
+                    }
+                    .frame(maxHeight: 140)
+                    Text("Locally verified is not LeetCode Accepted.")
+                        .font(.system(.caption2, design: .rounded))
+                        .foregroundStyle(LivePalette.muted)
                 }
-                .frame(maxHeight: 140)
-                Text("Locally verified is not LeetCode Accepted.")
-                    .font(.system(.caption2, design: .rounded))
-                    .foregroundStyle(LivePalette.muted)
             }
             HStack {
                 Spacer()
                 Button {
+                    isOutputExpanded = true
                     Task { await model.quickRun() }
                 } label: {
                     Label("Quick run", systemImage: "play.fill")
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(LivePalette.violet)
-                .disabled(model.isHarnessRunning || !model.isJavaFileLoaded)
+                .disabled(!model.isJavaFileLoaded)
                 .accessibilityIdentifier(CodingRoomAccessibility.quickRun)
 
                 Button {
+                    isOutputExpanded = true
                     Task { await model.fullRun() }
                 } label: {
                     Label("Full run", systemImage: "play.square.stack")
                 }
                 .buttonStyle(.bordered)
-                .disabled(model.isHarnessRunning || !model.isJavaFileLoaded)
+                .disabled(!model.isJavaFileLoaded)
                 .accessibilityIdentifier(CodingRoomAccessibility.fullRun)
+
+                Button {
+                    isOutputExpanded = true
+                    Task { await model.submitToLeetCode() }
+                } label: {
+                    Label("Submit", systemImage: "arrow.up.circle")
+                }
+                .buttonStyle(.bordered)
+                .disabled(
+                    model.isSubmitting
+                        || !model.isJavaFileLoaded
+                        || model.isCodingActivityMissing
+                )
+                .accessibilityIdentifier(CodingRoomAccessibility.submit)
             }
         }
         .padding(14)
@@ -1020,6 +1056,7 @@ enum CodingRoomAccessibility {
     static let openLeetCode = "coding-room-open-leetcode"
     static let quickRun = "coding-room-quick-run"
     static let fullRun = "coding-room-full-run"
+    static let submit = "coding-room-submit"
     static let output = "coding-room-output"
     static let runLabel = "coding-room-run-label"
     static let gate = "coding-room-gate"
