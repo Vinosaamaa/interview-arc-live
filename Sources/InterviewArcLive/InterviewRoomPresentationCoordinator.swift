@@ -316,6 +316,7 @@ final class InterviewRoomPresentationCoordinator: NSObject, NSWindowDelegate {
         compactSizeReconciliationTask = nil
         compactPanel.orderOut(nil)
         fullWindow.orderOut(nil)
+        model.enhancedBoardBridgeController.resetEditorSession()
         // Do not finish the Session or cancel/replay durable provider work.
         // Process termination owns the remaining task lifetime.
         modelOpenTask = nil
