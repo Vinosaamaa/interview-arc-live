@@ -222,7 +222,7 @@ final class InterviewRoomSessionTests: XCTestCase {
         }
 
         let unknownSpecialty = Data(
-            #"{"specialty":"behavioral","stage":"Stage","question":"Question","requestedParts":[]}"#.utf8
+            #"{"specialty":"not_a_specialty","stage":"Stage","question":"Question","requestedParts":[]}"#.utf8
         )
         XCTAssertThrowsError(
             try JSONDecoder().decode(ActivityPrompt.self, from: unknownSpecialty)

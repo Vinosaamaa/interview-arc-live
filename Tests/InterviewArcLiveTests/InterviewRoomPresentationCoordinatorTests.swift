@@ -206,6 +206,32 @@ final class InterviewRoomPresentationCoordinatorTests: XCTestCase {
         XCTAssertEqual(coordinator.compactHostingTreeIdentity, compactTree)
     }
 
+    func testCollapsingBehavioralRoomKeepsOneSessionIdentity() {
+        let behavioral = BehavioralRoomModel()
+        let systemDesign = SystemDesignRoomModel()
+        let coordinator = makeCoordinator(
+            model: systemDesign,
+            behavioralModel: behavioral
+        )
+        defer { coordinator.prepareForTermination() }
+
+        coordinator.adoptPresentedSpecialty(.behavioral)
+        let behavioralIdentity = ObjectIdentifier(behavioral)
+        let fullTree = coordinator.fullHostingTreeIdentity
+        let compactTree = coordinator.compactHostingTreeIdentity
+        XCTAssertEqual(coordinator.presentedSpecialty, .behavioral)
+        XCTAssertEqual(coordinator.fullHostedModelIdentity, behavioralIdentity)
+        XCTAssertEqual(coordinator.compactHostedModelIdentity, behavioralIdentity)
+
+        coordinator.collapse()
+        coordinator.expand()
+        XCTAssertEqual(coordinator.presentedSpecialty, .behavioral)
+        XCTAssertEqual(coordinator.fullHostedModelIdentity, behavioralIdentity)
+        XCTAssertEqual(coordinator.compactHostedModelIdentity, behavioralIdentity)
+        XCTAssertEqual(coordinator.fullHostingTreeIdentity, fullTree)
+        XCTAssertEqual(coordinator.compactHostingTreeIdentity, compactTree)
+    }
+
     func testScreenChangeCallbackCannotReenterAnActiveFrameAdjustment() {
         let frameAdjustmentGuard = PresentationFrameAdjustmentGuard()
         var adjustmentCount = 0
@@ -501,12 +527,14 @@ final class InterviewRoomPresentationCoordinatorTests: XCTestCase {
     private func makeCoordinator(
         model: SystemDesignRoomModel? = nil,
         codingModel: CodingRoomModel? = nil,
+        behavioralModel: BehavioralRoomModel? = nil,
         compactDynamicTypeSizeOverride: DynamicTypeSize? = nil
     ) -> InterviewRoomPresentationCoordinator {
         _ = NSApplication.shared
         return InterviewRoomPresentationCoordinator(
             model: model ?? SystemDesignRoomModel(),
             codingModel: codingModel,
+            behavioralModel: behavioralModel,
             frameAutosaveName: "InterviewArcLiveTests.TransientFrame",
             compactDynamicTypeSizeOverride: compactDynamicTypeSizeOverride
         )

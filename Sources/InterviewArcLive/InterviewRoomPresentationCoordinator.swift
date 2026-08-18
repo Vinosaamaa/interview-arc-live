@@ -75,6 +75,7 @@ final class PresentationFrameAdjustmentGuard {
 enum InterviewRoomPresentedSpecialty: Equatable {
     case systemDesign
     case coding
+    case behavioral
 }
 
 @MainActor
@@ -89,6 +90,7 @@ final class InterviewRoomPresentationSelection: ObservableObject {
 final class InterviewRoomPresentationCoordinator: NSObject, NSWindowDelegate {
     let model: SystemDesignRoomModel
     let codingModel: CodingRoomModel?
+    let behavioralModel: BehavioralRoomModel?
     let hostedController: HostedPracticeController?
     let presentationSelection = InterviewRoomPresentationSelection()
 
@@ -121,12 +123,14 @@ final class InterviewRoomPresentationCoordinator: NSObject, NSWindowDelegate {
     init(
         model: SystemDesignRoomModel,
         codingModel: CodingRoomModel? = nil,
+        behavioralModel: BehavioralRoomModel? = nil,
         hostedController: HostedPracticeController? = nil,
         frameAutosaveName: String = "InterviewArcLive.SystemDesignRoom",
         compactDynamicTypeSizeOverride: DynamicTypeSize? = nil
     ) {
         self.model = model
         self.codingModel = codingModel
+        self.behavioralModel = behavioralModel
         self.hostedController = hostedController
         self.frameAutosaveName = frameAutosaveName
         self.compactDynamicTypeSizeOverride = compactDynamicTypeSizeOverride
@@ -165,11 +169,36 @@ final class InterviewRoomPresentationCoordinator: NSObject, NSWindowDelegate {
             ObjectIdentifier(model)
         case .coding:
             ObjectIdentifier(codingModel ?? model)
+        case .behavioral:
+            ObjectIdentifier(behavioralModel ?? model)
         }
     }
 
     func adoptPresentedSpecialty(_ specialty: InterviewRoomPresentedSpecialty) {
         presentationSelection.specialty = specialty
+    }
+
+    func presentSystemDesignRoom() {
+        adoptPresentedSpecialty(.systemDesign)
+        expand()
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            if model.snapshot == nil, !model.isWorking {
+                await model.open()
+            }
+        }
+    }
+
+    func presentBehavioralRoom() {
+        guard behavioralModel != nil else { return }
+        adoptPresentedSpecialty(.behavioral)
+        expand()
+        Task { @MainActor [weak self] in
+            guard let self, let behavioralModel else { return }
+            if behavioralModel.snapshot == nil, !behavioralModel.isWorking {
+                await behavioralModel.open()
+            }
+        }
     }
 
     private var activeSnapshot: InterviewRoomSnapshot? {
@@ -178,6 +207,8 @@ final class InterviewRoomPresentationCoordinator: NSObject, NSWindowDelegate {
             model.snapshot
         case .coding:
             codingModel?.snapshot
+        case .behavioral:
+            behavioralModel?.snapshot
         }
     }
 
@@ -409,6 +440,7 @@ final class InterviewRoomPresentationCoordinator: NSObject, NSWindowDelegate {
             systemDesign: model,
             selection: presentationSelection,
             coding: codingModel,
+            behavioral: behavioralModel,
             onCollapse: { [weak self] in self?.collapse() }
         )
         fullHostingController = NSHostingController(rootView: fullRoot)
@@ -455,6 +487,7 @@ final class InterviewRoomPresentationCoordinator: NSObject, NSWindowDelegate {
             systemDesign: model,
             selection: presentationSelection,
             coding: codingModel,
+            behavioral: behavioralModel,
             onExpand: { [weak self] in self?.expand() },
             dynamicTypeSizeOverride: compactDynamicTypeSizeOverride
         )
@@ -727,6 +760,9 @@ final class InterviewRoomPresentationCoordinator: NSObject, NSWindowDelegate {
         _ snapshot: HostedPracticeSnapshot
     ) async {
         guard !isBindingPresentation else { return }
+        if presentationSelection.specialty == .behavioral {
+            return
+        }
         if snapshot.connection == .signedOut {
             return
         }
@@ -773,6 +809,11 @@ final class InterviewRoomPresentationCoordinator: NSObject, NSWindowDelegate {
                 return await codingModel.finishInterview()
             }
             return false
+        case .behavioral:
+            if let behavioralModel {
+                return await behavioralModel.finishInterview()
+            }
+            return false
         case .systemDesign:
             return await model.finishInterview()
         }
@@ -792,6 +833,7 @@ struct FullInterviewRoomRoot: View {
     @ObservedObject var systemDesign: SystemDesignRoomModel
     @ObservedObject var selection: InterviewRoomPresentationSelection
     let coding: CodingRoomModel?
+    let behavioral: BehavioralRoomModel?
     let onCollapse: () -> Void
 
     var body: some View {
@@ -804,6 +846,12 @@ struct FullInterviewRoomRoot: View {
             } else {
                 SystemDesignRoomView(model: systemDesign, onCollapse: onCollapse)
             }
+        case .behavioral:
+            if let behavioral {
+                BehavioralRoomView(model: behavioral, onCollapse: onCollapse)
+            } else {
+                SystemDesignRoomView(model: systemDesign, onCollapse: onCollapse)
+            }
         }
     }
 }
@@ -812,6 +860,7 @@ struct CompactInterviewRoomRoot: View {
     @ObservedObject var systemDesign: SystemDesignRoomModel
     @ObservedObject var selection: InterviewRoomPresentationSelection
     let coding: CodingRoomModel?
+    let behavioral: BehavioralRoomModel?
     let onExpand: () -> Void
     let dynamicTypeSizeOverride: DynamicTypeSize?
 
@@ -827,6 +876,20 @@ struct CompactInterviewRoomRoot: View {
             if let coding {
                 CompactCodingRoomView(
                     model: coding,
+                    onExpand: onExpand,
+                    dynamicTypeSizeOverride: dynamicTypeSizeOverride
+                )
+            } else {
+                CompactSystemDesignRoomView(
+                    model: systemDesign,
+                    onExpand: onExpand,
+                    dynamicTypeSizeOverride: dynamicTypeSizeOverride
+                )
+            }
+        case .behavioral:
+            if let behavioral {
+                CompactBehavioralRoomView(
+                    model: behavioral,
                     onExpand: onExpand,
                     dynamicTypeSizeOverride: dynamicTypeSizeOverride
                 )

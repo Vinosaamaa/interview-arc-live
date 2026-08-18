@@ -38,6 +38,7 @@ final class InterviewArcLiveApp: NSObject, NSApplicationDelegate {
     private let hostedController: HostedPracticeController?
     private let model: SystemDesignRoomModel
     private let codingModel: CodingRoomModel
+    private let behavioralModel: BehavioralRoomModel
     private var presentationCoordinator: InterviewRoomPresentationCoordinator?
     private var activationRefreshTask: Task<Void, Never>?
     private var terminationGate: InterviewArcLiveTerminationGate?
@@ -47,6 +48,7 @@ final class InterviewArcLiveApp: NSObject, NSApplicationDelegate {
         hostedController = hosted
         model = SystemDesignRoomModel(hostedController: hosted)
         codingModel = CodingRoomModel(hostedController: hosted)
+        behavioralModel = BehavioralRoomModel()
         super.init()
     }
 
@@ -70,11 +72,15 @@ final class InterviewArcLiveApp: NSObject, NSApplicationDelegate {
             guard await codingModel.prepareLocalPersistenceForTermination() else {
                 return false
             }
+            guard await behavioralModel.prepareLocalPersistenceForTermination() else {
+                return false
+            }
             return await model.prepareHostedForTermination()
         }
         let coordinator = InterviewRoomPresentationCoordinator(
             model: model,
             codingModel: codingModel,
+            behavioralModel: behavioralModel,
             hostedController: hostedController
         )
         presentationCoordinator = coordinator
@@ -120,7 +126,12 @@ final class InterviewArcLiveApp: NSObject, NSApplicationDelegate {
 
     @objc
     private func showInterviewRoom(_ sender: Any?) {
-        presentationCoordinator?.reopen()
+        presentationCoordinator?.presentSystemDesignRoom()
+    }
+
+    @objc
+    private func showBehavioralRoom(_ sender: Any?) {
+        presentationCoordinator?.presentBehavioralRoom()
     }
 
     @objc
@@ -321,6 +332,14 @@ final class InterviewArcLiveApp: NSObject, NSApplicationDelegate {
         )
         show.target = self
         menu.addItem(show)
+        let behavioral = NSMenuItem(
+            title: "Behavioral Room (local)",
+            action: #selector(showBehavioralRoom(_:)),
+            keyEquivalent: "b"
+        )
+        behavioral.keyEquivalentModifierMask = [.command, .shift]
+        behavioral.target = self
+        menu.addItem(behavioral)
         NSApp.windowsMenu = menu
         return root
     }
