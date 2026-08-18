@@ -126,6 +126,24 @@ Session. Audio exports are derived from it and never replace it.
 The specialty-specific artifact area: system-design Board, coding workspace,
 or behavioral Story Kit.
 
+### Behavioral Room
+
+The Behavioral specialty presentation of one Interview Room Session. Full and
+compact Presentations share the same session identity. It can open locally
+without hosted `/live/v1` behavioral writes. Hosted lease, turn-pair, clip,
+and finish wait on Interview Arc issue #389. The live sidecar never carries a
+preferred or model answer.
+
+### STARL Coverage
+
+Situation, Task, Action, Result, and Learning tracked as filled, current, or
+empty during the live answer. Coverage is not a score.
+
+### Coached Discovery
+
+An explicit mode switch from interviewer to coaching after the candidate cannot
+answer cold. It is not a hidden hint.
+
 ### Board Document
 
 The versioned, bounded canonical editable source for one system-design Board.
