@@ -1,10 +1,12 @@
 import Foundation
 
-/// Input presented to the Interviewer Runtime Seam after an explicit Hand off.
+/// Input presented to the Interviewer Runtime Seam for an Opening Turn or
+/// after an explicit Hand off.
 public struct InterviewerRequest: Sendable, Equatable {
     /// Core supplies a contiguous suffix containing at most this many complete
     /// visible Candidate/Interviewer turns. The pending Candidate Turn remains
-    /// separate and is never truncated.
+    /// separate and is never truncated. A leading Opening Interviewer Turn may
+    /// precede those pairs when it still fits the same bound.
     public static let maximumPriorVisibleTurns = 12
     /// Sum of every string carried by the selected prior Turn pairs:
     /// Candidate body plus Interviewer display Markdown and spoken text.
@@ -13,15 +15,18 @@ public struct InterviewerRequest: Sendable, Equatable {
     public let sessionID: SessionID
     public let activityID: String
     public let activityPrompt: ActivityPrompt
-    public let candidateTurn: CandidateTurn
+    /// Nil means this is the session Opening Turn: no candidate answer exists yet.
+    public let candidateTurn: CandidateTurn?
     public let priorVisibleTurns: [InterviewTurn]
     public let responseTurnID: TurnID
+
+    public var isOpening: Bool { candidateTurn == nil }
 
     public init(
         sessionID: SessionID,
         activityID: String,
         activityPrompt: ActivityPrompt,
-        candidateTurn: CandidateTurn,
+        candidateTurn: CandidateTurn?,
         priorVisibleTurns: [InterviewTurn],
         responseTurnID: TurnID
     ) {

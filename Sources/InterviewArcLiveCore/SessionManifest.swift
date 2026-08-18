@@ -301,13 +301,14 @@ public struct CanonicalInterviewerResponse: Codable, Sendable, Equatable {
 public struct InterviewerTurn: Codable, Sendable, Equatable {
     public let id: TurnID
     public let commandID: CommandID
-    public let replyToTurnID: TurnID
+    /// Nil for the session Opening Turn; otherwise the Candidate Turn this replies to.
+    public let replyToTurnID: TurnID?
     public let response: CanonicalInterviewerResponse
 
     public init(
         id: TurnID,
         commandID: CommandID,
-        replyToTurnID: TurnID,
+        replyToTurnID: TurnID?,
         response: CanonicalInterviewerResponse
     ) {
         self.id = id

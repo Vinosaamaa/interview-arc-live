@@ -197,7 +197,9 @@ final class CodexAppServerInterviewerRuntimeTests: XCTestCase {
         XCTAssertEqual(threadParams["sandbox"] as? String, "read-only")
         XCTAssertEqual(threadParams["model"] as? String, "fixture-model")
         XCTAssertNotNil(threadParams["baseInstructions"] as? String)
-        XCTAssertNotNil(threadParams["developerInstructions"] as? String)
+        let developerInstructions = try XCTUnwrap(threadParams["developerInstructions"] as? String)
+        XCTAssertTrue(developerInstructions.contains("When kind is opening"))
+        XCTAssertTrue(developerInstructions.contains("When kind is reply"))
         XCTAssertNil(threadParams["dynamicTools"])
         XCTAssertNil(threadParams["runtimeWorkspaceRoots"])
         XCTAssertNil(threadParams["selectedCapabilityRoots"])
@@ -220,6 +222,7 @@ final class CodexAppServerInterviewerRuntimeTests: XCTestCase {
         let input = try XCTUnwrap(turnParams["input"] as? [[String: Any]])
         let prompt = try XCTUnwrap(input.first?["text"] as? String)
         XCTAssertTrue(prompt.contains("candidate answer verbatim"))
+        XCTAssertTrue(prompt.contains("\"kind\":\"reply\""))
         XCTAssertTrue(prompt.contains("prior candidate answer"))
         XCTAssertTrue(prompt.contains("prior interviewer display"))
         XCTAssertTrue(prompt.contains("response-turn"))
@@ -236,6 +239,30 @@ final class CodexAppServerInterviewerRuntimeTests: XCTestCase {
             pair[0] == "--disable" ? pair[1] : nil
         })
         XCTAssertEqual(disabled, Set(Self.expectedDisabledFeatures))
+    }
+
+    func testOpeningTurnEncodesKindWithoutCandidateAnswerAndUsesResponseTurnIdentity() async throws {
+        let finalText = #"{"displayMarkdown":"Design a **notification** service. What scale first?","spokenText":"Design a notification service. What scale first?"}"#
+        let connection = ScriptedCodexConnection(lines: Self.completeTurnLines(finalText: finalText))
+        let runtime = Self.runtime(launcher: FixtureCodexLauncher(connection: connection))
+
+        let response = try await runtime.respond(to: Self.openingRequest())
+
+        XCTAssertEqual(
+            response.displayMarkdown,
+            "Design a **notification** service. What scale first?"
+        )
+        XCTAssertEqual(response.spokenText, "Design a notification service. What scale first?")
+        let messages = try Self.objects(from: await connection.sentData())
+        let turnParams = try XCTUnwrap(messages[4]["params"] as? [String: Any])
+        XCTAssertEqual(turnParams["clientUserMessageId"] as? String, "opening-response-turn")
+        let input = try XCTUnwrap(turnParams["input"] as? [[String: Any]])
+        let prompt = try XCTUnwrap(input.first?["text"] as? String)
+        XCTAssertTrue(prompt.contains("\"kind\":\"opening\""))
+        XCTAssertFalse(prompt.contains("candidateAnswer"))
+        XCTAssertFalse(prompt.contains("candidateTurnID"))
+        XCTAssertTrue(prompt.contains("Design collaborative document editing."))
+        XCTAssertFalse(prompt.contains("candidate answer verbatim"))
     }
 
     func testServerErrorCodeIsTypedAndConnectionIsReapedWithoutMessageLeak() async throws {
@@ -436,6 +463,22 @@ final class CodexAppServerInterviewerRuntimeTests: XCTestCase {
                 .interviewer(priorInterviewer),
             ],
             responseTurnID: TurnID("response-turn")
+        )
+    }
+
+    private static func openingRequest() -> InterviewerRequest {
+        InterviewerRequest(
+            sessionID: SessionID("session-fixture"),
+            activityID: "activity-fixture",
+            activityPrompt: try! ActivityPrompt(
+                specialty: .systemDesign,
+                stage: "Architecture deep dive",
+                question: "Design collaborative document editing.",
+                requestedParts: ["Clarify requirements", "Discuss consistency"]
+            ),
+            candidateTurn: nil,
+            priorVisibleTurns: [],
+            responseTurnID: TurnID("opening-response-turn")
         )
     }
 

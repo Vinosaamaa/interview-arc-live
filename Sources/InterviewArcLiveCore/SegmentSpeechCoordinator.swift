@@ -146,6 +146,15 @@ public final class SegmentSpeechCoordinator {
     }
 
     @discardableResult
+    public func requestOpeningInterviewerTurn(
+        commandID: CommandID
+    ) async throws -> InterviewRoomSnapshot {
+        try await applyAndPublish(
+            .requestOpeningInterviewerTurn(commandID: commandID)
+        ).snapshot
+    }
+
+    @discardableResult
     public func setTurnMode(
         _ mode: TurnMode,
         commandID: CommandID

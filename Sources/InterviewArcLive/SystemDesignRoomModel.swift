@@ -294,6 +294,15 @@ final class SystemDesignRoomModel: ObservableObject {
 
     var hostedPairs: [LivePair] { hostedSnapshot.activity?.pairs ?? [] }
 
+    /// Local-only Opening Turn. Hosted pairs stay candidate-then-interviewer.
+    var localOpeningInterviewerTurn: InterviewerTurn? {
+        guard case .interviewer(let opening)? = snapshot?.turns.first,
+              opening.replyToTurnID == nil else {
+            return nil
+        }
+        return opening
+    }
+
     var hostedNextSystemDesignActivityID: String? {
         guard let today = hostedSnapshot.today,
               let current = hostedSnapshot.activity?.activity,
@@ -1201,9 +1210,18 @@ final class SystemDesignRoomModel: ObservableObject {
                 errorMessage = "A recording recovery needs attention. Preserved evidence remains visible below."
             }
             if restored.phase == .ready {
-                restored = try await opened.giveCandidateFloor(
-                    commandID: CommandID("local-give-floor-0")
-                )
+                isInterviewerRequestInFlight = true
+                statusMessage = "Mara is opening the interview…"
+                do {
+                    restored = try await opened.requestOpeningInterviewerTurn(
+                        commandID: CommandID("local-opening-0")
+                    )
+                } catch {
+                    restored = opened.snapshot
+                    errorWasCodexFailure = applyCodexFailure(error)
+                    errorMessage = safeMessage(for: error)
+                }
+                isInterviewerRequestInFlight = false
             }
             publish(restored)
             await recoverBoardArtifacts(in: restored.board)
@@ -2388,6 +2406,14 @@ final class SystemDesignRoomModel: ObservableObject {
             }
             return "\(selectedCount) segment\(selectedCount == 1 ? "" : "s") ready"
         case .interviewerProcessing:
+            if snapshot.turns.isEmpty {
+                if isInterviewerRequestInFlight {
+                    return "Mara is opening the interview…"
+                }
+                return isCodexReady
+                    ? "Opening greeting needs retry"
+                    : "Opening greeting needs Codex to retry"
+            }
             if isInterviewerRequestInFlight {
                 return "Answer saved · Codex is preparing the next question"
             }

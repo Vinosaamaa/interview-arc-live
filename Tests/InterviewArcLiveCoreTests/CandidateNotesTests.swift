@@ -55,7 +55,7 @@ final class CandidateNotesTests: XCTestCase {
         XCTAssertEqual(completed.candidateNotes, notes)
         let requests = await runtime.requests()
         let request = try XCTUnwrap(requests.first)
-        XCTAssertNotEqual(request.candidateTurn.transcript.body, notes.body)
+        XCTAssertNotEqual(request.candidateTurn?.transcript.body, notes.body)
         XCTAssertFalse(request.activityPrompt.question.contains(notes.body))
         XCTAssertTrue(request.priorVisibleTurns.isEmpty)
     }
