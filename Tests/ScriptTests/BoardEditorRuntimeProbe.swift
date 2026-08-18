@@ -224,7 +224,7 @@ private final class RuntimeProbe: NSObject,
                   const serialized = \(quoted);
                   const scene = JSON.parse(serialized);
                   const count = window.interviewArcLoad(serialized);
-                  window.setTimeout(() => {
+                  window.interviewArcAfterNativeUpdate(() => {
                     const reconciledScene = structuredClone(scene);
                     reconciledScene.elements[0].x = 450.14453125;
                     const currentState = JSON.stringify({
@@ -237,7 +237,7 @@ private final class RuntimeProbe: NSObject,
                     });
                     window.interviewArcSetState(currentState);
                     window.interviewArcReconcile(JSON.stringify(reconciledScene));
-                    window.setTimeout(() => {
+                    window.interviewArcAfterNativeUpdate(() => {
                       const controlsOnlyState = JSON.parse(currentState);
                       controlsOnlyState.controls = {
                         ...controlsOnlyState.controls,
@@ -246,8 +246,8 @@ private final class RuntimeProbe: NSObject,
                       window.interviewArcSetState(
                         JSON.stringify(controlsOnlyState)
                       );
-                    }, 100);
-                  }, 250);
+                    });
+                  });
                   return count;
                 })()
                 """
@@ -450,6 +450,7 @@ private final class RuntimeProbe: NSObject,
                 && object["chromeFitsWithoutOverlap"] as? Bool == true
                 && loadedElementCount == 3
                 && containsMovedRuntimeProbeBox(object["snapshot"])
+                && containsSelectedRuntimeProbeBox(object["snapshot"])
                 && containsBoundRuntimeProbeConnector(object["snapshot"])
                 && containsActiveHandTool(object["runtime"])
                 && containsZoom(object["runtime"], expected: 1.25)
@@ -498,6 +499,15 @@ private final class RuntimeProbe: NSObject,
                 && element["boardID"] as? String == "runtime-probe-queue"
                 && element["label"] as? String == "Delivery queue"
         }
+    }
+
+    private func containsSelectedRuntimeProbeBox(_ rawSnapshot: Any?) -> Bool {
+        guard let snapshot = rawSnapshot as? [String: Any],
+              let selectedWebIDs = snapshot["selectedWebIDs"] as? [String]
+        else {
+            return false
+        }
+        return selectedWebIDs == ["runtime-probe-box"]
     }
 
     private func containsBoundRuntimeProbeConnector(_ rawSnapshot: Any?) -> Bool {

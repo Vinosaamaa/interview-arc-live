@@ -1,8 +1,15 @@
 const selectedIDsEqual = (current, next) => {
-  const currentIDs = Object.keys(current ?? {}).filter((id) => current[id]);
-  const nextIDs = Object.keys(next ?? {}).filter((id) => next[id]);
-  return currentIDs.length === nextIDs.length
-    && currentIDs.every((id) => Boolean(next?.[id]));
+  let currentCount = 0;
+  let nextCount = 0;
+  for (const id in current ?? {}) {
+    if (!current[id]) continue;
+    currentCount += 1;
+    if (!next?.[id]) return false;
+  }
+  for (const id in next ?? {}) {
+    if (next[id]) nextCount += 1;
+  }
+  return currentCount === nextCount;
 };
 
 export const nativeAppStatePatchRequired = (current, patch) =>

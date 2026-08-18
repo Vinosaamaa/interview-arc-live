@@ -48,6 +48,9 @@ let diagnosticAnimationFrame = null;
 let diagnosticFrame = 0;
 let diagnosticFramesRemaining = 0;
 let previousLayoutDiagnostic = null;
+let pendingLayoutDiagnostic = null;
+let pendingLayoutDiagnosticFrame = null;
+const interactionDiagnosticFrameLimit = 600;
 
 const describeDiagnosticElement = (element) => {
   if (!element) return null;
@@ -121,7 +124,7 @@ const reportInteractionDiagnostic = (
 
 const startInteractionDiagnostic = (getSnapshot) => {
   if (!diagnosticsEnabled || diagnosticAnimationFrame !== null) return;
-  diagnosticFramesRemaining = Number.POSITIVE_INFINITY;
+  diagnosticFramesRemaining = interactionDiagnosticFrameLimit;
   const sample = () => {
     diagnosticFrame += 1;
     const snapshot = getSnapshot();
@@ -131,9 +134,7 @@ const startInteractionDiagnostic = (getSnapshot) => {
       snapshot.nativeControls,
       snapshot.renderCount,
     );
-    if (diagnosticFramesRemaining !== Number.POSITIVE_INFINITY) {
-      diagnosticFramesRemaining -= 1;
-    }
+    diagnosticFramesRemaining -= 1;
     if (diagnosticFramesRemaining > 0) {
       diagnosticAnimationFrame = window.requestAnimationFrame(sample);
     } else {
@@ -145,7 +146,7 @@ const startInteractionDiagnostic = (getSnapshot) => {
 
 const finishInteractionDiagnostic = () => {
   if (!diagnosticsEnabled) return;
-  diagnosticFramesRemaining = 12;
+  diagnosticFramesRemaining = Math.min(diagnosticFramesRemaining, 12);
 };
 
 const reportControlDiagnostic = (previous, next, renderCount) => {
@@ -161,8 +162,19 @@ const reportControlDiagnostic = (previous, next, renderCount) => {
 
 const reportLayoutDiagnostic = (api, phase, force = false) => {
   if (!diagnosticsEnabled) return;
-  window.requestAnimationFrame(() => {
-    const appState = api?.getAppState?.() ?? {};
+  pendingLayoutDiagnostic = {
+    api,
+    phase,
+    force: force || Boolean(pendingLayoutDiagnostic?.force),
+  };
+  if (pendingLayoutDiagnosticFrame !== null) return;
+  pendingLayoutDiagnosticFrame = window.requestAnimationFrame(() => {
+    const pending = pendingLayoutDiagnostic;
+    pendingLayoutDiagnostic = null;
+    pendingLayoutDiagnosticFrame = null;
+    if (!pending) return;
+    const { api: pendingAPI, phase: pendingPhase, force: pendingForce } = pending;
+    const appState = pendingAPI?.getAppState?.() ?? {};
     const leftPanel = document.querySelector(".App-menu_left");
     const topPanel = document.querySelector(".App-menu_top");
     const shell = document.querySelector(".board-shell");
@@ -199,11 +211,11 @@ const reportLayoutDiagnostic = (api, phase, force = false) => {
       Boolean(appState.resizingElement),
       Boolean(appState.editingElement),
     ].join("|");
-    if (!force && fingerprint === previousLayoutDiagnostic) return;
+    if (!pendingForce && fingerprint === previousLayoutDiagnostic) return;
     previousLayoutDiagnostic = fingerprint;
     post({
       event: "diagnostic",
-      phase: `layout ${phase} ${fingerprint}`,
+      phase: `layout ${pendingPhase} ${fingerprint}`,
     });
   });
 };
@@ -923,7 +935,18 @@ const installNativeWindowBridge = ({
     zoom: Number(api.getAppState().zoom?.value ?? 1),
     nativeControls: nativeControlsRef.current,
     nativeSceneMutationCount,
+    nativeUpdateInProgress: loadingRef.current,
   });
+  window.interviewArcAfterNativeUpdate = (callback) => {
+    const runWhenIdle = () => {
+      if (loadingRef.current) {
+        window.requestAnimationFrame(runWhenIdle);
+        return;
+      }
+      callback();
+    };
+    window.requestAnimationFrame(runWhenIdle);
+  };
 
   return {
     captureChange(scene) {

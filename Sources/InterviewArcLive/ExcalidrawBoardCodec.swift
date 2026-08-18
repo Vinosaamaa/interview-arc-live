@@ -34,6 +34,7 @@ struct ExcalidrawBoardSceneChange: Decodable, Sendable {
 struct ExcalidrawBoardDecodeResult: Equatable, Sendable {
     let document: BoardDocument
     let selectedElementID: BoardElementID?
+    let boardIDsByWebID: [String: BoardElementID]
     let zoom: Double?
     let tool: BoardEditorTool?
     let boxKind: BoardNodeKind?
@@ -97,6 +98,23 @@ enum ExcalidrawBoardUpdatePolicy {
         next: ExcalidrawBoardState
     ) -> Bool {
         previous != next
+    }
+}
+
+struct ExcalidrawBoardObservationGate: Equatable, Sendable {
+    private(set) var webSceneCallbackDepth = 0
+
+    var permitsNativeObservation: Bool {
+        webSceneCallbackDepth == 0
+    }
+
+    mutating func beginWebSceneCallback() {
+        webSceneCallbackDepth += 1
+    }
+
+    mutating func endWebSceneCallback() {
+        precondition(webSceneCallbackDepth > 0)
+        webSceneCallbackDepth -= 1
     }
 }
 
@@ -250,7 +268,8 @@ enum ExcalidrawBoardCodec {
 
     static func decodeChange(
         from object: Any,
-        currentDocument: BoardDocument
+        currentDocument: BoardDocument,
+        preferredBoardIDsByWebID: [String: BoardElementID] = [:]
     ) throws -> ExcalidrawBoardDecodeResult {
         guard JSONSerialization.isValidJSONObject(object) else {
             throw ExcalidrawBoardCodecError.invalidElement
@@ -301,6 +320,16 @@ enum ExcalidrawBoardCodec {
                existingTypes[candidate] == element.type,
                usedIDs.insert(candidate).inserted {
                 assigned = candidate
+            } else if let remembered = preferredBoardIDsByWebID[webID],
+                      (existingTypes[remembered] == element.type
+                        || !existingIDs.contains(remembered)),
+                      usedIDs.insert(remembered).inserted {
+                // A newly drawn Excalidraw element has no canonical Board ID
+                // until the native reconcile lands. Reuse the ID assigned to
+                // that web identity across any scenes published in between;
+                // allocating again would make selection jump to another box.
+                assigned = remembered
+                requiresReload = true
             } else {
                 assigned = nextID(
                     prefix: elementPrefix,
@@ -373,6 +402,7 @@ enum ExcalidrawBoardCodec {
         return ExcalidrawBoardDecodeResult(
             document: document,
             selectedElementID: selectedElementID,
+            boardIDsByWebID: webIDToBoardID,
             zoom: change.zoom.flatMap { value in
                 guard value.isFinite else { return nil }
                 return clamp(
@@ -489,8 +519,7 @@ enum ExcalidrawBoardCodec {
               let width = element.width,
               width.isFinite,
               width > 0,
-              width <= BoardDocument.maximumStrokeWidth,
-              points.allSatisfy({ $0.x.isFinite && $0.y.isFinite }) else {
+              width <= BoardDocument.maximumStrokeWidth else {
             throw ExcalidrawBoardCodecError.invalidElement
         }
         return BoardStroke(

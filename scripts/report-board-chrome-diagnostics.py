@@ -8,14 +8,17 @@ import pathlib
 import sys
 from collections import Counter
 
-
-def span(rows: list[dict], key: str, field: str) -> tuple[float, float] | None:
-    values = [
-        float(row[key][field])
-        for row in rows
-        if isinstance(row.get(key), dict) and field in row[key]
-    ]
-    return (min(values), max(values)) if values else None
+GEOMETRY_FIELDS = {
+    "top menu x": ("topMenu", "x"),
+    "top menu width": ("topMenu", "width"),
+    "top toolbar x": ("topToolbar", "x"),
+    "top toolbar width": ("topToolbar", "width"),
+    "bottom controls x": ("bottomLeft", "x"),
+    "bottom controls y": ("bottomLeft", "y"),
+    "bottom controls width": ("bottomLeft", "width"),
+    "viewport width": ("viewport", "width"),
+    "viewport height": ("viewport", "height"),
+}
 
 
 def main() -> int:
@@ -24,68 +27,74 @@ def main() -> int:
         return 64
 
     path = pathlib.Path(sys.argv[1])
+    bounds = {
+        label: [float("inf"), float("-inf"), 0]
+        for label in GEOMETRY_FIELDS
+    }
+    controls: Counter[tuple[object, object]] = Counter()
+    lifecycle = Counter()
+    failures: list[str] = []
+    interaction_frames = 0
     try:
-        rows = [
-            json.loads(line)
-            for line in path.read_text(encoding="utf-8").splitlines()
-            if line.strip()
-        ]
-    except (OSError, json.JSONDecodeError) as error:
+        with path.open(encoding="utf-8") as trace:
+            for line_number, line in enumerate(trace, start=1):
+                if not line.strip():
+                    continue
+                row = json.loads(line)
+                kind = row.get("kind")
+                lifecycle[kind] += 1
+                if kind == "editor-failure-callback":
+                    failures.append(
+                        f"editor failure: {row.get('message', 'unknown')}"
+                    )
+                diagnostic_kind = row.get("diagnosticKind")
+                if diagnostic_kind == "control-transition":
+                    controls[
+                        (
+                            row.get("previous", {}).get("revisionStatus"),
+                            row.get("next", {}).get("revisionStatus"),
+                        )
+                    ] += 1
+                if diagnostic_kind != "interaction-frame":
+                    continue
+                interaction_frames += 1
+                for label, (key, field) in GEOMETRY_FIELDS.items():
+                    container = row.get(key)
+                    if not isinstance(container, dict) or field not in container:
+                        failures.append(
+                            f"{label}: missing from interaction frame at line {line_number}"
+                        )
+                        continue
+                    value = float(container[field])
+                    current = bounds[label]
+                    current[0] = min(current[0], value)
+                    current[1] = max(current[1], value)
+                    current[2] += 1
+    except (OSError, json.JSONDecodeError, TypeError, ValueError) as error:
         print(f"trace error: {error}", file=sys.stderr)
         return 65
 
-    frames = [
-        row for row in rows
-        if row.get("diagnosticKind") == "interaction-frame"
-    ]
-    if not frames:
+    if interaction_frames == 0:
         print("HOLD: trace contains no interaction frames")
         return 1
 
-    checks = {
-        "top menu x": span(frames, "topMenu", "x"),
-        "top menu width": span(frames, "topMenu", "width"),
-        "top toolbar x": span(frames, "topToolbar", "x"),
-        "top toolbar width": span(frames, "topToolbar", "width"),
-        "bottom controls x": span(frames, "bottomLeft", "x"),
-        "bottom controls y": span(frames, "bottomLeft", "y"),
-        "bottom controls width": span(frames, "bottomLeft", "width"),
-        "viewport width": span(frames, "viewport", "width"),
-        "viewport height": span(frames, "viewport", "height"),
-    }
-    failures: list[str] = []
-    for label, bounds in checks.items():
-        if bounds is None:
-            failures.append(f"{label}: missing")
+    for label, (minimum, maximum, count) in bounds.items():
+        if count != interaction_frames:
             continue
-        minimum, maximum = bounds
         delta = maximum - minimum
         print(f"{label}: {minimum:.2f}…{maximum:.2f} (Δ {delta:.2f})")
         if delta > 0.5:
             failures.append(f"{label}: Δ {delta:.2f}")
 
-    controls = Counter(
-        (
-            row.get("previous", {}).get("revisionStatus"),
-            row.get("next", {}).get("revisionStatus"),
-        )
-        for row in rows
-        if row.get("diagnosticKind") == "control-transition"
-    )
-    failures.extend(
-        f"editor failure: {row.get('message', 'unknown')}"
-        for row in rows
-        if row.get("kind") == "editor-failure-callback"
-    )
-    print(f"interaction frames: {len(frames)}")
+    print(f"interaction frames: {interaction_frames}")
     print(f"control transitions: {sum(controls.values())}")
     for (previous, next_value), count in controls.most_common(6):
         print(f"  {previous!r} → {next_value!r}: {count}")
     print(
         "representable lifecycle: "
-        f"created={sum(row.get('kind') == 'representable-created-webview' for row in rows)} "
-        f"reused={sum(row.get('kind') == 'representable-reused-webview' for row in rows)} "
-        f"dismantled={sum(row.get('kind') == 'representable-dismantle' for row in rows)}"
+        f"created={lifecycle['representable-created-webview']} "
+        f"reused={lifecycle['representable-reused-webview']} "
+        f"dismantled={lifecycle['representable-dismantle']}"
     )
 
     if failures:

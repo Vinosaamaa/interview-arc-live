@@ -703,8 +703,31 @@ final class SystemDesignRoomModel: ObservableObject {
 
         do {
             var updated = boardEditor
+            if case .replaceDocument(_, let requestedSelection) = action {
+                ExcalidrawBoardDiagnostics.record(
+                    kind: "board-replace-before",
+                    fields: [
+                        "requestedHasSelection": requestedSelection != nil,
+                        "modelHasSelection": boardEditor.selectedElementID != nil,
+                        "selectionMatches": requestedSelection
+                            == boardEditor.selectedElementID,
+                    ]
+                )
+            }
             let mutation = try updated.applyReportingMutation(action)
             boardEditor = updated
+            if case .replaceDocument(_, let requestedSelection) = action {
+                ExcalidrawBoardDiagnostics.record(
+                    kind: "board-replace-after",
+                    fields: [
+                        "requestedHasSelection": requestedSelection != nil,
+                        "modelHasSelection": boardEditor.selectedElementID != nil,
+                        "selectionMatches": requestedSelection
+                            == boardEditor.selectedElementID,
+                        "documentChanged": mutation.documentChanged,
+                    ]
+                )
+            }
             boardErrorMessage = nil
             if mutation.documentChanged {
                 persistBoardDraft(updated.document)
@@ -953,10 +976,24 @@ final class SystemDesignRoomModel: ObservableObject {
             return
         }
         let previous = localPersistenceTail
+        ExcalidrawBoardDiagnostics.record(
+            kind: "board-persistence-queued",
+            fields: [
+                "modelHasSelection": boardEditor.selectedElementID != nil,
+                "elementCount": document.elements.count,
+            ]
+        )
         beginBoardWork()
         let operation = Task { @MainActor [weak self, weak coordinator] in
             await previous?.value
             guard let self, let coordinator else { return }
+            ExcalidrawBoardDiagnostics.record(
+                kind: "board-persistence-started",
+                fields: [
+                    "modelHasSelection": boardEditor.selectedElementID != nil,
+                    "elementCount": document.elements.count,
+                ]
+            )
             defer {
                 endBoardWork()
             }
@@ -966,6 +1003,13 @@ final class SystemDesignRoomModel: ObservableObject {
                     commandID: commandID("update-board-draft")
                 )
                 publish(updated)
+                ExcalidrawBoardDiagnostics.record(
+                    kind: "board-persistence-published",
+                    fields: [
+                        "modelHasSelection": boardEditor.selectedElementID != nil,
+                        "elementCount": document.elements.count,
+                    ]
+                )
             } catch {
                 publish(coordinator.snapshot)
                 boardErrorMessage = "The latest board change is visible but not saved. Try the action again."

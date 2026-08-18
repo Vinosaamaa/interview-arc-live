@@ -195,6 +195,52 @@ final class ExcalidrawBoardCodecTests: XCTestCase {
         XCTAssertEqual(stroke.points.last, BoardPoint(x: 180, y: 900))
     }
 
+    func testNewWebIdentityKeepsItsCanonicalIDAcrossPreReconcileScenes() throws {
+        let webID = "new-excalidraw-shape"
+        let firstChange: [String: Any] = [
+            "event": "scene",
+            "unsupportedElementCount": 0,
+            "selectedWebIDs": [webID],
+            "elements": [
+                box(
+                    webID: webID,
+                    x: 80,
+                    y: 90,
+                    label: "",
+                    kind: "generic"
+                ),
+            ],
+        ]
+        let first = try ExcalidrawBoardCodec.decodeChange(
+            from: firstChange,
+            currentDocument: .empty
+        )
+        XCTAssertEqual(first.selectedElementID, BoardElementID("box-1"))
+
+        let occupiedGap = BoardBox(
+            id: BoardElementID("box-2"),
+            frame: BoardRect(
+                origin: BoardPoint(x: 400, y: 90),
+                size: BoardSize(width: 120, height: 112)
+            ),
+            label: "Existing",
+            kind: .service
+        )
+        let secondBaseline = try BoardDocument(
+            canvas: first.document.canvas,
+            elements: first.document.elements + [.box(occupiedGap)]
+        )
+        let second = try ExcalidrawBoardCodec.decodeChange(
+            from: firstChange,
+            currentDocument: secondBaseline,
+            preferredBoardIDsByWebID: first.boardIDsByWebID
+        )
+
+        XCTAssertEqual(second.selectedElementID, BoardElementID("box-1"))
+        XCTAssertEqual(second.document.elements.first?.id, BoardElementID("box-1"))
+        XCTAssertEqual(second.boardIDsByWebID[webID], BoardElementID("box-1"))
+    }
+
     func testExcalidrawDiamondAndEllipseBecomeCanonicalNodeKinds() throws {
         let change: [String: Any] = [
             "event": "scene",
@@ -415,6 +461,20 @@ final class ExcalidrawBoardCodecTests: XCTestCase {
                 )
             )
         )
+    }
+
+    func testWebSceneCallbackRejectsStalePublishedObservationUntilItReturns() {
+        var gate = ExcalidrawBoardObservationGate()
+
+        XCTAssertTrue(gate.permitsNativeObservation)
+        gate.beginWebSceneCallback()
+        XCTAssertFalse(gate.permitsNativeObservation)
+        gate.beginWebSceneCallback()
+        XCTAssertFalse(gate.permitsNativeObservation)
+        gate.endWebSceneCallback()
+        XCTAssertFalse(gate.permitsNativeObservation)
+        gate.endWebSceneCallback()
+        XCTAssertTrue(gate.permitsNativeObservation)
     }
 
     func testOneShotCreationToolsReturnToNativeSelectAfterAcceptedCreation() {

@@ -59,43 +59,100 @@ enum ExcalidrawBoardViewportPolicy {
     }
 }
 
+private final class ExcalidrawBoardDiagnosticPayload: @unchecked Sendable {
+    let fields: [String: Any]
+
+    init(fields: [String: Any]) {
+        self.fields = fields
+    }
+}
+
+private final class ExcalidrawBoardDiagnosticLogger: @unchecked Sendable {
+    private static let flushDelay = DispatchTimeInterval.milliseconds(50)
+    private static let flushByteLimit = 64 * 1024
+
+    private let logURL: URL
+    private let queue = DispatchQueue(
+        label: "app.interviewarc.live.board-diagnostics",
+        qos: .utility
+    )
+    private var handle: FileHandle?
+    private var pending = Data()
+    private var flushScheduled = false
+
+    init(logURL: URL) {
+        self.logURL = logURL
+    }
+
+    func record(kind: String, fields: [String: Any]) {
+        var values = fields
+        values["kind"] = kind
+        values["uptimeNanoseconds"] = DispatchTime.now().uptimeNanoseconds
+        let payload = ExcalidrawBoardDiagnosticPayload(fields: values)
+        queue.async { [self, payload] in
+            guard JSONSerialization.isValidJSONObject(payload.fields),
+                  let json = try? JSONSerialization.data(
+                    withJSONObject: payload.fields
+                  ) else { return }
+            pending.append(json)
+            pending.append(0x0A)
+            if pending.count >= Self.flushByteLimit {
+                flush()
+            } else {
+                scheduleFlush()
+            }
+        }
+    }
+
+    private func scheduleFlush() {
+        guard !flushScheduled else { return }
+        flushScheduled = true
+        queue.asyncAfter(deadline: .now() + Self.flushDelay) { [self] in
+            flushScheduled = false
+            flush()
+        }
+    }
+
+    private func flush() {
+        guard !pending.isEmpty else { return }
+        if handle == nil {
+            let fileManager = FileManager.default
+            if !fileManager.fileExists(atPath: logURL.path) {
+                fileManager.createFile(atPath: logURL.path, contents: nil)
+            }
+            handle = try? FileHandle(forWritingTo: logURL)
+            _ = try? handle?.seekToEnd()
+        }
+        guard let handle else { return }
+        let data = pending
+        pending.removeAll(keepingCapacity: true)
+        do {
+            try handle.write(contentsOf: data)
+            try handle.synchronize()
+        } catch {
+            self.handle = nil
+        }
+    }
+}
+
 enum ExcalidrawBoardDiagnostics {
     static let environmentKey = "INTERVIEW_ARC_BOARD_DIAGNOSTICS_PATH"
 
-    private static var logURL: URL? {
+    private static let logger: ExcalidrawBoardDiagnosticLogger? = {
         guard let path = ProcessInfo.processInfo.environment[environmentKey],
               !path.isEmpty else { return nil }
-        return URL(fileURLWithPath: path)
-    }
+        return ExcalidrawBoardDiagnosticLogger(
+            logURL: URL(fileURLWithPath: path)
+        )
+    }()
 
-    static var isEnabled: Bool { logURL != nil }
+    static var isEnabled: Bool { logger != nil }
 
-    @MainActor
     static func record(
         kind: String,
         fields: [String: Any] = [:]
     ) {
-        guard let logURL else { return }
-        var payload = fields
-        payload["kind"] = kind
-        payload["uptimeNanoseconds"] = DispatchTime.now().uptimeNanoseconds
-        guard JSONSerialization.isValidJSONObject(payload),
-              let json = try? JSONSerialization.data(withJSONObject: payload),
-              let newline = "\n".data(using: .utf8) else { return }
-        let data = json + newline
-        let fileManager = FileManager.default
-        if !fileManager.fileExists(atPath: logURL.path) {
-            fileManager.createFile(atPath: logURL.path, contents: nil)
-        }
-        guard let handle = try? FileHandle(forWritingTo: logURL) else { return }
-        defer { try? handle.close() }
-        do {
-            try handle.seekToEnd()
-            try handle.write(contentsOf: data)
-            try handle.synchronize()
-        } catch {
-            return
-        }
+        logger?.record(kind: kind, fields: fields)
     }
 }
 
@@ -461,6 +518,8 @@ struct ExcalidrawBoardEditorView: NSViewRepresentable {
         private var readyDeadlineTask: Task<Void, Never>?
         private var pendingReloadTask: Task<Void, Never>?
         private var pendingReconcileTask: Task<Void, Never>?
+        private var observationGate = ExcalidrawBoardObservationGate()
+        private var boardIDsByWebID: [String: BoardElementID] = [:]
         private weak var bridgeController: ExcalidrawBoardBridgeController?
         private var onSceneChange: @MainActor (ExcalidrawBoardDecodeResult) -> Bool
         private var onCommand: @MainActor (ExcalidrawBoardCommand) -> Void
@@ -563,6 +622,7 @@ struct ExcalidrawBoardEditorView: NSViewRepresentable {
             stableViewportSize = .zero
             assetHandler = nil
             snapshot = nil
+            boardIDsByWebID = [:]
             isReady = false
         }
 
@@ -584,6 +644,41 @@ struct ExcalidrawBoardEditorView: NSViewRepresentable {
                 controls: controls,
                 isReadOnly: isReadOnly
             )
+            let observedPrevious = snapshot
+            ExcalidrawBoardDiagnostics.record(
+                kind: "native-observation",
+                fields: [
+                    "incomingHasSelection": selectedElementID != nil,
+                    "selectionChanged": observedPrevious?.selectedElementID
+                        != selectedElementID,
+                    "documentChanged": observedPrevious?.document != document,
+                    "matchesWebBaseline": lastLoadedDocument == document,
+                    "zoomChanged": observedPrevious?.zoom != zoom,
+                    "toolChanged": observedPrevious?.tool != tool,
+                    "boxKindChanged": observedPrevious?.boxKind != boxKind,
+                    "controlsChanged": observedPrevious?.controls != controls,
+                    "readOnlyChanged": observedPrevious?.isReadOnly != isReadOnly,
+                ]
+            )
+            guard observationGate.permitsNativeObservation else {
+                ExcalidrawBoardDiagnostics.record(
+                    kind: "native-observation-suppressed-during-web-scene",
+                    fields: [
+                        "incomingHasSelection": selectedElementID != nil,
+                        "matchesAcceptedSelection": snapshot?.selectedElementID
+                            == selectedElementID,
+                    ]
+                )
+                return
+            }
+            // A synchronous stale SwiftUI observation can arrive while the
+            // web-scene callback is still publishing its accepted document.
+            // Never let that rejected observation prune the web-to-Board ID
+            // ledger for a newly created element.
+            let documentIDs = Set(document.elements.map(\.id))
+            boardIDsByWebID = boardIDsByWebID.filter {
+                documentIDs.contains($0.value)
+            }
             let previous = snapshot
             snapshot = next
             guard isReady else { return }
@@ -781,13 +876,33 @@ struct ExcalidrawBoardEditorView: NSViewRepresentable {
             do {
                 let decoded = try ExcalidrawBoardCodec.decodeChange(
                     from: object,
-                    currentDocument: snapshot.document
+                    currentDocument: snapshot.document,
+                    preferredBoardIDsByWebID: boardIDsByWebID
+                )
+                ExcalidrawBoardDiagnostics.record(
+                    kind: "web-scene-decoded",
+                    fields: [
+                        "hasSelection": decoded.selectedElementID != nil,
+                        "selectionChanged": decoded.selectedElementID
+                            != snapshot.selectedElementID,
+                        "documentChanged": decoded.document != snapshot.document,
+                        "requiresReload": decoded.requiresReload,
+                        "elementCount": decoded.document.elements.count,
+                    ]
                 )
                 // Advance the bridge baseline before mutating the observed room
                 // model. SwiftUI may synchronously re-enter `update` from the
                 // callback; leaving the old baseline in place there schedules a
                 // disruptive full scene load for every accepted drag or edit.
                 let previousLoadedDocument = lastLoadedDocument
+                let previousBoardIDsByWebID = boardIDsByWebID
+                let acceptedIDs = Set(decoded.document.elements.map(\.id))
+                boardIDsByWebID = boardIDsByWebID.filter {
+                    acceptedIDs.contains($0.value)
+                }
+                boardIDsByWebID.merge(decoded.boardIDsByWebID) {
+                    _, newest in newest
+                }
                 lastLoadedDocument = decoded.document
                 let previousSnapshot = self.snapshot
                 self.snapshot = Snapshot(
@@ -799,8 +914,23 @@ struct ExcalidrawBoardEditorView: NSViewRepresentable {
                     controls: snapshot.controls,
                     isReadOnly: snapshot.isReadOnly
                 )
-                guard onSceneChange(decoded) else {
+                observationGate.beginWebSceneCallback()
+                defer { observationGate.endWebSceneCallback() }
+                let accepted = onSceneChange(decoded)
+                ExcalidrawBoardDiagnostics.record(
+                    kind: "web-scene-callback-returned",
+                    fields: [
+                        "accepted": accepted,
+                        "decodedHasSelection": decoded.selectedElementID != nil,
+                        "bridgeHasSelection": self.snapshot?.selectedElementID
+                            != nil,
+                        "selectionsMatch": decoded.selectedElementID
+                            == self.snapshot?.selectedElementID,
+                    ]
+                )
+                guard accepted else {
                     lastLoadedDocument = previousLoadedDocument
+                    boardIDsByWebID = previousBoardIDsByWebID
                     self.snapshot = previousSnapshot
                     onIssue("That canvas change could not be saved. The last valid Board remains available.")
                     scheduleLoad(snapshot)
@@ -939,6 +1069,12 @@ struct ExcalidrawBoardEditorView: NSViewRepresentable {
             ) else {
                 return
             }
+            ExcalidrawBoardDiagnostics.record(
+                kind: "native-state-sent",
+                fields: [
+                    "hasSelection": snapshot.selectedElementID != nil,
+                ]
+            )
             evaluate(function: "interviewArcSetState", json: json)
         }
 

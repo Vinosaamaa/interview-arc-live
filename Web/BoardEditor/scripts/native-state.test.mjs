@@ -52,3 +52,24 @@ test("selection, zoom, and drawing-style changes remain authoritative", () => {
     currentItemStrokeColor: "#4b3abf",
   }), true);
 });
+
+test("selection equality ignores false entries without allocating key lists", () => {
+  const current = {
+    selectedElementIds: {
+      "box-1": true,
+      "box-stale": false,
+    },
+  };
+  assert.equal(nativeAppStatePatchRequired(current, {
+    selectedElementIds: {
+      "box-ignored": false,
+      "box-1": true,
+    },
+  }), false);
+  assert.equal(nativeAppStatePatchRequired(current, {
+    selectedElementIds: {
+      "box-1": true,
+      "box-2": true,
+    },
+  }), true);
+});

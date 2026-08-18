@@ -28,7 +28,7 @@ verification: {"state":"verified","evidenceRefs":["issue:17","pull-request:44","
 visibility: public-safe
 publicationEligibility: eligible
 issue: 17
-pr: 44
+pr: 82
 release: null
 run: null
 ---
@@ -46,6 +46,14 @@ The trace proved two distinct causes:
 2. SwiftUI directly represented and later reconstructed the retained `WKWebView`, briefly giving it a viewport exactly twice the stable logical size. Excalidraw correctly repositioned its viewport-relative chrome for that false frame, then repositioned it again when the real frame returned.
 
 The repair advances the bridge baseline before SwiftUI re-entry, avoids controls-only scene churn, and places the retained WebView behind an AppKit-owned host view. SwiftUI now owns only the lightweight host. The host preserves the last stable child viewport across the single reparent boundary while allowing genuine later resizing.
+
+A follow-up selection defect shared the same bridge boundary. A newly drawn
+Excalidraw element has a temporary web ID before native code assigns its
+canonical Board ID. Re-entrant observation could prune that mapping before the
+canonical reconcile completed, so a later callback allocated a different Board
+ID and selection appeared to disappear or jump. The final repair retains the
+web-ID-to-Board-ID ledger through the accepted callback and rejects stale
+observations until publication returns.
 
 ## Impact
 
@@ -94,6 +102,8 @@ All events below occurred on 2026-08-12. Exact times are included only when reta
 | 13:28 PDT | The same diagnostic mutation and persistence-status transition produced zero toolbar, footer, and viewport geometry delta. |
 | 13:32–13:55 PDT | Production source was rebuilt without the diagnostics-only mutation, strict-compiled, runtime-checked, and staged in an isolated application profile. |
 | Later owner verification | The clean staged app no longer flashed, and element selection behaved normally. |
+| 2026-08-17 follow-up | A clean one-element trace reproduced pre-reconcile identity churn; a stable identity ledger and re-entrant observation gate were added. |
+| 2026-08-17 verification | A fresh isolated app created, reselected, moved, autosaved, and retained one selected element with zero chrome or viewport delta. |
 
 ## Root cause
 
@@ -108,6 +118,21 @@ The room retained and reused the exact `WKWebView` returned from `NSViewRepresen
 When Board status changed, SwiftUI dismantled and remade the wrapper. During that ownership transition AppKit briefly applied a frame whose dimensions were exactly twice the stable logical viewport. Excalidraw's toolbar and footer use viewport-relative positioning, so they moved correctly for the false viewport and then moved back when the true size returned.
 
 Persistence was the trigger for SwiftUI publication, not the geometric root cause. CSS animation, save latency, and Excalidraw itself were not responsible for the false native viewport.
+
+### Follow-up selection loss
+
+The first scene for a newly drawn shape carried only Excalidraw's temporary web
+ID. Native decoding assigned a canonical Board ID, but another scene could
+arrive before reconciliation replaced the web element ID. During the
+synchronous model publication, SwiftUI could also re-enter the coordinator
+with a stale document. That observation pruned the temporary-to-canonical ID
+mapping, so the next decode allocated another Board ID for the same web shape.
+
+This was not an Excalidraw focus timeout. The trace showed the selected web
+shape remaining present while native selection moved among canonical IDs and
+then became empty. Persisting the identity ledger, rolling it back only when a
+scene is rejected, and suppressing stale observations for the duration of the
+accepted callback removed the churn.
 
 ## Why earlier approaches were insufficient
 
@@ -132,6 +157,8 @@ Persistence was the trigger for SwiftUI publication, not the geometric root caus
 - During the one reparent settle boundary, preserve the last stable viewport and reject the exact 2× backing-scale artifact.
 - Continue accepting real later resizes, including legitimate large resizes.
 - Keep readiness from changing the Board's SwiftUI structure; only a genuine editor failure selects the native fallback.
+- Preserve the web-ID-to-Board-ID ledger until canonical reconciliation, and
+  prevent stale re-entrant observations from pruning it.
 
 ## Corrective and preventive actions
 
@@ -145,7 +172,8 @@ Persistence was the trigger for SwiftUI publication, not the geometric root caus
 | P1 | Stop obsolete diagnostic processes immediately after evidence capture | Adopted |
 | P1 | Build and operate one combined native+web isolated app before cold CI | Adopted in coordinator fastlane |
 | P1 | Require pointer, scene, persistence, host lifecycle, and DOM geometry in one trace for future canvas flashes | Adopted in coordinator fastlane |
-| P1 | Run exact merged-artifact pointer verification after authorized merge | Pending release authorization |
+| P1 | Keep a newly created element's canonical ID stable across pre-reconcile scenes | Complete locally |
+| P1 | Run exact merged-artifact pointer verification after authorized merge | Pending release verification |
 
 ## Durable lessons
 
@@ -155,10 +183,17 @@ Persistence was the trigger for SwiftUI publication, not the geometric root caus
 4. Accessibility actions establish semantic behavior, not physical pointer timing. Use a real pointer trace or a deterministic isolated diagnostic mutation.
 5. For bundled-web changes, rebuild the web bundle in seconds, combine it with the exact native bridge in a disposable app profile, operate it locally, and run cold CI once after the interaction invariant passes.
 6. Do not call a source build, static screenshot, or old-binary resource injection visual acceptance. The evidence must exercise the exact combined native and web code paths.
+7. In a bidirectional editor bridge, visual identity and canonical identity are
+   separate until reconciliation. Persist their mapping across every accepted
+   callback, and test creation, autosave, reselection, and movement before
+   declaring focus stable.
 
 ## Release boundary
 
-The source fix, strict compiler gates, focused runtime contracts, before/after diagnostic trace, and isolated staged-app verification are complete. PR #44 remains open. Merged-main CI, exact merged-artifact pointer verification, installation, issue resolution, and closure remain pending and require explicit authorization.
+The source fix, focused runtime contracts, clean diagnostic trace, and isolated
+staged-app verification are complete on PR #82. Hosted current-head checks,
+merged-main verification, exact merged-artifact pointer verification,
+installation, issue resolution, and closure remain pending.
 
 ## Glossary
 
