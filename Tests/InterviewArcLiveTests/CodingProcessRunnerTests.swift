@@ -54,17 +54,15 @@ private final class StreamRecorder: @unchecked Sendable {
     private var events: [CodingProcessStreamEvent] = []
 
     func append(_ event: CodingProcessStreamEvent) {
-        lock.lock()
-        defer { lock.unlock() }
-        events.append(event)
+        lock.withLock { events.append(event) }
     }
 
     func stdoutText() -> String {
-        lock.lock()
-        defer { lock.unlock() }
-        return events
-            .filter { $0.kind == .stdout }
-            .map(\.text)
-            .joined()
+        lock.withLock {
+            events
+                .filter { $0.kind == .stdout }
+                .map(\.text)
+                .joined()
+        }
     }
 }

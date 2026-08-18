@@ -356,18 +356,19 @@ private final class FirstRunBlocker: @unchecked Sendable {
     private var callCount = 0
 
     func nextResult() async throws -> CodingProcessResult {
-        let count: Int
-        lock.lock()
-        callCount += 1
-        count = callCount
-        let shouldSignalStart = !didStart
-        didStart = true
-        let pendingStart = startedContinuation
-        startedContinuation = nil
-        lock.unlock()
-        if shouldSignalStart {
-            pendingStart?.resume()
+        let (count, pendingStart): (Int, CheckedContinuation<Void, Never>?) = lock.withLock {
+            callCount += 1
+            let pendingStart: CheckedContinuation<Void, Never>?
+            if !didStart {
+                didStart = true
+                pendingStart = startedContinuation
+                startedContinuation = nil
+            } else {
+                pendingStart = nil
+            }
+            return (callCount, pendingStart)
         }
+        pendingStart?.resume()
         if count == 1 {
             try await Task.sleep(for: .seconds(60))
             return CodingProcessResult(
@@ -384,20 +385,19 @@ private final class FirstRunBlocker: @unchecked Sendable {
     }
 
     func waitUntilStarted() async {
-        lock.lock()
-        if didStart {
-            lock.unlock()
+        if lock.withLock({ didStart }) {
             return
         }
-        lock.unlock()
         await withCheckedContinuation { continuation in
-            lock.lock()
-            if didStart {
-                lock.unlock()
-                continuation.resume()
-            } else {
+            let resumeNow = lock.withLock { () -> Bool in
+                if didStart {
+                    return true
+                }
                 startedContinuation = continuation
-                lock.unlock()
+                return false
+            }
+            if resumeNow {
+                continuation.resume()
             }
         }
     }
@@ -408,15 +408,11 @@ private final class ArgumentLog: @unchecked Sendable {
     private var lists: [[String]] = []
 
     func append(_ arguments: [String]) {
-        lock.lock()
-        lists.append(arguments)
-        lock.unlock()
+        lock.withLock { lists.append(arguments) }
     }
 
     var snapshot: [[String]] {
-        lock.lock()
-        defer { lock.unlock() }
-        return lists
+        lock.withLock { lists }
     }
 }
 

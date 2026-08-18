@@ -324,24 +324,21 @@ private final class ExecuteRecorder: @unchecked Sendable {
         _ currentDirectory: URL,
         _ environment: [String: String]?
     ) async throws -> CodingProcessResult {
-        lock.lock()
-        calls.append(
-            Call(
-                executable: executable,
-                arguments: arguments,
-                currentDirectory: currentDirectory,
-                environment: environment
+        lock.withLock {
+            calls.append(
+                Call(
+                    executable: executable,
+                    arguments: arguments,
+                    currentDirectory: currentDirectory,
+                    environment: environment
+                )
             )
-        )
-        let result = self.result
-        lock.unlock()
-        return result
+            return result
+        }
     }
 
     func recordedCalls() -> [Call] {
-        lock.lock()
-        defer { lock.unlock() }
-        return calls
+        lock.withLock { calls }
     }
 }
 
@@ -350,14 +347,10 @@ private final class OutputRecorder: @unchecked Sendable {
     private var chunks: [String] = []
 
     func append(_ text: String) {
-        lock.lock()
-        defer { lock.unlock() }
-        chunks.append(text)
+        lock.withLock { chunks.append(text) }
     }
 
     func text() -> String {
-        lock.lock()
-        defer { lock.unlock() }
-        return chunks.joined()
+        lock.withLock { chunks.joined() }
     }
 }
