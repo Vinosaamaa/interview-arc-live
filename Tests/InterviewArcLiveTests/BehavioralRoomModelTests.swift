@@ -176,7 +176,7 @@ final class BehavioralRoomModelTests: XCTestCase {
         XCTAssertFalse(model.hostedWritesEnabled)
         XCTAssertEqual(
             model.floorStatePresentation.full.label,
-            "Your floor"
+            "Listening"
         )
     }
 }

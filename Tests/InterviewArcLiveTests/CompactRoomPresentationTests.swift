@@ -281,6 +281,7 @@ final class CompactRoomPresentationTests: XCTestCase {
                 CompactRoomAction.recordSegment,
                 .stopRecording,
                 .keepFloor,
+                .holdFloor,
                 .primaryPhaseAction,
                 .stopSpeech,
                 .toggleSpeechMute,
