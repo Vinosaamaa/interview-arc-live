@@ -700,6 +700,33 @@ final class InterviewerSpeechCoordinatorTests: XCTestCase {
         )
     }
 
+    func testAutomaticPlaybackCompletionGivesCandidateFloorWhenListening() async throws {
+        let manifestStore = InMemorySessionManifestStore()
+        let conversation = try await makeConversation(manifestStore: manifestStore)
+        await conversation.enableContinuousListening()
+        _ = try await conversation.giveCandidateFloor(
+            commandID: CommandID("listening-floor")
+        )
+        let speech = try await InterviewerSpeechCoordinator.attach(
+            to: conversation,
+            provider: ScriptedSpeechProvider(
+                readiness: .ready,
+                events: validEvents(),
+                manifestStore: manifestStore
+            ),
+            player: SpeechPlayerFixture(),
+            audioStore: SpeechAudioStoreFixture()
+        )
+
+        let completed = try await completeTurn(in: conversation.interviewRoomSession)
+        _ = try await conversation.resumePendingWork()
+        await speech.observeNewlyPersistedSnapshot(completed)
+        await speech.waitUntilIdle()
+
+        XCTAssertEqual(conversation.snapshot.phase, .candidateFloor)
+        XCTAssertEqual(speech.snapshot.interviewerUtterances.first?.lifecycle, .ready)
+    }
+
     private func makeConversation(
         manifestStore: any SessionManifestStore
     ) async throws -> SegmentSpeechCoordinator {

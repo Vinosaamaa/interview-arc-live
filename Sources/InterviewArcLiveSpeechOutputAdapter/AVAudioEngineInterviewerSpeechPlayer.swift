@@ -30,24 +30,29 @@ protocol InterviewerAudioOutputDriving: AnyObject {
 
 @MainActor
 private final class AVAudioEngineOutputDriver: InterviewerAudioOutputDriving {
-    private let engine = AVAudioEngine()
+    private let engine: AVAudioEngine
     private let node = AVAudioPlayerNode()
+    private let ownsEngine: Bool
 
-    init() {
+    init(engine: AVAudioEngine = AVAudioEngine(), ownsEngine: Bool = true) {
+        self.engine = engine
+        self.ownsEngine = ownsEngine
         engine.attach(node)
     }
 
     var isPlaying: Bool { node.isPlaying }
 
     func configure(format: AVAudioFormat) throws {
-        releaseOutput()
+        node.stop()
         engine.disconnectNodeOutput(node)
         engine.connect(node, to: engine.mainMixerNode, format: format)
         engine.prepare()
-        do {
-            try engine.start()
-        } catch {
-            throw AVAudioEngineInterviewerSpeechPlayerError.playbackFailed
+        if !engine.isRunning {
+            do {
+                try engine.start()
+            } catch {
+                throw AVAudioEngineInterviewerSpeechPlayerError.playbackFailed
+            }
         }
     }
 
@@ -78,6 +83,8 @@ private final class AVAudioEngineOutputDriver: InterviewerAudioOutputDriving {
 
     func releaseOutput() {
         node.stop()
+        engine.disconnectNodeOutput(node)
+        guard ownsEngine else { return }
         engine.stop()
         engine.reset()
     }
@@ -111,6 +118,15 @@ public final class AVAudioEngineInterviewerSpeechPlayer: InterviewerSpeechPlayin
     public init(audioStore: LiveInterviewerSpeechAudioStore) {
         self.audioStore = audioStore
         output = AVAudioEngineOutputDriver()
+    }
+
+    public init(
+        audioStore: LiveInterviewerSpeechAudioStore,
+        engine: AVAudioEngine,
+        ownsEngine: Bool
+    ) {
+        self.audioStore = audioStore
+        output = AVAudioEngineOutputDriver(engine: engine, ownsEngine: ownsEngine)
     }
 
     init(

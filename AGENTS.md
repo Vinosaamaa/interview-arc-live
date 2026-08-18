@@ -17,8 +17,9 @@ Do not create or change a thread Goal unless the user explicitly asks.
 - A Candidate Turn is one logical answer, even when it contains multiple audio
   segments or working pauses.
 - Silence may finalize a segment; it never commits a Candidate Turn by itself.
-- `Hand off` is always available. Cue Only, Patient Auto, and Manual remain
-  explicit turn-taking modes.
+- New Sessions default to Continuous Conversation. `Hand off` remains available
+  as recovery. Cue Only, Patient Auto, and Manual remain explicit compatibility
+  modes.
 - The first semantic endpoint Adapter is Groq `openai/gpt-oss-20b`. Do not add
   SmartTurn or OpenAI Realtime without a new approved issue and ADR.
 - Preserve every nonempty best Groq transcript candidate verbatim with an

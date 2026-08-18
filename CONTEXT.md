@@ -131,10 +131,10 @@ automatically replaying the provider request.
 ### Endpoint Grace
 
 One durable, cancellable four-second wait between a current `likely_end`
-Endpoint Evaluation and Patient Auto's canonical Hand off. Keep my floor,
-resumed speech, a Turn Mode change, or Board or Notes activity cancels it. A
-pending grace is reconciled as interrupted after relaunch rather than silently
-replayed.
+Endpoint Evaluation and automatic Hand off in Patient Auto or Continuous
+Conversation. Keep my floor, Hold floor, resumed speech, a Turn Mode change, or
+Board or Notes activity cancels it. A pending grace is reconciled as interrupted
+after relaunch rather than silently replayed.
 
 ### Session Manifest
 

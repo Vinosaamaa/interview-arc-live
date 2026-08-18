@@ -54,6 +54,35 @@ final class CompactRoomPresentationTests: XCTestCase {
         XCTAssertFalse(handOff.isEnabled)
     }
 
+    func testContinuousConversationExposesHoldFloorWithoutRecordOrHandOff() throws {
+        let presentation = CompactRoomPresentation.make(
+            input: .init(
+                phase: .candidateFloor,
+                statusMessage: "Listening",
+                showsHoldFloor: true,
+                canToggleFloorHold: true,
+                holdFloorTitle: "Hold floor"
+            ),
+            floorState: FloorStatePresentation.make(
+                input: .init(
+                    phase: .candidateFloor,
+                    turnMode: .continuousConversation
+                )
+            )
+        )
+
+        XCTAssertEqual(presentation.statusKind, .listening)
+        XCTAssertEqual(
+            presentation.controls.map(\.action),
+            [.holdFloor, .expand]
+        )
+        let hold = try XCTUnwrap(presentation.holdFloorControl)
+        XCTAssertEqual(hold.title, "Hold floor")
+        XCTAssertTrue(hold.isEnabled)
+        XCTAssertNil(presentation.phaseControl)
+        XCTAssertNil(presentation.candidateControl)
+    }
+
     func testPendingEndpointGraceAddsKeepFloorWithoutReplacingHandOff() throws {
         let presentation = CompactRoomPresentation.make(
             input: .init(

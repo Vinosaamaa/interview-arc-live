@@ -455,11 +455,15 @@ final class SystemDesignRoomModel: ObservableObject {
     }
 
     var availableTurnModes: [TurnMode] {
-        [.manual, .patientAuto]
+        [.continuousConversation, .patientAuto, .manual]
+    }
+
+    var advancedTurnModes: [TurnMode] {
+        [.patientAuto, .manual]
     }
 
     var turnMode: TurnMode {
-        snapshot?.turnMode ?? .manual
+        snapshot?.turnMode ?? .continuousConversation
     }
 
     var canSelectTurnMode: Bool {
@@ -471,12 +475,58 @@ final class SystemDesignRoomModel: ObservableObject {
 
     func turnModeTitle(_ mode: TurnMode) -> String {
         switch mode {
+        case .continuousConversation:
+            return "Automatic"
         case .manual:
             return "Manual"
         case .patientAuto:
             return "Patient Auto"
         case .cueOnly:
             return "Cue Only"
+        }
+    }
+
+    var isFloorHeld: Bool {
+        snapshot?.isFloorHeld == true
+    }
+
+    var showsHoldFloorControl: Bool {
+        snapshot?.turnMode == .continuousConversation
+            && snapshot?.phase == .candidateFloor
+            && !showsManualCaptureRecovery
+    }
+
+    var holdFloorTitle: String {
+        isFloorHeld ? "Send answer" : "Hold floor"
+    }
+
+    var holdFloorSystemImage: String {
+        isFloorHeld ? "paperplane.fill" : "hand.raised.fill"
+    }
+
+    var canToggleFloorHold: Bool {
+        guard showsHoldFloorControl,
+              !isWorking,
+              !hasPendingLocalPersistence,
+              isHostedWritable else { return false }
+        if isFloorHeld {
+            let unresolved = draftSegments.contains {
+                $0.lifecycle != .excluded && $0.selectedCandidate == nil
+            }
+            let hasSelected = draftSegments.contains {
+                $0.lifecycle != .excluded && $0.selectedCandidate != nil
+            }
+            return hasSelected && !unresolved && boardAttachmentForHandOff != nil
+        }
+        return true
+    }
+
+    var showsManualCaptureRecovery: Bool {
+        guard snapshot?.turnMode == .continuousConversation else { return false }
+        if !hasUsableGroqCredential { return true }
+        return draftSegments.contains {
+            $0.lifecycle == .failed
+                || ($0.lifecycle == .audioReady && $0.selectedCandidate == nil)
         }
     }
 
@@ -498,7 +548,7 @@ final class SystemDesignRoomModel: ObservableObject {
         guard let snapshot else {
             return EndpointHandoffPresentation.make(
                 input: EndpointHandoffPresentation.Input(
-                    turnMode: .manual,
+                    turnMode: .continuousConversation,
                     phase: nil,
                     currentEvaluation: nil,
                     endpointGrace: nil,
@@ -1016,7 +1066,13 @@ final class SystemDesignRoomModel: ObservableObject {
     }
 
     var showsRecordControl: Bool {
-        snapshot?.phase == .candidateFloor && !canStopRecording
+        guard snapshot?.phase == .candidateFloor, !canStopRecording else {
+            return false
+        }
+        if snapshot?.turnMode == .continuousConversation {
+            return showsManualCaptureRecovery
+        }
+        return true
     }
 
     var canRecordSegment: Bool {
@@ -1046,6 +1102,9 @@ final class SystemDesignRoomModel: ObservableObject {
               let snapshot else { return false }
         switch snapshot.phase {
         case .candidateFloor:
+            if snapshot.turnMode == .continuousConversation, !showsManualCaptureRecovery {
+                return false
+            }
             guard boardAttachmentForHandOff != nil else { return false }
             let unresolved = draftSegments.contains {
                 $0.lifecycle != .excluded && $0.selectedCandidate == nil
@@ -1152,17 +1211,21 @@ final class SystemDesignRoomModel: ObservableObject {
         }
 
         do {
+            let conversationEngine = AVAudioEngine()
             let opened = try await SegmentSpeechCoordinator.openLocal(
                 sessionID: launchSessionID,
                 activityID: launchActivityID,
                 activityPrompt: launchPrompt,
-                turnMode: .manual,
                 interviewerRuntime: codexRuntime,
                 recording: VoiceCoreSegmentRecorder(),
                 transcriber: VoiceCoreSegmentTranscriber(),
                 credentialReader: credentialStore,
                 semanticEndpointClassifier: GroqEndpointClassifier(
                     credentialReader: credentialStore
+                ),
+                acousticSegmenter: VoiceCoreAcousticSegmenter(
+                    engine: conversationEngine,
+                    sharesEngine: true
                 )
             )
             coordinator = opened
@@ -1182,6 +1245,9 @@ final class SystemDesignRoomModel: ObservableObject {
                 restored = opened.snapshot
                 errorMessage = "A recording recovery needs attention. Preserved evidence remains visible below."
             }
+            if restored.turnMode == .continuousConversation {
+                await opened.enableContinuousListening()
+            }
             if restored.phase == .ready {
                 restored = try await opened.giveCandidateFloor(
                     commandID: CommandID("local-give-floor-0")
@@ -1189,7 +1255,10 @@ final class SystemDesignRoomModel: ObservableObject {
             }
             publish(restored)
             await recoverBoardArtifacts(in: restored.board)
-            await attachInterviewerSpeech(to: opened)
+            await attachInterviewerSpeech(
+                to: opened,
+                conversationEngine: conversationEngine
+            )
         } catch {
             statusMessage = "Local session unavailable"
             errorMessage = safeMessage(for: error)
@@ -1333,8 +1402,7 @@ final class SystemDesignRoomModel: ObservableObject {
     }
 
     func selectTurnMode(_ mode: TurnMode) async {
-        guard mode == .manual || mode == .patientAuto,
-              mode != turnMode,
+        guard mode != turnMode,
               canSelectTurnMode,
               let coordinator else {
             return
@@ -1552,6 +1620,55 @@ final class SystemDesignRoomModel: ObservableObject {
         }
     }
 
+    func pauseMicrophone() async {
+        guard let coordinator, !isWorking else { return }
+        isWorking = true
+        errorMessage = nil
+        defer {
+            isWorking = false
+            statusMessage = status(for: snapshot)
+        }
+        do {
+            let updated = try await coordinator.pauseMicrophone(
+                commandID: commandID("pause-microphone")
+            )
+            publish(updated)
+        } catch {
+            publish(coordinator.snapshot)
+            errorMessage = safeMessage(for: error)
+        }
+    }
+
+    func toggleFloorHold() async {
+        guard let coordinator, canToggleFloorHold else { return }
+        isWorking = true
+        errorMessage = nil
+        defer {
+            isWorking = false
+            statusMessage = status(for: snapshot)
+        }
+
+        do {
+            if isFloorHeld {
+                statusMessage = "Sending answer…"
+                let updated = try await coordinator.sendAnswer(
+                    commandID: commandID("send-answer"),
+                    boardAttachment: boardAttachmentForHandOff ?? .noBoard
+                )
+                publish(updated)
+            } else {
+                statusMessage = "Holding your floor…"
+                let updated = try await coordinator.activateFloorHold(
+                    commandID: commandID("hold-floor")
+                )
+                publish(updated)
+            }
+        } catch {
+            publish(coordinator.snapshot)
+            errorMessage = safeMessage(for: error)
+        }
+    }
+
     func performPrimaryAction() async {
         guard let coordinator, let snapshot else { return }
         if snapshot.phase == .candidateFloor,
@@ -1592,9 +1709,16 @@ final class SystemDesignRoomModel: ObservableObject {
                 )
             case .interviewerTurn:
                 try await syncHostedPairs(from: snapshot)
-                updated = try await coordinator.giveCandidateFloor(
-                    commandID: commandID("give-floor")
+                try await interviewerSpeechCoordinator?.stop(
+                    commandID: commandID("stop-speech-before-floor")
                 )
+                if coordinator.snapshot.phase == .interviewerTurn {
+                    updated = try await coordinator.giveCandidateFloor(
+                        commandID: commandID("give-floor")
+                    )
+                } else {
+                    updated = coordinator.snapshot
+                }
             case .ready, .completed:
                 return
             }
@@ -1965,14 +2089,17 @@ final class SystemDesignRoomModel: ObservableObject {
     }
 
     private func attachInterviewerSpeech(
-        to conversation: SegmentSpeechCoordinator
+        to conversation: SegmentSpeechCoordinator,
+        conversationEngine: AVAudioEngine
     ) async {
         do {
             let dependencies: LiveInterviewerSpeechDependencies
             if let speechDependencies {
                 dependencies = speechDependencies
             } else {
-                dependencies = try Self.makeLiveSpeechDependencies()
+                dependencies = try Self.makeLiveSpeechDependencies(
+                    engine: conversationEngine
+                )
             }
 
             let speech = try await InterviewerSpeechCoordinator.attach(
@@ -2011,14 +2138,16 @@ final class SystemDesignRoomModel: ObservableObject {
         }
     }
 
-    private static func makeLiveSpeechDependencies() throws
-        -> LiveInterviewerSpeechDependencies
-    {
+    private static func makeLiveSpeechDependencies(
+        engine: AVAudioEngine
+    ) throws -> LiveInterviewerSpeechDependencies {
         let audioStore = LiveInterviewerSpeechAudioStore()
         return LiveInterviewerSpeechDependencies(
             provider: try QwenInterviewerSpeechProvider(),
             player: AVAudioEngineInterviewerSpeechPlayer(
-                audioStore: audioStore
+                audioStore: audioStore,
+                engine: engine,
+                ownsEngine: false
             ),
             audioStore: audioStore
         )
@@ -2297,7 +2426,13 @@ final class SystemDesignRoomModel: ObservableObject {
         let draft = snapshot.segments.filter { $0.committedTurnID == nil }
 
         if snapshot.endpointGraces.contains(where: { $0.lifecycle == .pending }) {
+            if snapshot.turnMode == .continuousConversation {
+                return "Handing off · Hold floor to keep answering"
+            }
             return "Handing off in 4 seconds · Keep my floor to cancel"
+        }
+        if snapshot.isFloorHeld {
+            return "Holding your floor"
         }
 
         if draft.contains(where: { $0.lifecycle == .captureAuthorized }) {

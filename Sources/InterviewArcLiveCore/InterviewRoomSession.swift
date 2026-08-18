@@ -55,6 +55,11 @@ public enum InterviewRoomCommand: Codable, Sendable, Equatable {
         commandID: CommandID,
         graceID: EndpointGraceID
     )
+    case activateFloorHold(commandID: CommandID)
+    case sendAnswer(
+        commandID: CommandID,
+        boardAttachment: CandidateTurnBoardAttachment
+    )
     case reconcileInterruptedEndpointEvaluation(
         commandID: CommandID,
         evaluationID: EndpointEvaluationID
@@ -130,6 +135,8 @@ public enum InterviewRoomCommand: Codable, Sendable, Equatable {
              .cancelEndpointGrace(let commandID, _, _),
              .completeEndpointGrace(let commandID, _, _),
              .reconcileInterruptedEndpointGrace(let commandID, _),
+             .activateFloorHold(let commandID),
+             .sendAnswer(let commandID, _),
              .reconcileInterruptedEndpointEvaluation(let commandID, _),
              .backfillInterviewerUtterances(let commandID),
              .authorizeInterviewerSynthesis(let commandID, _, _, _),
@@ -220,6 +227,9 @@ public enum InterviewRoomSessionError: Error, Sendable, Equatable {
         lifecycle: EndpointGraceLifecycle
     )
     case endpointGraceEvidenceMismatch
+    case floorHoldAlreadyActive(FloorHoldID)
+    case floorHoldNotActive
+    case floorHoldActive
     case interviewerUtteranceNotFound(InterviewerUtteranceID)
     case synthesisAttemptNotFound(SynthesisAttemptID)
     case synthesisAlreadyInProgress(SynthesisAttemptID)
@@ -266,7 +276,7 @@ public actor InterviewRoomSession {
         sessionID: SessionID,
         activityID: String,
         activityPrompt: ActivityPrompt,
-        turnMode: TurnMode = .manual,
+        turnMode: TurnMode = .continuousConversation,
         manifestStore: any SessionManifestStore,
         interviewerRuntime: any InterviewerRuntime
     ) async throws -> InterviewRoomSession {
@@ -451,6 +461,13 @@ public actor InterviewRoomSession {
                 fingerprint: fingerprint
             )
 
+        case .sendAnswer(let commandID, let boardAttachment):
+            snapshot = try await sendAnswer(
+                commandID: commandID,
+                boardAttachment: boardAttachment,
+                fingerprint: fingerprint
+            )
+
         case .retryInterviewerResponse(let commandID):
             snapshot = try await retryInterviewerResponse(
                 commandID: commandID,
@@ -478,6 +495,7 @@ public actor InterviewRoomSession {
         var segments = manifest.segments
         var endpointEvaluations = manifest.endpointEvaluations
         var endpointGraces = manifest.endpointGraces
+        var floorHolds = manifest.floorHolds
         var interviewerUtterances = manifest.interviewerUtterances
         var board = manifest.board
         var candidateNotes = manifest.candidateNotes
@@ -496,6 +514,14 @@ public actor InterviewRoomSession {
             if mode != selectedMode {
                 endpointGraces = Self.cancellingPendingEndpointGrace(
                     endpointGraces,
+                    reason: .turnModeChanged
+                )
+            }
+            if mode == .continuousConversation,
+               selectedMode != .continuousConversation {
+                floorHolds = Self.releasingActiveFloorHold(
+                    floorHolds,
+                    commandID: command.commandID,
                     reason: .turnModeChanged
                 )
             }
@@ -636,7 +662,7 @@ public actor InterviewRoomSession {
             let questionTurnID,
             let contextFingerprint
         ):
-            guard phase == .candidateFloor, mode == .patientAuto else {
+            guard phase == .candidateFloor, mode.usesAutomaticEndpointCompletion else {
                 throw invalidTransition("authorizeEndpointEvaluation")
             }
             try Self.validateEndpointContextFingerprint(contextFingerprint)
@@ -719,8 +745,11 @@ public actor InterviewRoomSession {
             let evaluationID,
             let expectedBoardAttachment
         ):
-            guard phase == .candidateFloor, mode == .patientAuto else {
+            guard phase == .candidateFloor, mode.usesAutomaticEndpointCompletion else {
                 throw invalidTransition("activateEndpointGrace")
+            }
+            if floorHolds.activeHold != nil {
+                throw InterviewRoomSessionError.floorHoldActive
             }
             if let pendingGrace = endpointGraces.first(where: {
                 $0.lifecycle == .pending
@@ -782,6 +811,28 @@ public actor InterviewRoomSession {
             }
             endpointGraces[index] = endpointGraces[index].cancelling(
                 reason: .interrupted
+            )
+
+        case .activateFloorHold(let commandID):
+            guard phase == .candidateFloor,
+                  mode == .continuousConversation else {
+                throw invalidTransition("activateFloorHold")
+            }
+            if let existing = floorHolds.activeHold {
+                throw InterviewRoomSessionError.floorHoldAlreadyActive(existing.id)
+            }
+            endpointGraces = Self.cancellingPendingEndpointGrace(
+                endpointGraces,
+                reason: .floorHold
+            )
+            floorHolds.append(
+                .active(
+                    id: Self.floorHoldID(
+                        sessionID: manifest.sessionID,
+                        commandID: commandID
+                    ),
+                    activationCommandID: commandID
+                )
             )
 
         case .reconcileInterruptedEndpointEvaluation(_, let evaluationID):
@@ -1085,6 +1136,7 @@ public actor InterviewRoomSession {
              .handOffSegments,
              .handOffSegmentsWithBoard,
              .completeEndpointGrace,
+             .sendAnswer,
              .retryInterviewerResponse:
             preconditionFailure("Provider commands use their durable two-stage paths")
 
@@ -1094,6 +1146,11 @@ public actor InterviewRoomSession {
             }
             endpointGraces = Self.cancellingPendingEndpointGrace(
                 endpointGraces,
+                reason: .sessionFinished
+            )
+            floorHolds = Self.releasingActiveFloorHold(
+                floorHolds,
+                commandID: command.commandID,
                 reason: .sessionFinished
             )
             phase = .completed
@@ -1108,6 +1165,7 @@ public actor InterviewRoomSession {
             segments: segments,
             endpointEvaluations: endpointEvaluations,
             endpointGraces: endpointGraces,
+            floorHolds: floorHolds,
             interviewerUtterances: interviewerUtterances,
             board: board,
             candidateNotes: candidateNotes
@@ -1220,6 +1278,7 @@ public actor InterviewRoomSession {
         commandID: CommandID,
         boardAttachment: CandidateTurnBoardAttachment,
         endpointGraces: [EndpointGrace]? = nil,
+        floorHolds: [FloorHold]? = nil,
         fingerprint: String
     ) async throws -> InterviewRoomSnapshot {
         guard manifest.phase == .candidateFloor else {
@@ -1283,6 +1342,7 @@ public actor InterviewRoomSession {
                 .map(\.id),
             boardAttachment: boardAttachment,
             endpointGraces: endpointGraces,
+            floorHolds: floorHolds,
             fingerprint: fingerprint
         )
     }
@@ -1294,7 +1354,8 @@ public actor InterviewRoomSession {
         fingerprint: String
     ) async throws -> InterviewRoomSnapshot {
         guard manifest.phase == .candidateFloor,
-              manifest.turnMode == .patientAuto,
+              manifest.turnMode.usesAutomaticEndpointCompletion,
+              manifest.floorHolds.activeHold == nil,
               let graceIndex = manifest.endpointGraces.firstIndex(where: {
                   $0.id == graceID
               }) else {
@@ -1340,6 +1401,42 @@ public actor InterviewRoomSession {
         )
     }
 
+    private func sendAnswer(
+        commandID: CommandID,
+        boardAttachment: CandidateTurnBoardAttachment,
+        fingerprint: String
+    ) async throws -> InterviewRoomSnapshot {
+        guard manifest.phase == .candidateFloor,
+              manifest.turnMode == .continuousConversation,
+              let holdIndex = manifest.floorHolds.lastIndex(where: {
+                  $0.lifecycle == .active
+              }) else {
+            throw InterviewRoomSessionError.floorHoldNotActive
+        }
+
+        let candidateTurnID = Self.turnID(
+            sessionID: manifest.sessionID,
+            commandID: commandID,
+            role: "candidate"
+        )
+        var releasedHolds = manifest.floorHolds
+        releasedHolds[holdIndex] = releasedHolds[holdIndex].releasing(
+            commandID: commandID,
+            reason: .sendAnswer,
+            candidateTurnID: candidateTurnID
+        )
+        return try await handOffSegments(
+            commandID: commandID,
+            boardAttachment: boardAttachment,
+            endpointGraces: Self.cancellingPendingEndpointGrace(
+                manifest.endpointGraces,
+                reason: .floorHold
+            ),
+            floorHolds: releasedHolds,
+            fingerprint: fingerprint
+        )
+    }
+
     /// Hand off is deliberately two durable transitions. The Candidate Turn
     /// and its Segment associations are saved before provider work starts.
     private func handOff(
@@ -1348,10 +1445,15 @@ public actor InterviewRoomSession {
         segmentIDs: [SegmentID],
         boardAttachment: CandidateTurnBoardAttachment,
         endpointGraces: [EndpointGrace]? = nil,
+        floorHolds: [FloorHold]? = nil,
         fingerprint: String
     ) async throws -> InterviewRoomSnapshot {
         guard manifest.phase == .candidateFloor else {
             throw invalidTransition(segmentIDs.isEmpty ? "handOff" : "handOffSegments")
+        }
+        let nextFloorHolds = floorHolds ?? manifest.floorHolds
+        if nextFloorHolds.activeHold != nil {
+            throw InterviewRoomSessionError.floorHoldActive
         }
         guard !transcript.body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw InterviewRoomSessionError.emptyCandidateTranscript
@@ -1405,6 +1507,7 @@ public actor InterviewRoomSession {
             segments: segments,
             endpointEvaluations: manifest.endpointEvaluations,
             endpointGraces: endpointGraces ?? manifest.endpointGraces,
+            floorHolds: nextFloorHolds,
             interviewerUtterances: manifest.interviewerUtterances,
             board: manifest.board,
             candidateNotes: manifest.candidateNotes,
@@ -1439,6 +1542,7 @@ public actor InterviewRoomSession {
             segments: manifest.segments,
             endpointEvaluations: manifest.endpointEvaluations,
             endpointGraces: manifest.endpointGraces,
+            floorHolds: manifest.floorHolds,
             interviewerUtterances: manifest.interviewerUtterances,
             board: manifest.board,
             candidateNotes: manifest.candidateNotes,
@@ -1498,6 +1602,7 @@ public actor InterviewRoomSession {
             segments: manifest.segments,
             endpointEvaluations: manifest.endpointEvaluations,
             endpointGraces: manifest.endpointGraces,
+            floorHolds: manifest.floorHolds,
             interviewerUtterances: manifest.interviewerUtterances + [utterance],
             board: manifest.board,
             candidateNotes: manifest.candidateNotes,
@@ -1517,6 +1622,7 @@ public actor InterviewRoomSession {
         segments: [CandidateSegment],
         endpointEvaluations: [EndpointEvaluation],
         endpointGraces: [EndpointGrace]? = nil,
+        floorHolds: [FloorHold]? = nil,
         interviewerUtterances: [InterviewerUtterance]? = nil,
         board: BoardWorkspace? = nil,
         candidateNotes: CandidateNotes? = nil
@@ -1537,6 +1643,7 @@ public actor InterviewRoomSession {
             segments: segments,
             endpointEvaluations: endpointEvaluations,
             endpointGraces: endpointGraces ?? manifest.endpointGraces,
+            floorHolds: floorHolds ?? manifest.floorHolds,
             interviewerUtterances: interviewerUtterances ?? manifest.interviewerUtterances,
             board: board ?? manifest.board,
             candidateNotes: candidateNotes ?? manifest.candidateNotes,
@@ -1589,6 +1696,22 @@ public actor InterviewRoomSession {
         }
         var updated = graces
         updated[index] = updated[index].cancelling(reason: reason)
+        return updated
+    }
+
+    private static func releasingActiveFloorHold(
+        _ holds: [FloorHold],
+        commandID: CommandID,
+        reason: FloorHoldReleaseReason
+    ) -> [FloorHold] {
+        guard let index = holds.lastIndex(where: { $0.lifecycle == .active }) else {
+            return holds
+        }
+        var updated = holds
+        updated[index] = updated[index].releasing(
+            commandID: commandID,
+            reason: reason
+        )
         return updated
     }
 
@@ -1742,7 +1865,7 @@ public actor InterviewRoomSession {
         segments: [CandidateSegment]
     ) -> Bool {
         guard phase == .candidateFloor,
-              mode == .patientAuto,
+              mode.usesAutomaticEndpointCompletion,
               (try? validateEndpointContextFingerprint(evaluation.contextFingerprint)) != nil,
               latestInterviewerTurnID(in: turns) == evaluation.questionTurnID,
               let currentCandidateIDs = try? currentEndpointCandidateIDs(in: segments),
@@ -2022,6 +2145,16 @@ public actor InterviewRoomSession {
     ) -> EndpointGraceID {
         EndpointGraceID(stableIdentity(
             namespace: "endpoint-grace",
+            fields: [sessionID.rawValue, commandID.rawValue]
+        ))
+    }
+
+    private static func floorHoldID(
+        sessionID: SessionID,
+        commandID: CommandID
+    ) -> FloorHoldID {
+        FloorHoldID(stableIdentity(
+            namespace: "floor-hold",
             fields: [sessionID.rawValue, commandID.rawValue]
         ))
     }
@@ -2589,7 +2722,8 @@ public actor InterviewRoomSession {
                 guard grace.cancellationReason == nil,
                       grace.completedCandidateTurnID == nil,
                       manifest.phase == .candidateFloor,
-                      manifest.turnMode == .patientAuto,
+                      manifest.turnMode.usesAutomaticEndpointCompletion,
+                      manifest.floorHolds.activeHold == nil,
                       isCurrentEndpointEvaluation(
                           evaluation,
                           phase: manifest.phase,
@@ -2623,6 +2757,61 @@ public actor InterviewRoomSession {
                     throw InterviewRoomSessionError.invalidManifest(
                         reason: "completed Endpoint Grace Turn evidence is inconsistent"
                     )
+                }
+            }
+        }
+
+        let holdIDs = manifest.floorHolds.map(\.id)
+        let holdActivationIDs = manifest.floorHolds.map(\.activationCommandID)
+        guard Set(holdIDs).count == holdIDs.count,
+              Set(holdActivationIDs).count == holdActivationIDs.count,
+              manifest.floorHolds.filter({ $0.lifecycle == .active }).count <= 1 else {
+            throw InterviewRoomSessionError.invalidManifest(
+                reason: "invalid Floor Hold history"
+            )
+        }
+        for hold in manifest.floorHolds {
+            guard hold.id == floorHoldID(
+                sessionID: manifest.sessionID,
+                commandID: hold.activationCommandID
+            ),
+            commandIDSet.contains(hold.activationCommandID) else {
+                throw InterviewRoomSessionError.invalidManifest(
+                    reason: "Floor Hold identity is inconsistent"
+                )
+            }
+            switch hold.lifecycle {
+            case .active:
+                guard hold.releaseReason == nil,
+                      hold.releaseCommandID == nil,
+                      hold.completedCandidateTurnID == nil,
+                      manifest.phase == .candidateFloor,
+                      manifest.turnMode == .continuousConversation else {
+                    throw InterviewRoomSessionError.invalidManifest(
+                        reason: "active Floor Hold is not current"
+                    )
+                }
+            case .released:
+                guard let reason = hold.releaseReason,
+                      let releaseCommandID = hold.releaseCommandID,
+                      commandIDSet.contains(releaseCommandID) else {
+                    throw InterviewRoomSessionError.invalidManifest(
+                        reason: "released Floor Hold is incomplete"
+                    )
+                }
+                if reason == .sendAnswer {
+                    guard let turnID = hold.completedCandidateTurnID,
+                          turnByID[turnID] != nil else {
+                        throw InterviewRoomSessionError.invalidManifest(
+                            reason: "Send answer Floor Hold has no Candidate Turn"
+                        )
+                    }
+                } else {
+                    guard hold.completedCandidateTurnID == nil else {
+                        throw InterviewRoomSessionError.invalidManifest(
+                            reason: "cancelled Floor Hold should not complete a Turn"
+                        )
+                    }
                 }
             }
         }
