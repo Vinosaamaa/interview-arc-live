@@ -208,8 +208,8 @@ final class BoardNodePresentationTests: XCTestCase {
 
     func testCompactRevisionStatusPreservesEveryCanonicalLifecycleState() {
         XCTAssertEqual(
-            BoardRailPresentation.compactRevisionStatus(.saving),
-            "Saving…"
+            BoardRailPresentation.compactRevisionStatus(.savingRevision),
+            "Saving revision…"
         )
         XCTAssertEqual(
             BoardRailPresentation.compactRevisionStatus(.draftNotSaved),

@@ -12,6 +12,18 @@ public enum LivePaths {
     public static func applicationSupportRoot(
         fileManager: FileManager = .default
     ) throws -> URL {
+#if INTERVIEW_ARC_LIVE_DIAGNOSTIC_STATE_ROOT
+        if let diagnosticPath = ProcessInfo.processInfo.environment[
+            "INTERVIEW_ARC_LIVE_DIAGNOSTIC_STATE_ROOT"
+        ], !diagnosticPath.isEmpty {
+            let root = URL(fileURLWithPath: diagnosticPath, isDirectory: true)
+                .standardizedFileURL
+            if root.path == "/private/tmp" || root.path.hasPrefix("/private/tmp/") {
+                return root
+            }
+        }
+#endif
+
         guard let base = fileManager.urls(
             for: .applicationSupportDirectory,
             in: .userDomainMask

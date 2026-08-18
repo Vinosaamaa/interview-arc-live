@@ -4,6 +4,7 @@ import React, {
   useLayoutEffect,
   useRef,
   useState,
+  useSyncExternalStore,
 } from "react";
 import { createRoot } from "react-dom/client";
 import {
@@ -27,12 +28,196 @@ import {
   boardChromeLayout,
   createBoardToolbarGeometryAdapter,
 } from "./board-chrome.js";
+import { reconcileNativeElementVersions } from "./native-reconcile.js";
+import {
+  nativeAppStatePatchRequired,
+  nativeControlsEqual,
+} from "./native-state.js";
+import { createSemanticOverlayStore } from "./overlay-store.js";
 import "./style.css";
 
 const bridge = window.webkit?.messageHandlers?.boardBridge;
 
 const post = (payload) => {
   bridge?.postMessage(payload);
+};
+
+const diagnosticsEnabled = new URLSearchParams(window.location.search)
+  .get("diagnostics") === "1";
+let diagnosticAnimationFrame = null;
+let diagnosticFrame = 0;
+let diagnosticFramesRemaining = 0;
+let previousLayoutDiagnostic = null;
+let pendingLayoutDiagnostic = null;
+let pendingLayoutDiagnosticFrame = null;
+const interactionDiagnosticFrameLimit = 600;
+
+const describeDiagnosticElement = (element) => {
+  if (!element) return null;
+  const rect = element.getBoundingClientRect();
+  const style = window.getComputedStyle(element);
+  return {
+    x: rect.x,
+    y: rect.y,
+    width: rect.width,
+    height: rect.height,
+    display: style.display,
+    visibility: style.visibility,
+    opacity: style.opacity,
+  };
+};
+
+const reportInteractionDiagnostic = (
+  api,
+  phase,
+  nativeControls,
+  renderCount,
+) => {
+  if (!diagnosticsEnabled) return;
+  const appState = api?.getAppState?.() ?? {};
+  post({
+    event: "diagnostic",
+    diagnosticKind: "interaction-frame",
+    phase,
+    frame: diagnosticFrame,
+    renderCount,
+    topMenu: describeDiagnosticElement(
+      document.querySelector(".App-menu_top"),
+    ),
+    topToolbar: describeDiagnosticElement(
+      document.querySelector(".App-toolbar"),
+    ),
+    bottomMenu: describeDiagnosticElement(
+      document.querySelector(".App-menu_bottom"),
+    ),
+    bottomLeft: describeDiagnosticElement(
+      document.querySelector(".layer-ui__wrapper__footer-left"),
+    ),
+    productControls: describeDiagnosticElement(
+      document.querySelector(".interview-arc-board-controls"),
+    ),
+    shell: describeDiagnosticElement(document.querySelector(".board-shell")),
+    root: describeDiagnosticElement(document.querySelector("#root")),
+    viewport: {
+      width: window.innerWidth,
+      height: window.innerHeight,
+      visualWidth: window.visualViewport?.width ?? null,
+      visualHeight: window.visualViewport?.height ?? null,
+    },
+    controls: {
+      revisionStatus: nativeControls?.revisionStatus ?? null,
+      canSave: Boolean(nativeControls?.canSave),
+      isExporting: Boolean(nativeControls?.isExporting),
+      notice: nativeControls?.notice ?? null,
+    },
+    appState: {
+      tool: appState.activeTool?.type ?? null,
+      zoom: Number(appState.zoom?.value ?? 1),
+      selectedCount: Object.values(appState.selectedElementIds ?? {})
+        .filter(Boolean).length,
+      isDragging: Boolean(appState.draggingElement),
+      isResizing: Boolean(appState.resizingElement),
+      isEditing: Boolean(appState.editingElement),
+    },
+  });
+};
+
+const startInteractionDiagnostic = (getSnapshot) => {
+  if (!diagnosticsEnabled || diagnosticAnimationFrame !== null) return;
+  diagnosticFramesRemaining = interactionDiagnosticFrameLimit;
+  const sample = () => {
+    diagnosticFrame += 1;
+    const snapshot = getSnapshot();
+    reportInteractionDiagnostic(
+      snapshot.api,
+      snapshot.phase,
+      snapshot.nativeControls,
+      snapshot.renderCount,
+    );
+    diagnosticFramesRemaining -= 1;
+    if (diagnosticFramesRemaining > 0) {
+      diagnosticAnimationFrame = window.requestAnimationFrame(sample);
+    } else {
+      diagnosticAnimationFrame = null;
+    }
+  };
+  diagnosticAnimationFrame = window.requestAnimationFrame(sample);
+};
+
+const finishInteractionDiagnostic = () => {
+  if (!diagnosticsEnabled) return;
+  diagnosticFramesRemaining = Math.min(diagnosticFramesRemaining, 12);
+};
+
+const reportControlDiagnostic = (previous, next, renderCount) => {
+  if (!diagnosticsEnabled) return;
+  post({
+    event: "diagnostic",
+    diagnosticKind: "control-transition",
+    renderCount,
+    previous,
+    next,
+  });
+};
+
+const reportLayoutDiagnostic = (api, phase, force = false) => {
+  if (!diagnosticsEnabled) return;
+  pendingLayoutDiagnostic = {
+    api,
+    phase,
+    force: force || Boolean(pendingLayoutDiagnostic?.force),
+  };
+  if (pendingLayoutDiagnosticFrame !== null) return;
+  pendingLayoutDiagnosticFrame = window.requestAnimationFrame(() => {
+    const pending = pendingLayoutDiagnostic;
+    pendingLayoutDiagnostic = null;
+    pendingLayoutDiagnosticFrame = null;
+    if (!pending) return;
+    const { api: pendingAPI, phase: pendingPhase, force: pendingForce } = pending;
+    const appState = pendingAPI?.getAppState?.() ?? {};
+    const leftPanel = document.querySelector(".App-menu_left");
+    const topPanel = document.querySelector(".App-menu_top");
+    const shell = document.querySelector(".board-shell");
+    const root = document.querySelector("#root");
+    const describe = (element) => {
+      if (!element) return "missing";
+      const rect = element.getBoundingClientRect();
+      const style = window.getComputedStyle(element);
+      return [
+        Math.round(rect.x),
+        Math.round(rect.y),
+        Math.round(rect.width),
+        Math.round(rect.height),
+        style.display,
+        style.visibility,
+        style.opacity,
+      ].join(",");
+    };
+    const selectedCount = Object.values(appState.selectedElementIds ?? {})
+      .filter(Boolean).length;
+    const fingerprint = [
+      describe(leftPanel),
+      describe(topPanel),
+      describe(shell),
+      describe(root),
+      describe(document.body),
+      describe(document.documentElement),
+      `${window.innerWidth},${window.innerHeight}`,
+      `${Math.round(window.visualViewport?.width ?? -1)},${Math.round(window.visualViewport?.height ?? -1)}`,
+      String(Boolean(shell?.isConnected)),
+      appState.activeTool?.type ?? "unknown",
+      selectedCount,
+      Boolean(appState.draggingElement),
+      Boolean(appState.resizingElement),
+      Boolean(appState.editingElement),
+    ].join("|");
+    if (!pendingForce && fingerprint === previousLayoutDiagnostic) return;
+    previousLayoutDiagnostic = fingerprint;
+    post({
+      event: "diagnostic",
+      phase: `layout ${pendingPhase} ${fingerprint}`,
+    });
+  });
 };
 
 // Excalidraw has a smaller native shape vocabulary than BoardNodeVisual. Keep
@@ -204,6 +389,20 @@ const SemanticNodeOverlay = ({ elements, appState }) => {
     </div>
   );
 };
+
+const SemanticOverlayHost = React.memo(({ store }) => {
+  const scene = useSyncExternalStore(
+    store.subscribe,
+    store.getSnapshot,
+    store.getSnapshot,
+  );
+  return (
+    <SemanticNodeOverlay
+      elements={scene.elements}
+      appState={scene.appState}
+    />
+  );
+});
 
 const normalizeScene = (elements, appState, files, currentBoxKind) => {
   const live = getNonDeletedElements(elements);
@@ -532,13 +731,27 @@ const installNativeWindowBridge = ({
   nativeControlsRef,
   previousActiveToolRef,
   publication,
+  renderCountRef,
   setNativeControls,
   setReadOnly,
   updateSemanticOverlay,
 }) => {
   const synchronizeControls = (controls) => {
+    const previous = nativeControlsRef.current;
     nativeControlsRef.current = controls ?? defaultNativeControls;
+    reportControlDiagnostic(
+      previous,
+      nativeControlsRef.current,
+      renderCountRef.current,
+    );
     setNativeControls(nativeControlsRef.current);
+    startInteractionDiagnostic(() => ({
+      api,
+      phase: "control-transition",
+      nativeControls: nativeControlsRef.current,
+      renderCount: renderCountRef.current,
+    }));
+    finishInteractionDiagnostic();
   };
   const readScene = () => ({
     elements: api.getSceneElements(),
@@ -556,6 +769,7 @@ const installNativeWindowBridge = ({
   let deferredNativeUpdate = null;
   let deferredChange = null;
   let receivedUserInputDuringNativeUpdate = false;
+  let nativeSceneMutationCount = 0;
 
   const runOrDeferNativeUpdate = (update) => {
     if (publication.snapshot().isPointerInteractionActive) {
@@ -594,16 +808,9 @@ const installNativeWindowBridge = ({
 
   const nativeAppState = (
     scene,
-    { appliesTool = false, appliesZoom = false, transparent = false } = {},
+    { appliesZoom = false, transparent = false } = {},
   ) => {
-    setReadOnly(Boolean(scene.readOnly));
-    synchronizeControls(scene.controls);
     currentBoxKindRef.current = scene.boxKind ?? currentBoxKindRef.current;
-    if (appliesTool && !scene.readOnly) {
-      const activeTool = excalTypeForNativeTool(scene.tool, scene.boxKind);
-      previousActiveToolRef.current = activeTool;
-      api.setActiveTool({ type: activeTool });
-    }
     const zoom = Number(scene.zoom);
     return {
       selectedElementIds: scene.selectedID
@@ -617,14 +824,34 @@ const installNativeWindowBridge = ({
     };
   };
 
+  const synchronizePresentation = (scene) => {
+    const nextReadOnly = Boolean(scene.readOnly);
+    setReadOnly((current) => current === nextReadOnly ? current : nextReadOnly);
+    const nextControls = scene.controls ?? defaultNativeControls;
+    if (!nativeControlsEqual(nativeControlsRef.current, nextControls)) {
+      synchronizeControls(nextControls);
+    }
+  };
+
+  const updateExcalidrawScene = (sceneData) => {
+    nativeSceneMutationCount += 1;
+    api.updateScene({ ...sceneData, commitToHistory: false });
+  };
+
   window.interviewArcLoad = (serializedScene) => {
     const scene = JSON.parse(serializedScene);
     const elements = toExcalidrawElements(scene);
+    synchronizePresentation(scene);
     runOrDeferNativeUpdate(() => {
       const shouldRevealInitialContent = !hasLoadedScene;
       hasLoadedScene = true;
       const generation = beginNativeUpdate();
-      api.updateScene({
+      if (shouldRevealInitialContent && !scene.readOnly) {
+        const activeTool = excalTypeForNativeTool(scene.tool, scene.boxKind);
+        previousActiveToolRef.current = activeTool;
+        api.setActiveTool({ type: activeTool });
+      }
+      updateExcalidrawScene({
         elements,
         appState: nativeAppState(scene, {
           appliesTool: shouldRevealInitialContent,
@@ -647,14 +874,28 @@ const installNativeWindowBridge = ({
 
   window.interviewArcSetState = (serializedState) => {
     const state = JSON.parse(serializedState);
+    synchronizePresentation(state);
     runOrDeferNativeUpdate(() => {
-      const generation = beginNativeUpdate();
-      api.updateScene({
-        appState: nativeAppState(state, {
-          appliesTool: true,
-          appliesZoom: true,
-        }),
+      const desiredTool = !state.readOnly
+        ? excalTypeForNativeTool(state.tool, state.boxKind)
+        : null;
+      const appState = nativeAppState(state, {
+        appliesZoom: true,
       });
+      const currentAppState = api.getAppState();
+      const needsTool = desiredTool !== null
+        && currentAppState.activeTool.type !== desiredTool;
+      const needsAppState = nativeAppStatePatchRequired(
+        currentAppState,
+        appState,
+      );
+      if (!needsTool && !needsAppState) return;
+      const generation = beginNativeUpdate();
+      if (needsTool) {
+        previousActiveToolRef.current = desiredTool;
+        api.setActiveTool({ type: desiredTool });
+      }
+      if (needsAppState) updateExcalidrawScene({ appState });
       finishNativeUpdate(generation);
     });
   };
@@ -664,10 +905,15 @@ const installNativeWindowBridge = ({
   // active tool so ID/bounds/connector corrections never flash or jump.
   window.interviewArcReconcile = (serializedScene) => {
     const scene = JSON.parse(serializedScene);
-    const elements = toExcalidrawElements(scene);
+    const elements = reconcileNativeElementVersions(
+      toExcalidrawElements(scene),
+      api.getSceneElements(),
+      (id, version) => stableSeed(`${id}:reconcile:${version}`),
+    );
+    synchronizePresentation(scene);
     runOrDeferNativeUpdate(() => {
       const generation = beginNativeUpdate();
-      api.updateScene({
+      updateExcalidrawScene({
         elements,
         // Canonicalization may replace IDs/bounds/routes, but it must never
         // reset the viewport or tool that the person is actively using.
@@ -688,7 +934,19 @@ const installNativeWindowBridge = ({
     activeTool: api.getAppState().activeTool.type,
     zoom: Number(api.getAppState().zoom?.value ?? 1),
     nativeControls: nativeControlsRef.current,
+    nativeSceneMutationCount,
+    nativeUpdateInProgress: loadingRef.current,
   });
+  window.interviewArcAfterNativeUpdate = (callback) => {
+    const runWhenIdle = () => {
+      if (loadingRef.current) {
+        window.requestAnimationFrame(runWhenIdle);
+        return;
+      }
+      callback();
+    };
+    window.requestAnimationFrame(runWhenIdle);
+  };
 
   return {
     captureChange(scene) {
@@ -806,12 +1064,10 @@ const BoardChromeControls = ({ controls, onAction }) => {
 };
 
 function BoardEditor() {
+  const renderCountRef = useRef(0);
+  renderCountRef.current += 1;
   const [readOnly, setReadOnly] = useState(false);
   const [nativeControls, setNativeControls] = useState(defaultNativeControls);
-  const [overlayScene, setOverlayScene] = useState({
-    elements: [],
-    appState: null,
-  });
   const apiRef = useRef(null);
   // Start closed: Excalidraw publishes an empty scene during bootstrap, before
   // Swift has supplied the durable Board document. The native load adopts the
@@ -819,7 +1075,14 @@ function BoardEditor() {
   const loadingRef = useRef(true);
   const nativeBridgeRef = useRef(null);
   const nativeControlsRef = useRef(defaultNativeControls);
-  const overlayFingerprintRef = useRef("");
+  const overlayStoreRef = useRef(null);
+  if (overlayStoreRef.current === null) {
+    overlayStoreRef.current = createSemanticOverlayStore({
+      elements: [],
+      appState: null,
+      fingerprint: "",
+    });
+  }
   const pointerSubscriptionsRef = useRef([]);
   const currentBoxKindRef = useRef("generic");
   const previousActiveToolRef = useRef("selection");
@@ -844,10 +1107,7 @@ function BoardEditor() {
 
   const updateSemanticOverlay = useCallback((elements, appState) => {
     const snapshot = semanticOverlaySnapshot(elements, appState);
-    const { fingerprint } = snapshot;
-    if (overlayFingerprintRef.current === fingerprint) return;
-    overlayFingerprintRef.current = fingerprint;
-    setOverlayScene({ elements: snapshot.elements, appState });
+    overlayStoreRef.current.publish({ ...snapshot, appState });
   }, []);
 
   const handleChange = useCallback((elements, appState, files) => {
@@ -860,6 +1120,7 @@ function BoardEditor() {
       previousActiveToolRef.current = activeTool;
     }
     const scene = { elements, appState, files };
+    reportLayoutDiagnostic(apiRef.current, "change");
     if (nativeBridgeRef.current?.captureChange(scene)) return;
     updateSemanticOverlay(elements, appState);
     publicationRef.current.acceptScene(scene);
@@ -884,6 +1145,7 @@ function BoardEditor() {
       nativeControlsRef,
       previousActiveToolRef,
       publication: publicationRef.current,
+      renderCountRef,
       setNativeControls,
       setReadOnly,
       updateSemanticOverlay,
@@ -893,13 +1155,25 @@ function BoardEditor() {
     for (const unsubscribe of pointerSubscriptionsRef.current) unsubscribe();
     pointerSubscriptionsRef.current = [
       api.onPointerDown(() => {
+        reportLayoutDiagnostic(api, "pointer-down", true);
+        startInteractionDiagnostic(() => ({
+          api,
+          phase: "drag",
+          nativeControls: nativeControlsRef.current,
+          renderCount: renderCountRef.current,
+        }));
         nativeBridge.noteUserInput();
         publicationRef.current.beginPointerInteraction();
       }),
       api.onPointerUp(() => {
+        reportLayoutDiagnostic(api, "pointer-up", true);
+        window.requestAnimationFrame(() => {
+          reportLayoutDiagnostic(api, "pointer-up+2raf", true);
+        });
         nativeBridge.completePointerInteraction(
           publicationRef.current.endPointerInteraction(),
         );
+        finishInteractionDiagnostic();
       }),
     ];
 
@@ -955,18 +1229,34 @@ function BoardEditor() {
       }
     };
     const noteTextInput = () => nativeBridgeRef.current?.noteUserInput();
+    const beginRawPointerDiagnostic = () => {
+      startInteractionDiagnostic(() => ({
+        api: apiRef.current,
+        phase: "raw-drag",
+        nativeControls: nativeControlsRef.current,
+        renderCount: renderCountRef.current,
+      }));
+    };
+    const finishRawPointerDiagnostic = () => {
+      finishInteractionDiagnostic();
+    };
     const cancelPointerInteraction = () => {
       nativeBridgeRef.current?.completePointerInteraction(
         publicationRef.current.cancelPointerInteraction(),
       );
+      finishRawPointerDiagnostic();
     };
     window.addEventListener("keydown", handleKeyDown, true);
     window.addEventListener("beforeinput", noteTextInput, true);
+    window.addEventListener("pointerdown", beginRawPointerDiagnostic, true);
+    window.addEventListener("pointerup", finishRawPointerDiagnostic, true);
     window.addEventListener("pointercancel", cancelPointerInteraction, true);
     window.addEventListener("blur", cancelPointerInteraction);
     return () => {
       window.removeEventListener("keydown", handleKeyDown, true);
       window.removeEventListener("beforeinput", noteTextInput, true);
+      window.removeEventListener("pointerdown", beginRawPointerDiagnostic, true);
+      window.removeEventListener("pointerup", finishRawPointerDiagnostic, true);
       window.removeEventListener("pointercancel", cancelPointerInteraction, true);
       window.removeEventListener("blur", cancelPointerInteraction);
       for (const unsubscribe of pointerSubscriptionsRef.current) unsubscribe();
@@ -1006,10 +1296,7 @@ function BoardEditor() {
         controls={nativeControls}
         onAction={handleNativeAction}
       />
-      <SemanticNodeOverlay
-        elements={overlayScene.elements}
-        appState={overlayScene.appState}
-      />
+      <SemanticOverlayHost store={overlayStoreRef.current} />
     </main>
   );
 }

@@ -38,10 +38,16 @@ struct DeterministicBoardRenderer: Sendable {
         _ document: BoardDocument,
         settings: BoardExportSettings
     ) throws -> RenderedBoardArtifacts {
-        let widthValue = settings.viewport.width * settings.scale
-        let heightValue = settings.viewport.height * settings.scale
+        let frame = BoardRenderFrame(
+            document: document,
+            minimumViewport: settings.viewport
+        )
+        let widthValue = frame.width * settings.scale
+        let heightValue = frame.height * settings.scale
         guard widthValue.isFinite, heightValue.isFinite,
               widthValue > 0, heightValue > 0,
+              widthValue <= BoardExportSettings.maximumPixelDimension,
+              heightValue <= BoardExportSettings.maximumPixelDimension,
               widthValue <= Double(Int.max), heightValue <= Double(Int.max) else {
             throw DeterministicBoardRendererError.invalidDimensions
         }
@@ -57,10 +63,11 @@ struct DeterministicBoardRenderer: Sendable {
         }
 
         let canonicalSource = Data(try codec.encode(document).utf8)
-        let svg = Data(svg(document, settings: settings).utf8)
+        let svg = Data(svg(document, settings: settings, frame: frame).utf8)
         let png = try png(
             document,
             settings: settings,
+            frame: frame,
             pixelWidth: width,
             pixelHeight: height,
             background: background
@@ -76,14 +83,17 @@ struct DeterministicBoardRenderer: Sendable {
 
     private func svg(
         _ document: BoardDocument,
-        settings: BoardExportSettings
+        settings: BoardExportSettings,
+        frame: BoardRenderFrame
     ) -> String {
-        let width = number(settings.viewport.width)
-        let height = number(settings.viewport.height)
+        let originX = number(frame.minX)
+        let originY = number(frame.minY)
+        let width = number(frame.width)
+        let height = number(frame.height)
         var rows = [
             "<?xml version=\"1.0\" encoding=\"UTF-8\"?>",
-            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"\(width)\" height=\"\(height)\" viewBox=\"0 0 \(width) \(height)\" role=\"img\" aria-label=\"System design board\">",
-            "  <rect x=\"0\" y=\"0\" width=\"\(width)\" height=\"\(height)\" fill=\"#\(attribute(settings.background.hexRGB))\"/>",
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"\(width)\" height=\"\(height)\" viewBox=\"\(originX) \(originY) \(width) \(height)\" role=\"img\" aria-label=\"System design board\">",
+            "  <rect x=\"\(originX)\" y=\"\(originY)\" width=\"\(width)\" height=\"\(height)\" fill=\"#\(attribute(settings.background.hexRGB))\"/>",
         ]
 
         for (renderIndex, element) in BoardRenderOrder.elements(
@@ -180,6 +190,7 @@ struct DeterministicBoardRenderer: Sendable {
     private func png(
         _ document: BoardDocument,
         settings: BoardExportSettings,
+        frame: BoardRenderFrame,
         pixelWidth: Int,
         pixelHeight: Int,
         background: RGB
@@ -211,16 +222,17 @@ struct DeterministicBoardRenderer: Sendable {
             CGRect(
                 x: 0,
                 y: 0,
-                width: settings.viewport.width,
-                height: settings.viewport.height
+                width: frame.width,
+                height: frame.height
             )
         )
+        context.translateBy(x: -frame.minX, y: 0)
 
         for element in BoardRenderOrder.elements(in: document) {
             draw(
                 element,
                 in: context,
-                viewportHeight: settings.viewport.height
+                viewportHeight: frame.maxY
             )
         }
         graphics.flushGraphics()
@@ -465,6 +477,85 @@ struct DeterministicBoardRenderer: Sendable {
         }
         if formatted.last == "." { formatted.removeLast() }
         return formatted == "-0" ? "0" : formatted
+    }
+}
+
+private struct BoardRenderFrame {
+    let minX: Double
+    let minY: Double
+    let maxX: Double
+    let maxY: Double
+
+    var width: Double { maxX - minX }
+    var height: Double { maxY - minY }
+
+    init(document: BoardDocument, minimumViewport: BoardSize) {
+        var bounds = CGRect(
+            x: 0,
+            y: 0,
+            width: minimumViewport.width,
+            height: minimumViewport.height
+        )
+        for element in document.elements {
+            let elementBounds: CGRect
+            switch element {
+            case .box(let box):
+                let rect = CGRect(
+                    x: box.frame.origin.x,
+                    y: box.frame.origin.y,
+                    width: box.frame.size.width,
+                    height: box.frame.size.height
+                )
+                let inset = box.kind.visual.strokeWidth(in: rect) / 2
+                elementBounds = rect.insetBy(dx: -inset, dy: -inset)
+
+            case .connector(let connector):
+                let points = BoardOrthogonalConnectorRoute(
+                    start: connector.start.point,
+                    end: connector.end.point
+                ).points
+                elementBounds = Self.bounds(of: points).insetBy(dx: -12, dy: -12)
+
+            case .label(let label):
+                elementBounds = CGRect(
+                    x: label.origin.x,
+                    y: label.origin.y,
+                    width: BoardElementLayout.labelSize.width,
+                    height: BoardElementLayout.labelSize.height
+                )
+
+            case .stroke(let stroke):
+                elementBounds = Self.bounds(of: stroke.points).insetBy(
+                    dx: -stroke.width / 2,
+                    dy: -stroke.width / 2
+                )
+            }
+            bounds = bounds.union(elementBounds)
+        }
+        minX = bounds.minX
+        minY = bounds.minY
+        maxX = bounds.maxX
+        maxY = bounds.maxY
+    }
+
+    private static func bounds(of points: [BoardPoint]) -> CGRect {
+        guard let first = points.first else { return .zero }
+        var minX = first.x
+        var minY = first.y
+        var maxX = first.x
+        var maxY = first.y
+        for point in points.dropFirst() {
+            minX = min(minX, point.x)
+            minY = min(minY, point.y)
+            maxX = max(maxX, point.x)
+            maxY = max(maxY, point.y)
+        }
+        return CGRect(
+            x: minX,
+            y: minY,
+            width: max(0, maxX - minX),
+            height: max(0, maxY - minY)
+        )
     }
 }
 
