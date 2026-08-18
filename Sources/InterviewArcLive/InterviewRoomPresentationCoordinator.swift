@@ -1,6 +1,7 @@
 import AppKit
 import Combine
 import InterviewArcLiveCore
+import InterviewArcLiveHostedClient
 import SwiftUI
 
 enum InterviewRoomPresentationState: Equatable {
@@ -73,6 +74,7 @@ final class PresentationFrameAdjustmentGuard {
 
 enum InterviewRoomPresentedSpecialty: Equatable {
     case systemDesign
+    case coding
     case behavioral
 }
 
@@ -87,7 +89,9 @@ final class InterviewRoomPresentationSelection: ObservableObject {
 @MainActor
 final class InterviewRoomPresentationCoordinator: NSObject, NSWindowDelegate {
     let model: SystemDesignRoomModel
+    let codingModel: CodingRoomModel?
     let behavioralModel: BehavioralRoomModel?
+    let hostedController: HostedPracticeController?
     let presentationSelection = InterviewRoomPresentationSelection()
 
     private(set) var presentationState: InterviewRoomPresentationState = .notStarted
@@ -109,6 +113,8 @@ final class InterviewRoomPresentationCoordinator: NSObject, NSWindowDelegate {
     private var closeAlert: NSAlert?
     private var modelOpenTask: Task<Void, Never>?
     private var compactSizeReconciliationTask: Task<Void, Never>?
+    private var hostedSpecialtyObservation: AnyCancellable?
+    private var isBindingPresentation = false
     private var savedFullFrame: NSRect?
     private var savedCompactOrigin: NSPoint?
     private weak var savedFullFirstResponder: NSResponder?
@@ -116,12 +122,16 @@ final class InterviewRoomPresentationCoordinator: NSObject, NSWindowDelegate {
 
     init(
         model: SystemDesignRoomModel,
+        codingModel: CodingRoomModel? = nil,
         behavioralModel: BehavioralRoomModel? = nil,
+        hostedController: HostedPracticeController? = nil,
         frameAutosaveName: String = "InterviewArcLive.SystemDesignRoom",
         compactDynamicTypeSizeOverride: DynamicTypeSize? = nil
     ) {
         self.model = model
+        self.codingModel = codingModel
         self.behavioralModel = behavioralModel
+        self.hostedController = hostedController
         self.frameAutosaveName = frameAutosaveName
         self.compactDynamicTypeSizeOverride = compactDynamicTypeSizeOverride
         super.init()
@@ -157,6 +167,8 @@ final class InterviewRoomPresentationCoordinator: NSObject, NSWindowDelegate {
         switch presentationSelection.specialty {
         case .systemDesign:
             ObjectIdentifier(model)
+        case .coding:
+            ObjectIdentifier(codingModel ?? model)
         case .behavioral:
             ObjectIdentifier(behavioralModel ?? model)
         }
@@ -193,6 +205,8 @@ final class InterviewRoomPresentationCoordinator: NSObject, NSWindowDelegate {
         switch presentationSelection.specialty {
         case .systemDesign:
             model.snapshot
+        case .coding:
+            codingModel?.snapshot
         case .behavioral:
             behavioralModel?.snapshot
         }
@@ -215,7 +229,7 @@ final class InterviewRoomPresentationCoordinator: NSObject, NSWindowDelegate {
         didRequestModelOpen = true
         modelOpenTask = Task { @MainActor [weak self] in
             guard let self else { return }
-            await model.open()
+            await bindPreferredPresentation()
         }
     }
 
@@ -314,6 +328,7 @@ final class InterviewRoomPresentationCoordinator: NSObject, NSWindowDelegate {
         closeAlert = nil
         compactSizeReconciliationTask?.cancel()
         compactSizeReconciliationTask = nil
+        hostedSpecialtyObservation = nil
         compactPanel.orderOut(nil)
         fullWindow.orderOut(nil)
         model.enhancedBoardBridgeController.resetEditorSession()
@@ -425,6 +440,7 @@ final class InterviewRoomPresentationCoordinator: NSObject, NSWindowDelegate {
         let fullRoot = FullInterviewRoomRoot(
             systemDesign: model,
             selection: presentationSelection,
+            coding: codingModel,
             behavioral: behavioralModel,
             onCollapse: { [weak self] in self?.collapse() }
         )
@@ -471,6 +487,7 @@ final class InterviewRoomPresentationCoordinator: NSObject, NSWindowDelegate {
         let compactRoot = CompactInterviewRoomRoot(
             systemDesign: model,
             selection: presentationSelection,
+            coding: codingModel,
             behavioral: behavioralModel,
             onExpand: { [weak self] in self?.expand() },
             dynamicTypeSizeOverride: compactDynamicTypeSizeOverride
@@ -712,8 +729,87 @@ final class InterviewRoomPresentationCoordinator: NSObject, NSWindowDelegate {
         prepareForTermination()
     }
 
+    private func bindPreferredPresentation() async {
+        isBindingPresentation = true
+        defer {
+            isBindingPresentation = false
+            observeHostedSpecialty()
+        }
+        if let hostedController, codingModel != nil {
+            let snapshot = await hostedController.openPreferred()
+            await adoptHostedSnapshot(snapshot, openIfNeeded: true)
+            return
+        }
+        presentationSelection.specialty = .systemDesign
+        await model.open()
+    }
+
+    private func observeHostedSpecialty() {
+        guard hostedSpecialtyObservation == nil,
+              let hostedController,
+              codingModel != nil else { return }
+        hostedSpecialtyObservation = hostedController.$snapshot.sink {
+            [weak self] snapshot in
+            guard let self, self.didStart, !self.isBindingPresentation else { return }
+            Task { @MainActor [weak self] in
+                await self?.handleHostedSnapshotChange(snapshot)
+            }
+        }
+    }
+
+    private func handleHostedSnapshotChange(
+        _ snapshot: HostedPracticeSnapshot
+    ) async {
+        guard !isBindingPresentation else { return }
+        if presentationSelection.specialty == .behavioral {
+            return
+        }
+        if snapshot.connection == .signedOut {
+            return
+        }
+        if snapshot.connection == .loading { return }
+        isBindingPresentation = true
+        defer { isBindingPresentation = false }
+        if let hostedController,
+           snapshot.boundSpecialty != .leetcode,
+           snapshot.today?.selectedLiveWorkSurface == .leetcode {
+            let preferred = await hostedController.openPreferred()
+            await adoptHostedSnapshot(preferred, openIfNeeded: true)
+            return
+        }
+        await adoptHostedSnapshot(snapshot, openIfNeeded: true)
+    }
+
+    private func adoptHostedSnapshot(
+        _ snapshot: HostedPracticeSnapshot,
+        openIfNeeded: Bool
+    ) async {
+        guard snapshot.connection != .loading else { return }
+        if Self.shouldPresentCoding(snapshot) {
+            presentationSelection.specialty = .coding
+            if openIfNeeded, codingModel?.snapshot == nil, !(codingModel?.isWorking ?? false) {
+                await codingModel?.open()
+            }
+            return
+        }
+        presentationSelection.specialty = .systemDesign
+        if openIfNeeded, model.snapshot == nil, !model.isWorking {
+            await model.open()
+        }
+    }
+
+    static func shouldPresentCoding(_ snapshot: HostedPracticeSnapshot) -> Bool {
+        snapshot.boundSpecialty == .leetcode
+            || snapshot.today?.selectedLiveWorkSurface == .leetcode
+    }
+
     private func finishActiveInterview() async -> Bool {
         switch presentationSelection.specialty {
+        case .coding:
+            if let codingModel {
+                return await codingModel.finishInterview()
+            }
+            return false
         case .behavioral:
             if let behavioralModel {
                 return await behavioralModel.finishInterview()
@@ -737,6 +833,7 @@ final class InterviewRoomPresentationCoordinator: NSObject, NSWindowDelegate {
 struct FullInterviewRoomRoot: View {
     @ObservedObject var systemDesign: SystemDesignRoomModel
     @ObservedObject var selection: InterviewRoomPresentationSelection
+    let coding: CodingRoomModel?
     let behavioral: BehavioralRoomModel?
     let onCollapse: () -> Void
 
@@ -744,6 +841,12 @@ struct FullInterviewRoomRoot: View {
         switch selection.specialty {
         case .systemDesign:
             SystemDesignRoomView(model: systemDesign, onCollapse: onCollapse)
+        case .coding:
+            if let coding {
+                CodingRoomView(model: coding, onCollapse: onCollapse)
+            } else {
+                SystemDesignRoomView(model: systemDesign, onCollapse: onCollapse)
+            }
         case .behavioral:
             if let behavioral {
                 BehavioralRoomView(model: behavioral, onCollapse: onCollapse)
@@ -757,6 +860,7 @@ struct FullInterviewRoomRoot: View {
 struct CompactInterviewRoomRoot: View {
     @ObservedObject var systemDesign: SystemDesignRoomModel
     @ObservedObject var selection: InterviewRoomPresentationSelection
+    let coding: CodingRoomModel?
     let behavioral: BehavioralRoomModel?
     let onExpand: () -> Void
     let dynamicTypeSizeOverride: DynamicTypeSize?
@@ -769,6 +873,20 @@ struct CompactInterviewRoomRoot: View {
                 onExpand: onExpand,
                 dynamicTypeSizeOverride: dynamicTypeSizeOverride
             )
+        case .coding:
+            if let coding {
+                CompactCodingRoomView(
+                    model: coding,
+                    onExpand: onExpand,
+                    dynamicTypeSizeOverride: dynamicTypeSizeOverride
+                )
+            } else {
+                CompactSystemDesignRoomView(
+                    model: systemDesign,
+                    onExpand: onExpand,
+                    dynamicTypeSizeOverride: dynamicTypeSizeOverride
+                )
+            }
         case .behavioral:
             if let behavioral {
                 CompactBehavioralRoomView(

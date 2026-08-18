@@ -40,14 +40,21 @@ The six-hour website session countdown is Today’s parent-session timer, not a 
 
 ![Coding room concept](./coding-room.png)
 
+Native room mockups for [issue #69](https://github.com/Vinosaamaa/interview-arc-live/issues/69):
+
+- [Full room](./coding-room-native-full.png)
+- [No coding activity gate](./coding-room-native-gate.png)
+- [Quick run drawer](./coding-room-native-run.png)
+- [Compact capsule](./coding-room-native-compact.png)
+
 The coding room combines the live transcript with one evolving source file. The editor is a real workspace, not a decorative code preview.
 
 ### Preflight and source identity
 
 1. Resolve the focused activity, stable question identity, and current Solution Profile.
-2. Run the checked-in LeetCode controller preflight once and navigate the verified browser tab to the problem once.
-3. Prepare or resume the exact evolving solution file. Java remains the first supported path and follows `practice/leetcode/solutions/<number>-<slug>.java`.
-4. Load that file into the room. Its header contains the verified title and URL plus an original restatement, constraints, examples, and diagrams where useful; it must not copy protected Editorial prose.
+2. Prepare or resume the exact evolving solution file. Java remains the first supported path and follows `practice/leetcode/solutions/<number>-<slug>.java`.
+3. Load that file into the room. Its header contains the verified title and URL plus an original restatement, constraints, examples, and diagrams where useful; it must not copy protected Editorial prose.
+4. After the Java file loads, Warm Controller Preflight runs in the background: `ensure` then `navigate` on the dedicated `leetcode-submitter` profile. Never copy that profile. Never run `pnpm install` on the click path.
 5. Keep `Open LeetCode` as a direct route to the verified problem tab. The room must never simulate an authenticated browser state.
 
 The language selector expresses a provider capability. Java is enabled first. Python becomes selectable only after its source-file, harness, and preflight contracts exist; the UI must not offer a language that cannot be saved and verified correctly.
@@ -55,9 +62,11 @@ The language selector expresses a provider capability. Java is enabled first. Py
 ### Run and submission boundary
 
 - Syntax highlighting, diagnostics, cursor state, and file changes operate on the real source file.
-- `Quick run` and `Full run` invoke the repository-owned local harness and may report only `Locally verified`.
-- An `Accepted` label requires an authoritative LeetCode verdict.
-- Running or compiling never submits. Submission remains a separate, explicit user-authorized controller action and is intentionally absent from this mockup.
+- After the Java file loads, Warm Controller Preflight runs `ensure` then `navigate` in the background on the dedicated `leetcode-submitter` profile. The click path never copies that profile and never runs `pnpm install`.
+- `Quick run` and `Full run` invoke the repository-owned local harness (`scripts/leetcode-java-harness.mjs`) directly. They may report only `Locally verified`. The latest Quick/Full click cancels the previous local run and streams harness stdout into the drawer. Immediate UI: `Quick run · running`.
+- Running or compiling never submits.
+- **Submit** is present in the coding room as an explicit control. It calls the checked-in Playwright controller `submit` / `retry` / `receipt` with a unique Controller Invocation ID and no LeetCode specialist turn. Native mockups still omit the button visually; the product decision now includes it. Immediate UI: `Submitting · waiting for LeetCode`.
+- An `Accepted` label requires an authoritative LeetCode controller verdict, never a local harness result.
 - The output drawer preserves the latest run identity, command class, exit status, and concise diagnostics without filling the spoken transcript with build noise.
 
 ## System-design room

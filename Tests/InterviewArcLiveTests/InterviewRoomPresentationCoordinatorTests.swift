@@ -185,6 +185,27 @@ final class InterviewRoomPresentationCoordinatorTests: XCTestCase {
         )
     }
 
+    func testCollapsingCodingRoomKeepsOneSessionIdentity() {
+        let coding = CodingRoomModel()
+        let systemDesign = SystemDesignRoomModel()
+        let coordinator = makeCoordinator(model: systemDesign, codingModel: coding)
+        defer { coordinator.prepareForTermination() }
+
+        coordinator.adoptPresentedSpecialty(.coding)
+        let codingIdentity = ObjectIdentifier(coding)
+        let fullTree = coordinator.fullHostingTreeIdentity
+        let compactTree = coordinator.compactHostingTreeIdentity
+        XCTAssertEqual(coordinator.fullHostedModelIdentity, codingIdentity)
+        XCTAssertEqual(coordinator.compactHostedModelIdentity, codingIdentity)
+
+        coordinator.collapse()
+        coordinator.expand()
+        XCTAssertEqual(coordinator.fullHostedModelIdentity, codingIdentity)
+        XCTAssertEqual(coordinator.compactHostedModelIdentity, codingIdentity)
+        XCTAssertEqual(coordinator.fullHostingTreeIdentity, fullTree)
+        XCTAssertEqual(coordinator.compactHostingTreeIdentity, compactTree)
+    }
+
     func testCollapsingBehavioralRoomKeepsOneSessionIdentity() {
         let behavioral = BehavioralRoomModel()
         let systemDesign = SystemDesignRoomModel()
@@ -505,12 +526,14 @@ final class InterviewRoomPresentationCoordinatorTests: XCTestCase {
 
     private func makeCoordinator(
         model: SystemDesignRoomModel? = nil,
+        codingModel: CodingRoomModel? = nil,
         behavioralModel: BehavioralRoomModel? = nil,
         compactDynamicTypeSizeOverride: DynamicTypeSize? = nil
     ) -> InterviewRoomPresentationCoordinator {
         _ = NSApplication.shared
         return InterviewRoomPresentationCoordinator(
             model: model ?? SystemDesignRoomModel(),
+            codingModel: codingModel,
             behavioralModel: behavioralModel,
             frameAutosaveName: "InterviewArcLiveTests.TransientFrame",
             compactDynamicTypeSizeOverride: compactDynamicTypeSizeOverride

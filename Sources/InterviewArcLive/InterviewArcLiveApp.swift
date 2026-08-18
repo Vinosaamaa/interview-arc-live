@@ -35,7 +35,9 @@ final class InterviewArcLiveTerminationGate {
 final class InterviewArcLiveApp: NSObject, NSApplicationDelegate {
     private static var retainedDelegate: InterviewArcLiveApp?
 
+    private let hostedController: HostedPracticeController?
     private let model: SystemDesignRoomModel
+    private let codingModel: CodingRoomModel
     private let behavioralModel: BehavioralRoomModel
     private var presentationCoordinator: InterviewRoomPresentationCoordinator?
     private var activationRefreshTask: Task<Void, Never>?
@@ -43,7 +45,9 @@ final class InterviewArcLiveApp: NSObject, NSApplicationDelegate {
 
     override init() {
         let hosted = try? HostedPracticeController.makeDefault()
+        hostedController = hosted
         model = SystemDesignRoomModel(hostedController: hosted)
+        codingModel = CodingRoomModel(hostedController: hosted)
         behavioralModel = BehavioralRoomModel()
         super.init()
     }
@@ -65,6 +69,9 @@ final class InterviewArcLiveApp: NSObject, NSApplicationDelegate {
             guard await model.prepareLocalPersistenceForTermination() else {
                 return false
             }
+            guard await codingModel.prepareLocalPersistenceForTermination() else {
+                return false
+            }
             guard await behavioralModel.prepareLocalPersistenceForTermination() else {
                 return false
             }
@@ -72,7 +79,9 @@ final class InterviewArcLiveApp: NSObject, NSApplicationDelegate {
         }
         let coordinator = InterviewRoomPresentationCoordinator(
             model: model,
-            behavioralModel: behavioralModel
+            codingModel: codingModel,
+            behavioralModel: behavioralModel,
+            hostedController: hostedController
         )
         presentationCoordinator = coordinator
         coordinator.start()

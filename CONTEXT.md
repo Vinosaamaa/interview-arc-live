@@ -126,6 +126,42 @@ Session. Audio exports are derived from it and never replace it.
 The specialty-specific artifact area: system-design Board, coding workspace,
 or behavioral Story Kit.
 
+### Coding Source File
+
+The one evolving Java file bound to a coding Interview Room Session. Its
+identity is `practice/leetcode/solutions/<four-digit-number>-<canonical-slug>.java`
+when both the public number and slug are known. Live never invents a LeetCode
+number. If Application Support `WorkspaceLink.json` names an Interview Arc
+checkout, that checkout file is edited; otherwise Live keeps a private copy
+under `CodingSources/<activityId>/`. In-Room Submit flushes this same file
+before the controller runs.
+
+### Locally Verified
+
+The only success label a local Java harness run may show. It is not LeetCode
+Accepted and never changes the hosted result.
+
+### Workspace Link
+
+The runtime Application Support file `WorkspaceLink.json` that may name an
+Interview Arc checkout through `interviewArcRepositoryRoot`. Personal paths
+stay out of Git.
+
+### Warm Controller Preflight
+
+Background `ensure` then `navigate` on the dedicated `leetcode-submitter`
+profile after the Java file loads. Live never copies that profile.
+
+### In-Room Submit
+
+The explicit Live control that runs the checked-in Playwright controller
+`submit` / `retry` / `receipt` without a LeetCode specialist turn.
+
+### Controller Invocation ID
+
+The caller-chosen unique id for one controller submit. Never reused.
+`receipt` recovers that same id; a later explicit retry uses a new id.
+
 ### Behavioral Room
 
 The Behavioral specialty presentation of one Interview Room Session. Full and

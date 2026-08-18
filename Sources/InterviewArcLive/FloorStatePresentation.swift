@@ -1,4 +1,5 @@
 import InterviewArcLiveCore
+import InterviewArcLiveHostedClient
 
 struct FloorStatePresentation: Equatable {
     enum StatusKind: Equatable, CaseIterable {
@@ -59,6 +60,7 @@ struct FloorStatePresentation: Equatable {
         var isCodexReady: Bool
         var canStopRecording: Bool
         var roomAvailability: RoomAvailability
+        var hostedActivityNoun: String
 
         init(
             phase: InterviewRoomPhase? = nil,
@@ -70,7 +72,8 @@ struct FloorStatePresentation: Equatable {
             isInterviewerRequestInFlight: Bool = false,
             isCodexReady: Bool = false,
             canStopRecording: Bool = false,
-            roomAvailability: RoomAvailability = .ready
+            roomAvailability: RoomAvailability = .ready,
+            hostedActivityNoun: String = "System Design"
         ) {
             self.phase = phase
             self.candidateSegmentLifecycles = candidateSegmentLifecycles
@@ -82,6 +85,7 @@ struct FloorStatePresentation: Equatable {
             self.isCodexReady = isCodexReady
             self.canStopRecording = canStopRecording
             self.roomAvailability = roomAvailability
+            self.hostedActivityNoun = hostedActivityNoun
         }
     }
 
@@ -258,7 +262,7 @@ struct FloorStatePresentation: Equatable {
                 )
             case .hostedActivityRequired:
                 return Surface(
-                    label: "Open a System Design activity",
+                    label: "Open a \(input.hostedActivityNoun) activity",
                     detail: input.statusMessage
                 )
             case .hostedRecoveryRequired:
@@ -324,7 +328,8 @@ struct FloorStatePresentation: Equatable {
         if input.phase == nil {
             switch input.roomAvailability {
             case .hostedSignInRequired: return "Connect Interview Arc"
-            case .hostedActivityRequired: return "Open System Design activity"
+            case .hostedActivityRequired:
+                return "Open \(input.hostedActivityNoun) activity"
             case .hostedRecoveryRequired: return "Hosted recovery required"
             case .ready, .restoring: break
             }
@@ -394,6 +399,62 @@ extension SystemDesignRoomModel {
     }
 
     private var floorRoomAvailability: FloorStatePresentation.RoomAvailability {
+        guard snapshot == nil else { return .ready }
+        guard usesHostedAuthority else { return .restoring }
+        switch hostedSnapshot.connection {
+        case .signedOut:
+            return .hostedSignInRequired
+        case .noOpenSystemDesignActivity:
+            return .hostedActivityRequired
+        case .offline, .recoveryRequired:
+            return .hostedRecoveryRequired
+        case .loading, .readOnly, .writable:
+            return .restoring
+        }
+    }
+}
+
+extension CodingRoomModel {
+    var floorStatePresentation: FloorStatePresentation {
+        let draftLifecycles = snapshot?.segments
+            .filter { $0.committedTurnID == nil }
+            .map(\.lifecycle) ?? []
+
+        let speechActivity: FloorStatePresentation.SpeechActivity?
+        if playingUtteranceID != nil
+            || snapshot?.interviewerUtterances.contains(where: {
+                $0.lifecycle == .speaking
+            }) == true {
+            speechActivity = .playing
+        } else if snapshot?.interviewerUtterances.contains(where: {
+            $0.lifecycle == .generating
+        }) == true {
+            speechActivity = .generating
+        } else {
+            speechActivity = nil
+        }
+
+        return FloorStatePresentation.make(
+            input: FloorStatePresentation.Input(
+                phase: snapshot?.phase,
+                candidateSegmentLifecycles: draftLifecycles,
+                candidateSegmentCount: segments.count,
+                statusMessage: statusMessage,
+                attentionMessage: errorMessage
+                    ?? speechErrorMessage
+                    ?? codexAttentionMessage,
+                speechActivity: speechActivity,
+                isInterviewerRequestInFlight: isInterviewerRequestInFlight,
+                isCodexReady: isCodexReady,
+                canStopRecording: canStopRecording,
+                roomAvailability: floorRoomAvailability,
+                hostedActivityNoun: "LeetCode"
+            )
+        )
+    }
+
+    private var floorRoomAvailability: FloorStatePresentation.RoomAvailability {
+        if isCodingActivityMissing { return .hostedActivityRequired }
         guard snapshot == nil else { return .ready }
         guard usesHostedAuthority else { return .restoring }
         switch hostedSnapshot.connection {
