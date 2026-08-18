@@ -281,6 +281,14 @@ final class SystemDesignRoomModel: ObservableObject {
     }
 
     func hostedElapsedText(at date: Date) -> String? {
+        guard let timer = hostedSnapshot.activity?.activity.timer else {
+            return nil
+        }
+        let hasLiveRun = timer.runningSince != nil && timer.completed == false
+        let hasAccumulatedTime = timer.accumulatedSeconds > 0.5
+        guard hasLiveRun || hasAccumulatedTime || timer.completed else {
+            return nil
+        }
         guard let seconds = hostedSnapshot.elapsedSeconds(
             localNow: LiveEpochMilliseconds(
                 (date.timeIntervalSince1970 * 1_000).rounded()
@@ -1458,8 +1466,14 @@ final class SystemDesignRoomModel: ObservableObject {
     }
 
     func toggleHostedTimer() async {
-        guard let hostedController, hostedSnapshot.connection == .writable else {
-            errorMessage = "Reconnect the hosted writer before changing the timer."
+        guard let hostedController else { return }
+        if hostedSnapshot.connection != .writable {
+            await hostedController.refresh()
+            hostedSnapshot = hostedController.snapshot
+        }
+        guard hostedSnapshot.connection == .writable else {
+            errorMessage = hostedController.errorMessage
+                ?? "Reconnect the hosted writer before changing the timer."
             return
         }
         do {
@@ -1469,6 +1483,18 @@ final class SystemDesignRoomModel: ObservableObject {
             errorMessage = nil
         } catch {
             hostedSnapshot = hostedController.snapshot
+            if hostedSnapshot.connection == .writable, !hostedTimerIsRunning {
+                do {
+                    try await hostedController.startTimer()
+                    hostedSnapshot = hostedController.snapshot
+                    errorMessage = nil
+                    return
+                } catch {
+                    hostedSnapshot = hostedController.snapshot
+                    errorMessage = error.localizedDescription
+                    return
+                }
+            }
             errorMessage = error.localizedDescription
         }
     }

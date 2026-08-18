@@ -896,7 +896,7 @@ struct SystemDesignRoomView: View {
         case .quiet: return LivePalette.muted
         case .working: return LivePalette.interviewer
         case .speaking: return LivePalette.interviewer
-        case .ready: return LivePalette.candidateText
+        case .ready: return LivePalette.interviewer
         case .warning: return LivePalette.warning
         }
     }
@@ -969,7 +969,7 @@ struct SystemDesignRoomView: View {
                 )
                 .frame(height: FullRoomLayout.minimumActionHitTarget)
 
-            if model.usesHostedAuthority {
+            if model.usesHostedAuthority, model.snapshot != nil {
                 Button {
                     Task { await model.toggleHostedTimer() }
                 } label: {
@@ -988,13 +988,24 @@ struct SystemDesignRoomView: View {
                             model.hostedElapsedText(at: context.date) ?? ""
                         )
                     }
+                    .allowsHitTesting(false)
                 }
-                .buttonStyle(.bordered)
-                .disabled(!model.isHostedWritable)
+                .buttonStyle(RoomChromeButtonStyle())
+                .foregroundStyle(LivePalette.violet)
                 .accessibilityLabel(
                     model.hostedTimerIsRunning
                         ? "Pause hosted activity timer"
                         : "Start hosted activity timer"
+                )
+                .accessibilityHint(
+                    model.isHostedWritable
+                        ? "Starts or pauses the Interview Arc Today timer"
+                        : "Reconnects the hosted writer, then starts the Today timer"
+                )
+                .help(
+                    model.isHostedWritable
+                        ? "Start or pause the hosted activity timer"
+                        : "Hosted writer is not ready; Start will reconnect and retry"
                 )
 
                 Menu {

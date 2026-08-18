@@ -184,6 +184,84 @@ final class HostedPracticeSessionTests: XCTestCase {
         XCTAssertEqual(commandBodies, [])
     }
 
+    func testSameSessionStaleFenceIsAbandonedInsteadOfBrickingRecovery() async throws {
+        let fixture = try HostedSessionFixture(holderSessionID: "room-session-1")
+        let body = Data(
+            #"{"command":"start","fencingToken":3,"holderId":"00000000-0000-4000-8000-000000000001","holderSessionId":"room-session-1","operationId":"stale-start"}"#.utf8
+        )
+        try await fixture.outbox.prepare(
+            LiveOutboxRecord(
+                operationId: "stale-start",
+                operation: "command.start",
+                pathSuffix: "commands",
+                activityId: "activity-1",
+                workbenchId: "workbench-1",
+                holderId: "00000000-0000-4000-8000-000000000001",
+                holderSessionId: "room-session-1",
+                fencingToken: 3,
+                dependencyOperationId: nil,
+                canonicalBody: body,
+                credentialFingerprint: await fixture.token.credentialFingerprint(),
+                createdAt: 1
+            )
+        )
+        await fixture.transport.rejectNextCommand(
+            code: "lease_conflict",
+            retryable: true
+        )
+
+        let snapshot = await fixture.session.open()
+
+        XCTAssertEqual(snapshot.connection, .writable)
+        XCTAssertEqual(snapshot.pendingOperationCount, 0)
+        let paths = await fixture.transport.paths()
+        XCTAssertEqual(
+            paths,
+            [
+                "/live/v1/today",
+                "/live/v1/activities/activity-1",
+                "/live/v1/activities/activity-1/receipts/stale-start",
+                "/live/v1/activities/activity-1/commands",
+                "/live/v1/today",
+                "/live/v1/activities/activity-1",
+                "/live/v1/activities/activity-1/lease/acquire",
+            ]
+        )
+        let commandBodies = await fixture.transport.commandBodies()
+        XCTAssertEqual(commandBodies.count, 1)
+    }
+
+    func testLiveStartLeaseConflictReacquiresInsteadOfRecoveryTrap() async throws {
+        let fixture = try HostedSessionFixture()
+        _ = await fixture.session.open()
+        await fixture.transport.rejectNextCommand(
+            code: "lease_conflict",
+            retryable: true
+        )
+
+        do {
+            try await fixture.session.start()
+            XCTFail("The original Start must not report success after a stale fence")
+        } catch let error as LiveV1ClientError {
+            XCTAssertEqual(error.code, "lease_conflict")
+            XCTAssertTrue(error.retryable)
+        }
+
+        let snapshot = await fixture.session.snapshot()
+        XCTAssertEqual(snapshot.connection, .writable)
+        XCTAssertEqual(snapshot.pendingOperationCount, 0)
+        let paths = await fixture.transport.paths()
+        XCTAssertEqual(
+            Array(paths.suffix(4)),
+            [
+                "/live/v1/activities/activity-1/commands",
+                "/live/v1/today",
+                "/live/v1/activities/activity-1",
+                "/live/v1/activities/activity-1/lease/acquire",
+            ]
+        )
+    }
+
     func testCredentialChangeQuarantineNeverAcquiresWritableLease() async throws {
         let fixture = try HostedSessionFixture()
         try await fixture.outbox.prepare(
@@ -491,6 +569,33 @@ final class HostedPracticeSessionTests: XCTestCase {
                 "/live/v1/activities/activity-2",
                 "/live/v1/activities/activity-1/lease/release",
                 "/live/v1/activities/activity-2/lease/acquire",
+            ]
+        )
+    }
+
+    func testRefreshReacquiresWriterLeaseAfterLocalExpiry() async throws {
+        let fixture = try HostedSessionFixture()
+        _ = await fixture.session.open()
+        fixture.clock.set(1_090_000)
+        await fixture.session.tick()
+        let expired = await fixture.session.snapshot()
+        XCTAssertEqual(
+            expired.connection,
+            .recoveryRequired(code: "lease_expired")
+        )
+        XCTAssertNil(expired.lease)
+
+        let refreshed = try await fixture.session.refresh()
+
+        XCTAssertEqual(refreshed.connection, .writable)
+        XCTAssertNotNil(refreshed.lease)
+        let paths = await fixture.transport.paths()
+        XCTAssertEqual(
+            Array(paths.suffix(3)),
+            [
+                "/live/v1/today",
+                "/live/v1/activities/activity-1",
+                "/live/v1/activities/activity-1/lease/acquire",
             ]
         )
     }
