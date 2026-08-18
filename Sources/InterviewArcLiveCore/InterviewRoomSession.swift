@@ -1098,7 +1098,10 @@ public actor InterviewRoomSession {
             preconditionFailure("Provider commands use their durable two-stage paths")
 
         case .finish:
-            guard phase == .ready || phase == .interviewerTurn else {
+            guard Self.canFinish(
+                phase: phase,
+                segments: segments
+            ) else {
                 throw invalidTransition("finish")
             }
             endpointGraces = Self.cancellingPendingEndpointGrace(
@@ -1945,10 +1948,26 @@ public actor InterviewRoomSession {
         .invalidTransition(command: command, phase: manifest.phase)
     }
 
+    private static func canFinish(
+        phase: InterviewRoomPhase,
+        segments: [CandidateSegment]
+    ) -> Bool {
+        switch phase {
+        case .ready, .candidateFloor, .interviewerProcessing, .interviewerTurn:
+            return !segments.contains { isInFlightCapture($0) }
+        case .completed:
+            return false
+        }
+    }
+
     private static func isActiveSegment(_ segment: CandidateSegment) -> Bool {
         segment.lifecycle == .captureAuthorized
             || segment.lifecycle == .recording
             || segment.lifecycle == .finalizationAuthorized
+    }
+
+    private static func isInFlightCapture(_ segment: CandidateSegment) -> Bool {
+        isActiveSegment(segment) || segment.lifecycle == .transcribing
     }
 
     /// Returns a contiguous recent suffix so the runtime receives bounded,

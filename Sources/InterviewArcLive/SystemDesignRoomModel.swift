@@ -1660,10 +1660,12 @@ final class SystemDesignRoomModel: ObservableObject {
         }
     }
 
-    /// Uses the existing durable finish command without broadening the phases
-    /// Core accepts. Presentation close remains fail-closed when the current
-    /// phase cannot finish safely. An operation already awaiting its Adapter
-    /// keeps sole ownership of the model's visible and durable state.
+    /// Hosted finish is authoritative. Local completion follows only after
+    /// the hosted activity actually finishes, so a gate such as missing
+    /// result cannot leave the room looking ended while Today stays open.
+    /// Presentation close remains fail-closed when the current phase cannot
+    /// finish safely. An operation already awaiting its Adapter keeps sole
+    /// ownership of the model's visible and durable state.
     @discardableResult
     func finishInterview() async -> Bool {
         await finishInterview(hostedNextActivityID: nil)
@@ -1685,14 +1687,47 @@ final class SystemDesignRoomModel: ObservableObject {
     }
 
     private func finishInterview(hostedNextActivityID: String?) async -> Bool {
-        guard !isWorking, !hasPendingLocalPersistence else { return false }
-        guard let coordinator, let snapshot else { return false }
+        guard !isWorking else { return false }
+        if hasPendingLocalPersistence {
+            errorMessage = "Wait for the latest local save to finish, then press End again."
+            return false
+        }
+        guard let coordinator, let snapshot else {
+            errorMessage = "The interview room is not open yet, so End cannot finish this activity."
+            return false
+        }
         if snapshot.phase == .completed,
            (
                hostedController == nil
                    || hostedSnapshot.activity?.activity.lifecycle == .completed
            ) {
             return true
+        }
+        if hostedController != nil {
+            switch hostedSnapshot.connection {
+            case .writable:
+                break
+            case .recoveryRequired(let code):
+                errorMessage = "Hosted recovery is required before ending (\(code))."
+                return false
+            case .offline:
+                errorMessage = "Interview Arc is offline. End needs a hosted connection; local work is kept."
+                return false
+            default:
+                errorMessage = HostedPracticeSessionError.leaseUnavailable.errorDescription
+                return false
+            }
+        }
+        if snapshot.segments.contains(where: { segment in
+            switch segment.lifecycle {
+            case .captureAuthorized, .recording, .finalizationAuthorized, .transcribing:
+                return true
+            default:
+                return false
+            }
+        }) {
+            errorMessage = "Stop the in-progress recording before ending. Local work stays saved."
+            return false
         }
 
         isFinishingInterview = true
@@ -1709,10 +1744,6 @@ final class SystemDesignRoomModel: ObservableObject {
             await waitForBoardPersistence()
             if snapshot.phase != .completed {
                 try await syncHostedPairs(from: snapshot)
-                let updated = try await coordinator.finishSession(
-                    commandID: commandID("finish-interview")
-                )
-                publish(updated)
             }
             if let hostedController {
                 if let hostedNextActivityID {
@@ -1724,9 +1755,18 @@ final class SystemDesignRoomModel: ObservableObject {
                 }
                 hostedSnapshot = hostedController.snapshot
             }
+            if coordinator.snapshot.phase != .completed {
+                let updated = try await coordinator.finishSession(
+                    commandID: commandID("finish-interview")
+                )
+                publish(updated)
+            }
             return true
         } catch {
             publish(coordinator.snapshot)
+            if let hostedController {
+                hostedSnapshot = hostedController.snapshot
+            }
             errorMessage = safeMessage(for: error)
             return false
         }
@@ -2512,9 +2552,23 @@ final class SystemDesignRoomModel: ObservableObject {
                 return "This recording has insufficient speech signal. Play it, then exclude it or add another segment."
             case .commandInProgress:
                 return "Another durable room operation is still in progress."
+            case .invalidTransition(let command, _):
+                if command == "finish" {
+                    return "Stop the in-progress recording before ending. Local work stays saved."
+                }
+                return "The room rejected this action. Its latest durable state is still shown."
             default:
                 return "The room rejected this action. Its latest durable state is still shown."
             }
+        }
+
+        if let hostedError = error as? LiveV1ClientError {
+            return hostedError.errorDescription
+                ?? "Interview Arc rejected this action. Local work is still shown."
+        }
+        if let hostedSessionError = error as? HostedPracticeSessionError {
+            return hostedSessionError.errorDescription
+                ?? "Hosted recovery is required before this action."
         }
 
         return "The operation did not complete. The latest durable state is still shown."

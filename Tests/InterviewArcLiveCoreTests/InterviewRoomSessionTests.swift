@@ -183,7 +183,8 @@ final class InterviewRoomSessionTests: XCTestCase {
         let pending = await session.snapshot()
         XCTAssertEqual(pending.phase, .interviewerProcessing)
         XCTAssertTrue(pending.turns.isEmpty)
-        let durablePending = try XCTUnwrap(try await store.load(sessionID: sessionID))
+        let loadedPending = try await store.load(sessionID: sessionID)
+        let durablePending = try XCTUnwrap(loadedPending)
         XCTAssertEqual(durablePending.phase, .interviewerProcessing)
         XCTAssertTrue(durablePending.turns.isEmpty)
 
@@ -1399,6 +1400,66 @@ final class InterviewRoomSessionTests: XCTestCase {
                 )
             }
         }
+    }
+
+    func testFinishCompletesFromCandidateFloorWhenNoCaptureIsInFlight() async throws {
+        let store = InMemorySessionManifestStore()
+        let session = try await InterviewRoomSession.start(
+            sessionID: SessionID("session-finish-candidate-floor"),
+            activityID: "activity-finish-candidate-floor",
+            activityPrompt: try fixtureActivityPrompt(),
+            manifestStore: store,
+            interviewerRuntime: CountingInterviewerRuntime(
+                response: CanonicalInterviewerResponse(
+                    displayMarkdown: "Unused.",
+                    spokenText: "Unused."
+                )
+            )
+        )
+        _ = try await session.execute(
+            .giveCandidateFloor(commandID: CommandID("finish-floor"))
+        )
+
+        let finished = try await session.execute(
+            .finish(commandID: CommandID("finish-from-floor"))
+        )
+
+        XCTAssertEqual(finished.phase, .completed)
+        let loaded = try await store.load(
+            sessionID: SessionID("session-finish-candidate-floor")
+        )
+        XCTAssertEqual(try XCTUnwrap(loaded).phase, .completed)
+    }
+
+    func testFinishCompletesFromInterviewerProcessing() async throws {
+        let store = InMemorySessionManifestStore()
+        let sessionID = SessionID("session-finish-processing")
+        let runtime = SequencedInterviewerRuntime(
+            results: [.failure(.unavailable)]
+        )
+        let session = try await InterviewRoomSession.start(
+            sessionID: sessionID,
+            activityID: "activity-finish-processing",
+            activityPrompt: try fixtureActivityPrompt(),
+            manifestStore: store,
+            interviewerRuntime: runtime
+        )
+
+        do {
+            _ = try await session.execute(
+                .requestOpeningInterviewerTurn(commandID: CommandID("local-opening-0"))
+            )
+            XCTFail("Expected opening failure")
+        } catch {
+            XCTAssertEqual(error as? RuntimeFixtureError, .unavailable)
+        }
+        let pending = await session.snapshot()
+        XCTAssertEqual(pending.phase, .interviewerProcessing)
+
+        let finished = try await session.execute(
+            .finish(commandID: CommandID("finish-from-processing"))
+        )
+        XCTAssertEqual(finished.phase, .completed)
     }
 }
 

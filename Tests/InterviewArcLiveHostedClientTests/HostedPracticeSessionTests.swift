@@ -175,6 +175,8 @@ final class HostedPracticeSessionTests: XCTestCase {
                 "/live/v1/today",
                 "/live/v1/activities/activity-1",
                 "/live/v1/activities/activity-1/receipts/old-op",
+                "/live/v1/today",
+                "/live/v1/activities/activity-1",
                 "/live/v1/activities/activity-1/lease/acquire",
             ]
         )

@@ -489,7 +489,7 @@ final class SystemDesignRoomLayoutTests: XCTestCase {
             powerHistory: [-12, -18]
         )
         XCTAssertEqual(levels.count, FullRoomWaveformLayout.sampleCount)
-        XCTAssertEqual(levels.suffix(2).map(Float.init), [-12, -18])
+        XCTAssertEqual(Array(levels.suffix(2)), [-12, -18])
         XCTAssertEqual(levels.first, -60)
 
         XCTAssertEqual(
