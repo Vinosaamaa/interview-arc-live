@@ -44,6 +44,7 @@ public final class InterviewerSpeechCoordinator {
     }
 
     private let session: InterviewRoomSession
+    private weak var conversation: SegmentSpeechCoordinator?
     private let provider: any InterviewerSpeechProvider
     private let player: any InterviewerSpeechPlaying
     private let audioStore: any InterviewerSpeechAudioStoring
@@ -53,6 +54,7 @@ public final class InterviewerSpeechCoordinator {
     private var pendingAutomaticTurnIDs: [TurnID] = []
     private var pendingAutomaticTurnIDSet: Set<TurnID> = []
     private var isDrainingAutomaticTurns = false
+    private var playbackCycleActive = false
     private var automaticDrainRetryTask: Task<Void, Never>?
     private var automaticDrainRetryID: UUID?
     private var automaticDrainRetryTurnID: TurnID?
@@ -99,7 +101,7 @@ public final class InterviewerSpeechCoordinator {
     ) async throws -> InterviewerSpeechCoordinator {
         let currentReadiness = await provider.readiness()
         let currentSnapshot = await conversation.interviewRoomSession.snapshot()
-        return InterviewerSpeechCoordinator(
+        let coordinator = InterviewerSpeechCoordinator(
             session: conversation.interviewRoomSession,
             initialSnapshot: currentSnapshot,
             readiness: currentReadiness,
@@ -108,6 +110,12 @@ public final class InterviewerSpeechCoordinator {
             audioStore: audioStore,
             initiallyMuted: initiallyMuted
         )
+        coordinator.conversation = conversation
+        conversation.setInterviewerPlaybackStopper { [weak coordinator] commandID in
+            guard let coordinator else { return }
+            try await coordinator.stop(commandID: commandID, reason: .bargeIn)
+        }
+        return coordinator
     }
 
     public func setSnapshotHandler(
@@ -227,17 +235,27 @@ public final class InterviewerSpeechCoordinator {
         knownInterviewerTurnIDs.formUnion(observedTurnIDs)
         publish(await session.snapshot())
 
-        guard readiness == .ready, !isMuted else { return }
+        guard readiness == .ready, !isMuted else {
+            if !newlyPersisted.isEmpty {
+                await conversation?.noteInterviewerPlaybackFinished()
+            }
+            return
+        }
         let pendingTurnIDs = Set(snapshot.interviewerUtterances.lazy.compactMap { utterance in
             utterance.lifecycle == .pending ? utterance.turnID : nil
         })
+        var queuedNewTurn = false
         for turnID in newlyPersisted {
             guard pendingTurnIDs.contains(turnID) else {
                 continue
             }
             if pendingAutomaticTurnIDSet.insert(turnID).inserted {
                 pendingAutomaticTurnIDs.append(turnID)
+                queuedNewTurn = true
             }
+        }
+        if queuedNewTurn {
+            await beginPlaybackCycle()
         }
         await startNextPendingAutomaticTurnIfEligible()
     }
@@ -341,21 +359,32 @@ public final class InterviewerSpeechCoordinator {
         )
     }
 
-    public func stop(commandID: CommandID) async throws {
+    public func stop(
+        commandID: CommandID,
+        reason: InterviewerSynthesisStopReason = .userStopped
+    ) async throws {
+        if reason == .bargeIn {
+            resetAutomaticDrainRetry()
+            pendingAutomaticTurnIDs.removeAll()
+            pendingAutomaticTurnIDSet.removeAll()
+        }
         await player.stop()
         isPlayingSavedAudio = false
         if let finalizer = cancellationFinalizer {
             try await finalizer.task.value
+            await endPlaybackCycle()
             return
         }
         guard let operation = activeOperation else {
+            await endPlaybackCycle()
             return
         }
         try await finalizeCancellation(
             of: operation,
             commandID: commandID,
-            reason: .userStopped
+            reason: reason
         )
+        await endPlaybackCycle()
     }
 
     /// Mute is a local preference, not Manifest history. Muting stops current
@@ -371,6 +400,7 @@ public final class InterviewerSpeechCoordinator {
         isPlayingSavedAudio = false
         if let finalizer = cancellationFinalizer {
             try await finalizer.task.value
+            await endPlaybackCycle()
             return
         }
         if let operation = activeOperation {
@@ -380,6 +410,7 @@ public final class InterviewerSpeechCoordinator {
                 reason: .muted
             )
         }
+        await endPlaybackCycle()
     }
 
     /// Plays only a selected, validated WAV. No provider call is possible.
@@ -407,12 +438,19 @@ public final class InterviewerSpeechCoordinator {
         ) else {
             throw InterviewerSpeechCoordinatorError.selectedAudioInvalid(utteranceID)
         }
-        try await player.play(
-            InterviewerSpeechPlaybackRequest(
-                sessionID: snapshot.sessionID,
-                artifact: audio
+        await beginPlaybackCycle()
+        do {
+            try await player.play(
+                InterviewerSpeechPlaybackRequest(
+                    sessionID: snapshot.sessionID,
+                    artifact: audio
+                )
             )
-        )
+        } catch {
+            await endPlaybackCycle()
+            throw error
+        }
+        await endPlaybackCycle()
     }
 
     /// Deterministic verification hook. Production presentation need not wait;
@@ -671,17 +709,21 @@ public final class InterviewerSpeechCoordinator {
                 await player.stop()
                 guard !Task.isCancelled else { return }
                 _ = try? await applyAndPublish(readyCommand)
+                await endPlaybackCycle()
                 return
             }
             lastGenerationMetrics = completion
+            await endPlaybackCycle()
         } catch is CancellationError {
-            // Stop/Mute owns the durable cancellation receipt. The cancelled
-            // Task performs no competing outcome transition.
+            // Stop/Mute owns the durable cancellation receipt and playback
+            // cycle. The cancelled Task performs no competing outcome
+            // transition.
         } catch {
             await player.stop()
             if finalizedAudio != nil {
                 // A valid final rename is recoverable on relaunch. Preserve
                 // the active durable authorization for adoption.
+                await endPlaybackCycle()
                 return
             }
             await audioStore.discardPartial(attemptID: request.attemptID)
@@ -710,6 +752,7 @@ public final class InterviewerSpeechCoordinator {
                     outcome: .failed(InterviewerSynthesisFailure(reason: reason))
                 )
             )
+            await endPlaybackCycle()
         }
     }
 
@@ -873,6 +916,17 @@ public final class InterviewerSpeechCoordinator {
             cancellationFinalizer = nil
         }
         await startNextPendingAutomaticTurnIfEligible()
+    }
+
+    private func beginPlaybackCycle() async {
+        playbackCycleActive = true
+        await conversation?.noteInterviewerPlaybackStarted()
+    }
+
+    private func endPlaybackCycle() async {
+        guard playbackCycleActive else { return }
+        playbackCycleActive = false
+        await conversation?.noteInterviewerPlaybackFinished()
     }
 
     private func interviewerTurn(turnID: TurnID) -> InterviewerTurn? {

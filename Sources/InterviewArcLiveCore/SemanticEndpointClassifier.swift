@@ -257,6 +257,7 @@ public enum EndpointGraceCancellationReason: String, Codable, Sendable, Equatabl
   case turnModeChanged = "turn_mode_changed"
   case boardActivity = "board_activity"
   case notesActivity = "notes_activity"
+  case floorHold = "floor_hold"
   case manualHandOff = "manual_hand_off"
   case sessionFinished = "session_finished"
   case interrupted

@@ -99,14 +99,18 @@ final class SystemDesignRoomModelTests: XCTestCase {
             codexRuntime: CodexRuntimeFixture(readiness: .ready)
         )
 
-        XCTAssertEqual(model.availableTurnModes, [.manual, .patientAuto])
+        XCTAssertEqual(
+            model.availableTurnModes,
+            [.continuousConversation, .patientAuto, .manual]
+        )
         XCTAssertFalse(model.availableTurnModes.contains(.cueOnly))
-        XCTAssertEqual(model.turnMode, .manual)
+        XCTAssertEqual(model.turnMode, .continuousConversation)
+        XCTAssertEqual(model.turnModeTitle(.continuousConversation), "Automatic")
         XCTAssertEqual(model.turnModeTitle(.manual), "Manual")
         XCTAssertEqual(model.turnModeTitle(.patientAuto), "Patient Auto")
         XCTAssertEqual(
-            model.endpointHandoffPresentation.detail,
-            "Semantic endpoint calls are off. Hand off remains explicit."
+            model.endpointHandoffPresentation.title,
+            "Automatic waits for your floor"
         )
     }
 

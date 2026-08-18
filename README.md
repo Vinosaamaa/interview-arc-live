@@ -14,11 +14,14 @@ artifacts remain private to this Mac. See
 
 Interview Arc Live is a standalone Swift package with a locally durable
 system-design room. One process-owned room model is retained across its full
-window and nonactivating compact controls. It records and recovers candidate
-segments, transcribes through Groq, supports durable Patient Auto Hand off,
-obtains canonical written interviewer turns through the locally authenticated
-Codex App Server, and can explicitly generate or replay a private local
-interviewer voice. Its full System Design room follows the checked-in issue #1
+window and nonactivating compact controls. New sessions default to Continuous
+Conversation: local VAD starts and finalizes Segments, semantic endpointing and
+Endpoint Grace can complete the canonical Hand off, and Hold floor / Send answer
+keeps a long answer from being interrupted. Patient Auto, Manual, and Cue Only
+remain compatibility modes. It records and recovers candidate segments,
+transcribes through Groq, obtains canonical written interviewer turns through the
+locally authenticated Codex App Server, and can explicitly generate or replay a
+private local interviewer voice. Its full System Design room follows the checked-in issue #1
 hierarchy and includes a functional Board with editable boxes, connectors,
 labels, freehand annotations, undo/redo, zoom, immutable revisions, exact Turn
 attachments, and private deterministic Draw.io/SVG/PNG exports. Its enhanced
@@ -80,12 +83,13 @@ npm run bundle
 The preview keeps its Session Manifest and source recordings under Live's local
 Application Support root. Manual Hand off joins selected Groq transcripts and
 uses the exactly preflighted, locally authenticated Codex App Server for one
-canonical interviewer response. Patient Auto classifies the accumulated answer
-after a newly completed Segment and, for a durable `likely_end`, starts one
-durable four-second Endpoint Grace before the same canonical Hand off. Keep my
-floor, resumed recording, Board or Notes activity, and a Turn Mode change cancel
-that grace. Acoustic VAD boundaries and hosted Interview Arc state remain later
-slices.
+canonical interviewer response. Continuous Conversation and Patient Auto classify
+the accumulated answer after a newly completed Segment and, for a durable
+`likely_end`, start one durable four-second Endpoint Grace before the same
+canonical Hand off unless a Floor Hold is active. Keep my floor, Hold floor,
+resumed recording, Board or Notes activity, and a Turn Mode change cancel that
+grace. Local acoustic segmentation starts and finalizes Segments without Record /
+Stop on the Continuous Conversation happy path.
 
 Interviewer speech is optional and never runs for historical turns
 automatically. The app discloses and downloads only the pinned

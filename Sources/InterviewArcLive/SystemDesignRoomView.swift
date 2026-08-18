@@ -197,7 +197,9 @@ struct SystemDesignRoomView: View {
         let endpointPresentation = model.endpointHandoffPresentation
         return Menu {
             Picker("Turn-taking", selection: turnModeRawSelection) {
-                ForEach(model.availableTurnModes, id: \.rawValue) { mode in
+                Text(model.turnModeTitle(.continuousConversation))
+                    .tag(TurnMode.continuousConversation.rawValue)
+                ForEach(model.advancedTurnModes, id: \.rawValue) { mode in
                     Text(model.turnModeTitle(mode)).tag(mode.rawValue)
                 }
             }
@@ -1017,7 +1019,8 @@ struct SystemDesignRoomView: View {
                 .help("Set the hosted activity result")
             }
 
-            if model.activeEndpointGrace != nil {
+            if model.activeEndpointGrace != nil,
+               model.turnMode != .continuousConversation {
                 Button {
                     Task { await model.keepMyFloor() }
                 } label: {
@@ -1038,6 +1041,34 @@ struct SystemDesignRoomView: View {
                 .help("Cancel automatic Hand off")
             }
 
+            if model.showsHoldFloorControl {
+                Button {
+                    Task { await model.toggleFloorHold() }
+                } label: {
+                    floorActionLabel(
+                        model.holdFloorTitle,
+                        systemImage: model.holdFloorSystemImage,
+                        compact: compact,
+                        wideMinimumWidth: 112
+                    )
+                }
+                .buttonStyle(RoomChromeButtonStyle())
+                .foregroundStyle(LivePalette.violet)
+                .disabled(!model.canToggleFloorHold)
+                .keyboardShortcut(.return, modifiers: [.command, .shift])
+                .frame(minHeight: FullRoomLayout.minimumActionHitTarget)
+                .accessibilityIdentifier(FullRoomAccessibility.holdFloorAction)
+                .accessibilityLabel(model.holdFloorTitle)
+                .accessibilityHint(
+                    model.isFloorHeld
+                        ? "Finalizes active speech, waits for durable transcripts, and Hands off once"
+                        : "Keeps the Candidate Floor across pauses until Send answer"
+                )
+                .accessibilityValue(
+                    model.isFloorHeld ? "Holding your floor" : "Automatic completion allowed"
+                )
+                .help(model.holdFloorTitle)
+            } else {
             Button {
                 Task { await model.performPrimaryAction() }
             } label: {
@@ -1055,6 +1086,7 @@ struct SystemDesignRoomView: View {
             .accessibilityLabel(model.actionTitle)
             .accessibilityHint(floorState.primaryActionHint)
             .help(model.actionTitle)
+            }
 
             if model.canStopRecording {
                 headerDivider
@@ -1075,6 +1107,25 @@ struct SystemDesignRoomView: View {
                 .accessibilityIdentifier(FullRoomAccessibility.recordingAction)
                 .accessibilityLabel("Pause recording")
                 .help("Pause recording")
+            } else if model.showsHoldFloorControl {
+                headerDivider
+                Button {
+                    Task { await model.pauseMicrophone() }
+                } label: {
+                    floorActionLabel(
+                        "Pause",
+                        systemImage: "pause.fill",
+                        compact: compact,
+                        wideMinimumWidth: 86
+                    )
+                }
+                .buttonStyle(RoomChromeButtonStyle())
+                .foregroundStyle(LivePalette.navy)
+                .disabled(model.isWorking)
+                .keyboardShortcut(.space, modifiers: [.command])
+                .accessibilityIdentifier(FullRoomAccessibility.recordingAction)
+                .accessibilityLabel("Pause microphone")
+                .help("Pause microphone")
             } else if model.showsRecordControl {
                 headerDivider
                 Button {
@@ -1660,6 +1711,7 @@ enum FullRoomAccessibility {
     static let floorRail = "full-room-floor-rail"
     static let primaryAction = "full-room-primary-action"
     static let keepFloorAction = "full-room-keep-floor-action"
+    static let holdFloorAction = "full-room-hold-floor-action"
     static let recordingAction = "full-room-recording-action"
     static let endAction = "full-room-end-action"
     static let finishNextAction = "full-room-finish-next-action"
@@ -1671,6 +1723,8 @@ enum FullRoomAccessibility {
         board,
         floorRail,
         primaryAction,
+        keepFloorAction,
+        holdFloorAction,
         recordingAction,
         endAction,
         finishNextAction,
