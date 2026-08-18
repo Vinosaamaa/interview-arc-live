@@ -30,7 +30,8 @@ final class ContinuousConversationTests: XCTestCase {
             manifestStore: store,
             interviewerRuntime: SilentInterviewerRuntime()
         )
-        XCTAssertEqual(await created.snapshot().turnMode, .manual)
+        let createdMode = await created.snapshot().turnMode
+        XCTAssertEqual(createdMode, .manual)
 
         let restored = try await InterviewRoomSession.restore(
             sessionID: sessionID,
@@ -80,10 +81,8 @@ final class ContinuousConversationTests: XCTestCase {
                 expectedBoardAttachment: .noBoard
             )
         )
-        XCTAssertEqual(
-            await session.snapshot().endpointGraces.last?.lifecycle,
-            .pending
-        )
+        let pendingLifecycle = await session.snapshot().endpointGraces.last?.lifecycle
+        XCTAssertEqual(pendingLifecycle, .pending)
 
         let held = try await session.execute(
             .activateFloorHold(commandID: CommandID("hold-1"))
@@ -145,7 +144,8 @@ final class ContinuousConversationTests: XCTestCase {
         XCTAssertEqual(sent.floorHolds.last?.lifecycle, .released)
         XCTAssertEqual(sent.floorHolds.last?.releaseReason, .sendAnswer)
         XCTAssertEqual(sent.phase, .interviewerTurn)
-        XCTAssertEqual(await runtime.invocationCount(), 1)
+        let invocations = await runtime.invocationCount()
+        XCTAssertEqual(invocations, 1)
         XCTAssertEqual(sent.turns.count, 2)
     }
 
@@ -261,7 +261,8 @@ final class ContinuousConversationTests: XCTestCase {
         fixture.segmenter.emit(.ignoredNoise)
         try await Task.sleep(for: .milliseconds(40))
         XCTAssertEqual(fixture.coordinator.snapshot.phase, .interviewerTurn)
-        XCTAssertEqual(fixture.stopper.stopCount, 0)
+        let ignoredNoiseStops = await fixture.stopper.stopCount
+        XCTAssertEqual(ignoredNoiseStops, 0)
         XCTAssertEqual(fixture.recorder.beginCount, 1)
         XCTAssertTrue(
             fixture.tracer.events.contains { $0.resultCode == "ignored_noise" }
@@ -296,7 +297,8 @@ final class ContinuousConversationTests: XCTestCase {
             fixture.coordinator.snapshot.phase == .candidateFloor
                 && fixture.recorder.beginCount == 2
         }
-        XCTAssertEqual(fixture.stopper.stopCount, 1)
+        let bargeInStops = await fixture.stopper.stopCount
+        XCTAssertEqual(bargeInStops, 1)
         XCTAssertEqual(fixture.coordinator.snapshot.phase, .candidateFloor)
         XCTAssertTrue(
             fixture.tracer.events.contains { $0.resultCode == "barge_in_confirmed" }
@@ -328,7 +330,8 @@ final class ContinuousConversationTests: XCTestCase {
 
         XCTAssertEqual(fixture.coordinator.snapshot.phase, .candidateFloor)
         XCTAssertEqual(fixture.segmenter.mode, .candidateListening)
-        XCTAssertEqual(fixture.stopper.stopCount, 0)
+        let finishedStops = await fixture.stopper.stopCount
+        XCTAssertEqual(finishedStops, 0)
         XCTAssertEqual(fixture.recorder.beginCount, 1)
     }
 
@@ -550,22 +553,11 @@ private struct BargeInFixture {
     let tracer: CapturingConversationBoundaryTracer
 }
 
-private final class CountingPlaybackStopper: @unchecked Sendable {
-    private let lock = NSLock()
-    private var _stopCount = 0
-    private var _commandIDs: [CommandID] = []
+private actor CountingPlaybackStopper {
+    private(set) var stopCount = 0
 
-    var stopCount: Int {
-        lock.lock()
-        defer { lock.unlock() }
-        return _stopCount
-    }
-
-    func stop(commandID: CommandID) async {
-        lock.lock()
-        _stopCount += 1
-        _commandIDs.append(commandID)
-        lock.unlock()
+    func stop(commandID _: CommandID) {
+        stopCount += 1
     }
 }
 
