@@ -41,6 +41,7 @@ enum BehavioralRoomAccessibility {
     static let returnToInterviewer = "behavioral-room-return-to-interviewer"
     static let floorRail = "behavioral-room-floor-rail"
     static let primaryAction = "behavioral-room-primary-action"
+    static let holdFloorAction = "behavioral-room-hold-floor-action"
     static let recordingAction = "behavioral-room-recording-action"
     static let hostedPause = "behavioral-room-hosted-pause"
     static let endAction = "behavioral-room-end-action"
@@ -64,6 +65,7 @@ enum BehavioralRoomAccessibility {
         returnToInterviewer,
         floorRail,
         primaryAction,
+        holdFloorAction,
         recordingAction,
         hostedPause,
         endAction,
@@ -801,6 +803,7 @@ struct BehavioralRoomView: View {
                 .frame(minWidth: 140, maxWidth: .infinity)
                 .frame(height: FullRoomLayout.minimumActionHitTarget)
 
+            if !model.showsHoldFloorControl {
             Button {
                 Task { await model.performPrimaryAction() }
             } label: {
@@ -812,6 +815,20 @@ struct BehavioralRoomView: View {
             .accessibilityIdentifier(BehavioralRoomAccessibility.primaryAction)
             .accessibilityLabel(model.actionTitle)
             .help(model.actionTitle)
+            }
+
+            if model.showsHoldFloorControl {
+                Button {
+                    Task { await model.toggleFloorHold() }
+                } label: {
+                    floorLabel(model.holdFloorTitle, systemImage: "hand.raised.fill", minWidth: 112)
+                }
+                .buttonStyle(BehavioralChromeButtonStyle())
+                .disabled(!model.canToggleFloorHold)
+                .frame(minHeight: FullRoomLayout.minimumActionHitTarget)
+                .accessibilityIdentifier(BehavioralRoomAccessibility.holdFloorAction)
+                .accessibilityLabel(model.holdFloorTitle)
+            }
 
             if model.canStopRecording {
                 Button {

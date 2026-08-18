@@ -43,7 +43,7 @@ struct EndpointHandoffPresentation: Equatable {
     }
 
     static func make(input: Input) -> EndpointHandoffPresentation {
-        guard input.turnMode == .patientAuto else {
+        guard input.turnMode.usesAutomaticEndpointCompletion else {
             return EndpointHandoffPresentation(
                 title: "Manual turn-taking",
                 detail: "Semantic endpoint calls are off. Hand off remains explicit.",
@@ -52,8 +52,11 @@ struct EndpointHandoffPresentation: Equatable {
             )
         }
         guard input.phase == .candidateFloor else {
+            let modeTitle = input.turnMode == .continuousConversation
+                ? "Automatic"
+                : "Patient Auto"
             return EndpointHandoffPresentation(
-                title: "Patient Auto waits for your floor",
+                title: "\(modeTitle) waits for your floor",
                 detail: "Automatic Hand off only runs during the Candidate Floor.",
                 systemImage: "hourglass",
                 tone: .neutral
@@ -80,7 +83,9 @@ struct EndpointHandoffPresentation: Equatable {
             case .pending:
                 return EndpointHandoffPresentation(
                     title: "Handing off in 4 seconds",
-                    detail: "Choose Keep my floor or begin recording to cancel automatic Hand off.",
+                    detail: input.turnMode == .continuousConversation
+                        ? "Choose Hold floor to cancel automatic Hand off."
+                        : "Choose Keep my floor or begin recording to cancel automatic Hand off.",
                     systemImage: "timer",
                     tone: .working
                 )
@@ -139,6 +144,13 @@ struct EndpointHandoffPresentation: Equatable {
                 title: "Patient Auto cancelled when speech resumed",
                 detail: "Finish the new Segment before Patient Auto checks again.",
                 systemImage: "waveform",
+                tone: .advisory
+            )
+        case .floorHold:
+            return EndpointHandoffPresentation(
+                title: "Holding your floor",
+                detail: "Automatic Hand off stays suppressed until Send answer.",
+                systemImage: "hand.raised.fill",
                 tone: .advisory
             )
         case .turnModeChanged, .manualHandOff, .sessionFinished, nil:

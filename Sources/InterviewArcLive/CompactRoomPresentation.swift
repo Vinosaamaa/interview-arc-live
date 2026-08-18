@@ -4,6 +4,7 @@ enum CompactRoomAction: String, CaseIterable, Hashable {
     case recordSegment
     case stopRecording
     case keepFloor
+    case holdFloor
     case primaryPhaseAction
     case stopSpeech
     case toggleSpeechMute
@@ -42,6 +43,10 @@ struct CompactRoomPresentation: Equatable {
         var recordTitle: String
         var showsKeepFloor: Bool
         var canKeepFloor: Bool
+        var showsHoldFloor: Bool
+        var canToggleFloorHold: Bool
+        var holdFloorTitle: String
+        var holdFloorSystemImage: String
         var phaseActionTitle: String
         var phaseActionSystemImage: String
         var canPerformPhaseAction: Bool
@@ -66,6 +71,10 @@ struct CompactRoomPresentation: Equatable {
             recordTitle: String = "Record segment",
             showsKeepFloor: Bool = false,
             canKeepFloor: Bool = false,
+            showsHoldFloor: Bool = false,
+            canToggleFloorHold: Bool = false,
+            holdFloorTitle: String = "Hold floor",
+            holdFloorSystemImage: String = "hand.raised.fill",
             phaseActionTitle: String = "Hand off",
             phaseActionSystemImage: String = "arrowshape.right.circle.fill",
             canPerformPhaseAction: Bool = false,
@@ -89,6 +98,10 @@ struct CompactRoomPresentation: Equatable {
             self.recordTitle = recordTitle
             self.showsKeepFloor = showsKeepFloor
             self.canKeepFloor = canKeepFloor
+            self.showsHoldFloor = showsHoldFloor
+            self.canToggleFloorHold = canToggleFloorHold
+            self.holdFloorTitle = holdFloorTitle
+            self.holdFloorSystemImage = holdFloorSystemImage
             self.phaseActionTitle = phaseActionTitle
             self.phaseActionSystemImage = phaseActionSystemImage
             self.canPerformPhaseAction = canPerformPhaseAction
@@ -114,6 +127,10 @@ struct CompactRoomPresentation: Equatable {
 
     var phaseControl: CompactRoomControl? {
         controls.first { $0.action == .primaryPhaseAction }
+    }
+
+    var holdFloorControl: CompactRoomControl? {
+        controls.first { $0.action == .holdFloor }
     }
 
     var keepFloorControl: CompactRoomControl? {
@@ -186,9 +203,26 @@ struct CompactRoomPresentation: Equatable {
                     )
                 )
             }
+
+            if input.showsHoldFloor {
+                controls.append(
+                    CompactRoomControl(
+                        action: .holdFloor,
+                        title: input.holdFloorTitle,
+                        systemImage: input.holdFloorSystemImage,
+                        isEnabled: input.canToggleFloorHold,
+                        accessibilityHint: input.holdFloorTitle == "Send answer"
+                            ? "Finalizes active speech, waits for durable transcripts, and Hands off once."
+                            : "Keeps the Candidate Floor across pauses until Send answer.",
+                        accessibilityValue: input.holdFloorTitle == "Send answer"
+                            ? "Holding your floor"
+                            : "Automatic completion allowed"
+                    )
+                )
+            }
         }
 
-        if input.phase == .candidateFloor
+        if (input.phase == .candidateFloor && !input.showsHoldFloor)
             || input.phase == .interviewerProcessing
             || input.phase == .interviewerTurn {
             controls.append(
@@ -278,8 +312,12 @@ extension SystemDesignRoomModel {
                 showsRecordControl: showsRecordControl,
                 canRecordSegment: canRecordSegment,
                 recordTitle: recordActionTitle,
-                showsKeepFloor: pendingGrace != nil,
+                showsKeepFloor: pendingGrace != nil && snapshot?.turnMode != .continuousConversation,
                 canKeepFloor: keepFloorIsEnabled,
+                showsHoldFloor: showsHoldFloorControl,
+                canToggleFloorHold: canToggleFloorHold,
+                holdFloorTitle: holdFloorTitle,
+                holdFloorSystemImage: holdFloorSystemImage,
                 phaseActionTitle: actionTitle,
                 phaseActionSystemImage: actionIcon,
                 canPerformPhaseAction: canAct,

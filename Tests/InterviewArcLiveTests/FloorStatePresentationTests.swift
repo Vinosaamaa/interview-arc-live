@@ -50,6 +50,31 @@ final class FloorStatePresentationTests: XCTestCase {
                 attentionMessage: "Local speech needs attention"
             ),
             .init(phase: .completed, statusMessage: "Session complete"),
+            .init(
+                phase: .candidateFloor,
+                turnMode: .continuousConversation
+            ),
+            .init(
+                phase: .candidateFloor,
+                candidateSegmentLifecycles: [.recording],
+                canStopRecording: true,
+                turnMode: .continuousConversation
+            ),
+            .init(
+                phase: .candidateFloor,
+                turnMode: .continuousConversation,
+                isCheckingAnswer: true
+            ),
+            .init(
+                phase: .candidateFloor,
+                turnMode: .continuousConversation,
+                isFloorHeld: true
+            ),
+            .init(
+                phase: .candidateFloor,
+                statusMessage: "Handing off",
+                turnMode: .continuousConversation
+            ),
         ]
         let reached = inputs.map { FloorStatePresentation.make(input: $0).statusKind }
 

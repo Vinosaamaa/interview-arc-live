@@ -43,6 +43,19 @@ struct CompactBehavioralRoomView: View {
 
             Spacer(minLength: 4)
 
+            if let hold = presentation.holdFloorControl {
+                Button {
+                    Task { await model.toggleFloorHold() }
+                } label: {
+                    Label(hold.title, systemImage: hold.systemImage)
+                        .font(.system(size: 13, weight: .semibold, design: .rounded))
+                        .frame(minHeight: FullRoomLayout.minimumActionHitTarget)
+                }
+                .buttonStyle(.bordered)
+                .disabled(!hold.isEnabled)
+                .accessibilityLabel(hold.title)
+            }
+
             if let phase = presentation.phaseControl {
                 Button {
                     Task { await model.performPrimaryAction() }

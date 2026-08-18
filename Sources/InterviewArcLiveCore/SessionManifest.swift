@@ -209,6 +209,18 @@ public enum TurnMode: String, Codable, Sendable, Equatable {
     case cueOnly
     case patientAuto
     case manual
+    case continuousConversation = "continuous_conversation"
+
+    public static let defaultForNewSession = TurnMode.continuousConversation
+
+    public var usesAutomaticEndpointCompletion: Bool {
+        switch self {
+        case .patientAuto, .continuousConversation:
+            true
+        case .cueOnly, .manual:
+            false
+        }
+    }
 }
 
 public enum TranscriptQuality: String, Codable, Sendable, Equatable {
@@ -350,12 +362,17 @@ public struct SessionManifest: Codable, Sendable, Equatable {
     public let segments: [CandidateSegment]
     public let endpointEvaluations: [EndpointEvaluation]
     public let endpointGraces: [EndpointGrace]
+    public let floorHolds: [FloorHold]
     public let interviewerUtterances: [InterviewerUtterance]
     public let board: BoardWorkspace
     public let candidateNotes: CandidateNotes
     public let revision: Int
 
     let appliedCommands: [AppliedCommandRecord]
+
+    public var activeFloorHold: FloorHold? {
+        floorHolds.activeHold
+    }
 
     init(
         sessionID: SessionID,
@@ -367,6 +384,7 @@ public struct SessionManifest: Codable, Sendable, Equatable {
         segments: [CandidateSegment] = [],
         endpointEvaluations: [EndpointEvaluation] = [],
         endpointGraces: [EndpointGrace] = [],
+        floorHolds: [FloorHold] = [],
         interviewerUtterances: [InterviewerUtterance] = [],
         board: BoardWorkspace = .empty,
         candidateNotes: CandidateNotes = .empty,
@@ -382,6 +400,7 @@ public struct SessionManifest: Codable, Sendable, Equatable {
         self.segments = segments
         self.endpointEvaluations = endpointEvaluations
         self.endpointGraces = endpointGraces
+        self.floorHolds = floorHolds
         self.interviewerUtterances = interviewerUtterances
         self.board = board
         self.candidateNotes = candidateNotes
@@ -399,6 +418,7 @@ public struct SessionManifest: Codable, Sendable, Equatable {
         case segments
         case endpointEvaluations
         case endpointGraces
+        case floorHolds
         case interviewerUtterances
         case board
         case candidateNotes
@@ -422,6 +442,10 @@ public struct SessionManifest: Codable, Sendable, Equatable {
         endpointGraces = try container.decodeIfPresent(
             [EndpointGrace].self,
             forKey: .endpointGraces
+        ) ?? []
+        floorHolds = try container.decodeIfPresent(
+            [FloorHold].self,
+            forKey: .floorHolds
         ) ?? []
         interviewerUtterances = try container.decodeIfPresent(
             [InterviewerUtterance].self,
@@ -450,6 +474,7 @@ public struct SessionManifest: Codable, Sendable, Equatable {
         try container.encode(segments, forKey: .segments)
         try container.encode(endpointEvaluations, forKey: .endpointEvaluations)
         try container.encode(endpointGraces, forKey: .endpointGraces)
+        try container.encode(floorHolds, forKey: .floorHolds)
         try container.encode(interviewerUtterances, forKey: .interviewerUtterances)
         try container.encode(board, forKey: .board)
         try container.encode(candidateNotes, forKey: .candidateNotes)
@@ -469,10 +494,19 @@ public struct InterviewRoomSnapshot: Sendable, Equatable {
     public let segments: [CandidateSegment]
     public let endpointEvaluations: [EndpointEvaluation]
     public let endpointGraces: [EndpointGrace]
+    public let floorHolds: [FloorHold]
     public let interviewerUtterances: [InterviewerUtterance]
     public let board: BoardWorkspace
     public let candidateNotes: CandidateNotes
     public let revision: Int
+
+    public var activeFloorHold: FloorHold? {
+        floorHolds.activeHold
+    }
+
+    public var isFloorHeld: Bool {
+        activeFloorHold != nil
+    }
 
     init(manifest: SessionManifest) {
         sessionID = manifest.sessionID
@@ -484,6 +518,7 @@ public struct InterviewRoomSnapshot: Sendable, Equatable {
         segments = manifest.segments
         endpointEvaluations = manifest.endpointEvaluations
         endpointGraces = manifest.endpointGraces
+        floorHolds = manifest.floorHolds
         interviewerUtterances = manifest.interviewerUtterances
         board = manifest.board
         candidateNotes = manifest.candidateNotes

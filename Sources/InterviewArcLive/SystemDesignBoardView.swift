@@ -12,7 +12,6 @@ struct SystemDesignBoardView: View {
     @State private var editingText = ""
     @State private var interactionFeedback: String?
     @State private var isRevisionHistoryPresented = false
-    @State private var enhancedEditorIsReady = false
     @State private var enhancedEditorFailure: String?
     @State private var enhancedEditorAttemptID = UUID()
     @FocusState private var isCanvasFocused: Bool
@@ -26,7 +25,7 @@ struct SystemDesignBoardView: View {
     private var showsNativeBoardRevisionControls: Bool {
         BoardRailPresentation.showsNativeRevisionControls(
             selectedWorkSurface: model.selectedWorkSurface,
-            enhancedEditorIsReady: enhancedEditorIsReady
+            enhancedEditorIsReady: enhancedEditorFailure == nil
         )
     }
 
@@ -38,6 +37,16 @@ struct SystemDesignBoardView: View {
         }
         .background(BoardPalette.canvas)
         .foregroundStyle(BoardPalette.navy)
+        .onAppear {
+            ExcalidrawBoardDiagnostics.record(kind: "board-view-appear")
+            recordBoardDiagnostic(boardDiagnosticState)
+        }
+        .onChange(of: boardDiagnosticState) { _, state in
+            recordBoardDiagnostic(state)
+        }
+        .onDisappear {
+            ExcalidrawBoardDiagnostics.record(kind: "board-view-disappear")
+        }
         .sheet(isPresented: $isRevisionHistoryPresented) {
             revisionHistoryBrowser
         }
@@ -46,7 +55,7 @@ struct SystemDesignBoardView: View {
                 from: previous,
                 to: current
             ) else { return }
-            enhancedEditorIsReady = false
+            enhancedEditorBridgeController.resetEditorSession()
             enhancedEditorAttemptID = UUID()
         }
         .onDeleteCommand {
@@ -158,7 +167,7 @@ struct SystemDesignBoardView: View {
             workSurfaceSwitcher(compact: compact)
             if compact {
                 if model.selectedWorkSurface == .board,
-                   !enhancedEditorIsReady {
+                   enhancedEditorFailure != nil {
                     revisionStatus(compact: true)
                 } else {
                     workSurfaceStatus(compact: true)
@@ -303,7 +312,7 @@ struct SystemDesignBoardView: View {
 
     private var revisionStatusIcon: String {
         if model.boardErrorMessage != nil { return "exclamationmark.triangle.fill" }
-        if model.isBoardSaving { return "arrow.triangle.2.circlepath" }
+        if model.isBoardRevisionSaving { return "arrow.triangle.2.circlepath" }
         if model.isInspectingBoardRevision { return "lock.fill" }
         if model.isBoardDraftDirty { return "circle.dotted" }
         return "checkmark.circle.fill"
@@ -962,7 +971,7 @@ struct SystemDesignBoardView: View {
                 .overlay(alignment: .topTrailing) {
                     Button {
                         enhancedEditorFailure = nil
-                        enhancedEditorIsReady = false
+                        enhancedEditorBridgeController.resetEditorSession()
                         enhancedEditorAttemptID = UUID()
                         interactionFeedback = "Retrying the local Excalidraw canvas"
                     } label: {
@@ -993,6 +1002,20 @@ struct SystemDesignBoardView: View {
                 isReadOnly: model.isInspectingBoardRevision,
                 bridgeController: enhancedEditorBridgeController,
                 onSceneChange: { decoded in
+                    ExcalidrawBoardDiagnostics.record(
+                        kind: "board-scene-callback-before",
+                        fields: [
+                            "decodedHasSelection": decoded.selectedElementID
+                                != nil,
+                            "modelHasSelection": model.boardEditor
+                                .selectedElementID != nil,
+                            "decodedMatchesModel": decoded.selectedElementID
+                                == model.boardEditor.selectedElementID,
+                            "presentationMatchesModel": model
+                                .boardSelectedElementIDForPresentation
+                                == model.boardEditor.selectedElementID,
+                        ]
+                    )
                     let previousIDs = Set(
                         model.boardEditor.document.elements.map(\.id)
                     )
@@ -1003,6 +1026,21 @@ struct SystemDesignBoardView: View {
                         )
                     )
                     let accepted = model.boardEditor.document == decoded.document
+                    ExcalidrawBoardDiagnostics.record(
+                        kind: "board-scene-callback-after",
+                        fields: [
+                            "accepted": accepted,
+                            "decodedHasSelection": decoded.selectedElementID
+                                != nil,
+                            "modelHasSelection": model.boardEditor
+                                .selectedElementID != nil,
+                            "decodedMatchesModel": decoded.selectedElementID
+                                == model.boardEditor.selectedElementID,
+                            "presentationMatchesModel": model
+                                .boardSelectedElementIDForPresentation
+                                == model.boardEditor.selectedElementID,
+                        ]
+                    )
                     guard accepted else { return false }
                     if let zoom = decoded.zoom,
                        abs(zoom - model.boardEditor.zoom) > 0.000_1 {
@@ -1026,8 +1064,7 @@ struct SystemDesignBoardView: View {
                 onReady: {
                     guard attemptID == enhancedEditorAttemptID,
                           model.selectedWorkSurface == .board else { return }
-                    enhancedEditorIsReady = true
-                    interactionFeedback = "Enhanced canvas ready · edits stay local"
+                    ExcalidrawBoardDiagnostics.record(kind: "editor-ready-callback")
                 },
                 onIssue: { message in
                     guard attemptID == enhancedEditorAttemptID,
@@ -1037,28 +1074,60 @@ struct SystemDesignBoardView: View {
                 onFailure: { message in
                     guard attemptID == enhancedEditorAttemptID,
                           model.selectedWorkSurface == .board else { return }
+                    ExcalidrawBoardDiagnostics.record(
+                        kind: "editor-failure-callback",
+                        fields: ["message": message]
+                    )
                     enhancedEditorFailure = message
-                    enhancedEditorIsReady = false
                     interactionFeedback = "\(message) Using the native canvas."
                 }
             )
             .id(attemptID)
             .accessibilityHidden(true)
 
-            if !enhancedEditorIsReady {
-                HStack(spacing: 8) {
-                    ProgressView()
-                        .controlSize(.small)
-                    Text("Loading the local canvas…")
-                }
-                .font(.system(.caption, design: .rounded, weight: .medium))
-                .foregroundStyle(BoardPalette.muted)
-                .padding(12)
-                .accessibilityElement(children: .combine)
-                .accessibilityLabel("Loading the local Board canvas")
-            }
         }
         .background(BoardPalette.canvas)
+    }
+
+    private struct BoardDiagnosticState: Equatable {
+        let surface: String
+        let hasFailure: Bool
+        let isSaving: Bool
+        let revisionStatus: String
+        let feedback: String
+        let elementCount: Int
+        let modelHasSelection: Bool
+        let presentationMatchesModel: Bool
+    }
+
+    private var boardDiagnosticState: BoardDiagnosticState {
+        BoardDiagnosticState(
+            surface: model.selectedWorkSurface.rawValue,
+            hasFailure: enhancedEditorFailure != nil,
+            isSaving: model.isBoardSaving,
+            revisionStatus: model.boardRevisionStatusPresentation.fullText,
+            feedback: interactionFeedback ?? "none",
+            elementCount: model.boardEditor.document.elements.count,
+            modelHasSelection: model.boardEditor.selectedElementID != nil,
+            presentationMatchesModel: model.boardSelectedElementIDForPresentation
+                == model.boardEditor.selectedElementID
+        )
+    }
+
+    private func recordBoardDiagnostic(_ state: BoardDiagnosticState) {
+        ExcalidrawBoardDiagnostics.record(
+            kind: "board-body",
+            fields: [
+                "surface": state.surface,
+                "hasFailure": state.hasFailure,
+                "isSaving": state.isSaving,
+                "revisionStatus": state.revisionStatus,
+                "feedback": state.feedback,
+                "elementCount": state.elementCount,
+                "modelHasSelection": state.modelHasSelection,
+                "presentationMatchesModel": state.presentationMatchesModel,
+            ]
+        )
     }
 
     private func nativeCanvas(showsStatusOverlays: Bool) -> some View {

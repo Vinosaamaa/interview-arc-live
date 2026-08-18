@@ -32,7 +32,7 @@ struct LiveInterviewerSpeechDependencies {
 }
 
 enum BoardRevisionStatusPresentation: Equatable, Sendable {
-    case saving
+    case savingRevision
     case error(String)
     case draftNotSaved
     case unsaved
@@ -42,7 +42,7 @@ enum BoardRevisionStatusPresentation: Equatable, Sendable {
 
     var fullText: String {
         switch self {
-        case .saving: "Saving board…"
+        case .savingRevision: "Saving revision…"
         case .error(let message): message
         case .draftNotSaved: "Draft not saved"
         case .unsaved: "Unsaved board"
@@ -57,7 +57,7 @@ enum BoardRevisionStatusPresentation: Equatable, Sendable {
 
     var compactText: String {
         switch self {
-        case .saving: "Saving…"
+        case .savingRevision: "Saving revision…"
         case .error: "Board issue"
         case .draftNotSaved: "Draft unsaved"
         case .unsaved: "Unsaved"
@@ -132,6 +132,7 @@ final class SystemDesignRoomModel: ObservableObject {
     @Published private(set) var speechErrorMessage: String?
     @Published private(set) var boardEditor = BoardEditorState(document: .empty)
     @Published private(set) var isBoardSaving = false
+    @Published private(set) var isBoardRevisionSaving = false
     @Published private(set) var isBoardExporting = false
     @Published private(set) var boardErrorMessage: String?
     @Published private(set) var boardExportMessage: String?
@@ -470,11 +471,15 @@ final class SystemDesignRoomModel: ObservableObject {
     }
 
     var availableTurnModes: [TurnMode] {
-        [.manual, .patientAuto]
+        [.continuousConversation, .patientAuto, .manual]
+    }
+
+    var advancedTurnModes: [TurnMode] {
+        [.patientAuto, .manual]
     }
 
     var turnMode: TurnMode {
-        snapshot?.turnMode ?? .manual
+        snapshot?.turnMode ?? .continuousConversation
     }
 
     var canSelectTurnMode: Bool {
@@ -486,12 +491,58 @@ final class SystemDesignRoomModel: ObservableObject {
 
     func turnModeTitle(_ mode: TurnMode) -> String {
         switch mode {
+        case .continuousConversation:
+            return "Automatic"
         case .manual:
             return "Manual"
         case .patientAuto:
             return "Patient Auto"
         case .cueOnly:
             return "Cue Only"
+        }
+    }
+
+    var isFloorHeld: Bool {
+        snapshot?.isFloorHeld == true
+    }
+
+    var showsHoldFloorControl: Bool {
+        snapshot?.turnMode == .continuousConversation
+            && snapshot?.phase == .candidateFloor
+            && !showsManualCaptureRecovery
+    }
+
+    var holdFloorTitle: String {
+        isFloorHeld ? "Send answer" : "Hold floor"
+    }
+
+    var holdFloorSystemImage: String {
+        isFloorHeld ? "paperplane.fill" : "hand.raised.fill"
+    }
+
+    var canToggleFloorHold: Bool {
+        guard showsHoldFloorControl,
+              !isWorking,
+              !hasPendingLocalPersistence,
+              isHostedWritable else { return false }
+        if isFloorHeld {
+            let unresolved = draftSegments.contains {
+                $0.lifecycle != .excluded && $0.selectedCandidate == nil
+            }
+            let hasSelected = draftSegments.contains {
+                $0.lifecycle != .excluded && $0.selectedCandidate != nil
+            }
+            return hasSelected && !unresolved && boardAttachmentForHandOff != nil
+        }
+        return true
+    }
+
+    var showsManualCaptureRecovery: Bool {
+        guard snapshot?.turnMode == .continuousConversation else { return false }
+        if !hasUsableGroqCredential { return true }
+        return draftSegments.contains {
+            $0.lifecycle == .failed
+                || ($0.lifecycle == .audioReady && $0.selectedCandidate == nil)
         }
     }
 
@@ -513,7 +564,7 @@ final class SystemDesignRoomModel: ObservableObject {
         guard let snapshot else {
             return EndpointHandoffPresentation.make(
                 input: EndpointHandoffPresentation.Input(
-                    turnMode: .manual,
+                    turnMode: .continuousConversation,
                     phase: nil,
                     currentEvaluation: nil,
                     endpointGrace: nil,
@@ -611,11 +662,11 @@ final class SystemDesignRoomModel: ObservableObject {
     }
 
     var boardRevisionStatusPresentation: BoardRevisionStatusPresentation {
-        if isBoardSaving { return .saving }
         if let boardErrorMessage { return .error(boardErrorMessage) }
         if let inspectedBoardRevision {
             return .viewing(revision: inspectedBoardRevision.ordinal + 1)
         }
+        if isBoardRevisionSaving { return .savingRevision }
         guard let latestBoardRevision else {
             return boardEditor.document.elements.isEmpty
                 ? .draftNotSaved
@@ -662,7 +713,7 @@ final class SystemDesignRoomModel: ObservableObject {
             phase: snapshot?.phase,
             isWorking: isWorking,
             isInspectingRevision: isInspectingBoardRevision,
-            isSaving: hasPendingLocalPersistence,
+            isRevisionSaving: isBoardRevisionSaving,
             isExporting: isBoardExporting
         )
     }
@@ -672,7 +723,7 @@ final class SystemDesignRoomModel: ObservableObject {
         phase: InterviewRoomPhase?,
         isWorking: Bool,
         isInspectingRevision: Bool,
-        isSaving: Bool,
+        isRevisionSaving: Bool,
         isExporting: Bool
     ) -> Bool {
         coordinatorIsAvailable
@@ -680,7 +731,7 @@ final class SystemDesignRoomModel: ObservableObject {
             && phase != .completed
             && !isWorking
             && !isInspectingRevision
-            && !isSaving
+            && !isRevisionSaving
             && !isExporting
     }
 
@@ -717,8 +768,31 @@ final class SystemDesignRoomModel: ObservableObject {
 
         do {
             var updated = boardEditor
+            if case .replaceDocument(_, let requestedSelection) = action {
+                ExcalidrawBoardDiagnostics.record(
+                    kind: "board-replace-before",
+                    fields: [
+                        "requestedHasSelection": requestedSelection != nil,
+                        "modelHasSelection": boardEditor.selectedElementID != nil,
+                        "selectionMatches": requestedSelection
+                            == boardEditor.selectedElementID,
+                    ]
+                )
+            }
             let mutation = try updated.applyReportingMutation(action)
             boardEditor = updated
+            if case .replaceDocument(_, let requestedSelection) = action {
+                ExcalidrawBoardDiagnostics.record(
+                    kind: "board-replace-after",
+                    fields: [
+                        "requestedHasSelection": requestedSelection != nil,
+                        "modelHasSelection": boardEditor.selectedElementID != nil,
+                        "selectionMatches": requestedSelection
+                            == boardEditor.selectedElementID,
+                        "documentChanged": mutation.documentChanged,
+                    ]
+                )
+            }
             boardErrorMessage = nil
             if mutation.documentChanged {
                 persistBoardDraft(updated.document)
@@ -773,12 +847,15 @@ final class SystemDesignRoomModel: ObservableObject {
     }
 
     func saveBoardRevision() async {
-        guard !hasPendingLocalPersistence,
-              canSaveBoardRevision,
+        guard canSaveBoardRevision,
               let coordinator else { return }
+        isBoardRevisionSaving = true
         beginBoardWork()
         boardErrorMessage = nil
-        defer { endBoardWork() }
+        defer {
+            endBoardWork()
+            isBoardRevisionSaving = false
+        }
 
         await waitForBoardPersistence()
         guard coordinator.snapshot.board.draft == boardEditor.document else {
@@ -964,10 +1041,24 @@ final class SystemDesignRoomModel: ObservableObject {
             return
         }
         let previous = localPersistenceTail
+        ExcalidrawBoardDiagnostics.record(
+            kind: "board-persistence-queued",
+            fields: [
+                "modelHasSelection": boardEditor.selectedElementID != nil,
+                "elementCount": document.elements.count,
+            ]
+        )
         beginBoardWork()
         let operation = Task { @MainActor [weak self, weak coordinator] in
             await previous?.value
             guard let self, let coordinator else { return }
+            ExcalidrawBoardDiagnostics.record(
+                kind: "board-persistence-started",
+                fields: [
+                    "modelHasSelection": boardEditor.selectedElementID != nil,
+                    "elementCount": document.elements.count,
+                ]
+            )
             defer {
                 endBoardWork()
             }
@@ -977,6 +1068,13 @@ final class SystemDesignRoomModel: ObservableObject {
                     commandID: commandID("update-board-draft")
                 )
                 publish(updated)
+                ExcalidrawBoardDiagnostics.record(
+                    kind: "board-persistence-published",
+                    fields: [
+                        "modelHasSelection": boardEditor.selectedElementID != nil,
+                        "elementCount": document.elements.count,
+                    ]
+                )
             } catch {
                 publish(coordinator.snapshot)
                 boardErrorMessage = "The latest board change is visible but not saved. Try the action again."
@@ -1031,7 +1129,13 @@ final class SystemDesignRoomModel: ObservableObject {
     }
 
     var showsRecordControl: Bool {
-        snapshot?.phase == .candidateFloor && !canStopRecording
+        guard snapshot?.phase == .candidateFloor, !canStopRecording else {
+            return false
+        }
+        if snapshot?.turnMode == .continuousConversation {
+            return showsManualCaptureRecovery
+        }
+        return true
     }
 
     var canRecordSegment: Bool {
@@ -1061,6 +1165,9 @@ final class SystemDesignRoomModel: ObservableObject {
               let snapshot else { return false }
         switch snapshot.phase {
         case .candidateFloor:
+            if snapshot.turnMode == .continuousConversation, !showsManualCaptureRecovery {
+                return false
+            }
             guard boardAttachmentForHandOff != nil else { return false }
             let unresolved = draftSegments.contains {
                 $0.lifecycle != .excluded && $0.selectedCandidate == nil
@@ -1179,17 +1286,21 @@ final class SystemDesignRoomModel: ObservableObject {
         }
 
         do {
+            let conversationEngine = AVAudioEngine()
             let opened = try await SegmentSpeechCoordinator.openLocal(
                 sessionID: launchSessionID,
                 activityID: launchActivityID,
                 activityPrompt: launchPrompt,
-                turnMode: .manual,
                 interviewerRuntime: codexRuntime,
                 recording: makeBoundSegmentRecorder(),
                 transcriber: VoiceCoreSegmentTranscriber(),
                 credentialReader: credentialStore,
                 semanticEndpointClassifier: GroqEndpointClassifier(
                     credentialReader: credentialStore
+                ),
+                acousticSegmenter: VoiceCoreAcousticSegmenter(
+                    engine: conversationEngine,
+                    sharesEngine: true
                 )
             )
             coordinator = opened
@@ -1209,6 +1320,9 @@ final class SystemDesignRoomModel: ObservableObject {
                 restored = opened.snapshot
                 errorMessage = "A recording recovery needs attention. Preserved evidence remains visible below."
             }
+            if restored.turnMode == .continuousConversation {
+                await opened.enableContinuousListening()
+            }
             if restored.phase == .ready {
                 isInterviewerRequestInFlight = true
                 statusMessage = "Mara is opening the interview…"
@@ -1225,7 +1339,10 @@ final class SystemDesignRoomModel: ObservableObject {
             }
             publish(restored)
             await recoverBoardArtifacts(in: restored.board)
-            await attachInterviewerSpeech(to: opened)
+            await attachInterviewerSpeech(
+                to: opened,
+                conversationEngine: conversationEngine
+            )
         } catch {
             statusMessage = "Local session unavailable"
             errorMessage = safeMessage(for: error)
@@ -1373,8 +1490,7 @@ final class SystemDesignRoomModel: ObservableObject {
     }
 
     func selectTurnMode(_ mode: TurnMode) async {
-        guard mode == .manual || mode == .patientAuto,
-              mode != turnMode,
+        guard mode != turnMode,
               canSelectTurnMode,
               let coordinator else {
             return
@@ -1596,6 +1712,55 @@ final class SystemDesignRoomModel: ObservableObject {
         }
     }
 
+    func pauseMicrophone() async {
+        guard let coordinator, !isWorking else { return }
+        isWorking = true
+        errorMessage = nil
+        defer {
+            isWorking = false
+            statusMessage = status(for: snapshot)
+        }
+        do {
+            let updated = try await coordinator.pauseMicrophone(
+                commandID: commandID("pause-microphone")
+            )
+            publish(updated)
+        } catch {
+            publish(coordinator.snapshot)
+            errorMessage = safeMessage(for: error)
+        }
+    }
+
+    func toggleFloorHold() async {
+        guard let coordinator, canToggleFloorHold else { return }
+        isWorking = true
+        errorMessage = nil
+        defer {
+            isWorking = false
+            statusMessage = status(for: snapshot)
+        }
+
+        do {
+            if isFloorHeld {
+                statusMessage = "Sending answer…"
+                let updated = try await coordinator.sendAnswer(
+                    commandID: commandID("send-answer"),
+                    boardAttachment: boardAttachmentForHandOff ?? .noBoard
+                )
+                publish(updated)
+            } else {
+                statusMessage = "Holding your floor…"
+                let updated = try await coordinator.activateFloorHold(
+                    commandID: commandID("hold-floor")
+                )
+                publish(updated)
+            }
+        } catch {
+            publish(coordinator.snapshot)
+            errorMessage = safeMessage(for: error)
+        }
+    }
+
     func performPrimaryAction() async {
         LiveDebugTrace.event(
             "room.handoff",
@@ -1643,9 +1808,16 @@ final class SystemDesignRoomModel: ObservableObject {
                 )
             case .interviewerTurn:
                 try await syncHostedPairs(from: snapshot)
-                updated = try await coordinator.giveCandidateFloor(
-                    commandID: commandID("give-floor")
+                try await interviewerSpeechCoordinator?.stop(
+                    commandID: commandID("stop-speech-before-floor")
                 )
+                if coordinator.snapshot.phase == .interviewerTurn {
+                    updated = try await coordinator.giveCandidateFloor(
+                        commandID: commandID("give-floor")
+                    )
+                } else {
+                    updated = coordinator.snapshot
+                }
             case .ready, .completed:
                 return
             }
@@ -2063,14 +2235,17 @@ final class SystemDesignRoomModel: ObservableObject {
     }
 
     private func attachInterviewerSpeech(
-        to conversation: SegmentSpeechCoordinator
+        to conversation: SegmentSpeechCoordinator,
+        conversationEngine: AVAudioEngine
     ) async {
         do {
             let dependencies: LiveInterviewerSpeechDependencies
             if let speechDependencies {
                 dependencies = speechDependencies
             } else {
-                dependencies = try Self.makeLiveSpeechDependencies()
+                dependencies = try Self.makeLiveSpeechDependencies(
+                    engine: conversationEngine
+                )
             }
 
             let speech = try await InterviewerSpeechCoordinator.attach(
@@ -2109,14 +2284,16 @@ final class SystemDesignRoomModel: ObservableObject {
         }
     }
 
-    private static func makeLiveSpeechDependencies() throws
-        -> LiveInterviewerSpeechDependencies
-    {
+    private static func makeLiveSpeechDependencies(
+        engine: AVAudioEngine
+    ) throws -> LiveInterviewerSpeechDependencies {
         let audioStore = LiveInterviewerSpeechAudioStore()
         return LiveInterviewerSpeechDependencies(
             provider: try QwenInterviewerSpeechProvider(),
             player: AVAudioEngineInterviewerSpeechPlayer(
-                audioStore: audioStore
+                audioStore: audioStore,
+                engine: engine,
+                ownsEngine: false
             ),
             audioStore: audioStore
         )
@@ -2405,7 +2582,13 @@ final class SystemDesignRoomModel: ObservableObject {
         let draft = snapshot.segments.filter { $0.committedTurnID == nil }
 
         if snapshot.endpointGraces.contains(where: { $0.lifecycle == .pending }) {
+            if snapshot.turnMode == .continuousConversation {
+                return "Handing off · Hold floor to keep answering"
+            }
             return "Handing off in 4 seconds · Keep my floor to cancel"
+        }
+        if snapshot.isFloorHeld {
+            return "Holding your floor"
         }
 
         if draft.contains(where: { $0.lifecycle == .captureAuthorized }) {

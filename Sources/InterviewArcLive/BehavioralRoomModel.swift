@@ -99,9 +99,11 @@ final class BehavioralRoomModel: ObservableObject {
         snapshot?.phase != .completed && !isFinishingInterview
     }
 
-    var turnMode: TurnMode { snapshot?.turnMode ?? .manual }
+    var turnMode: TurnMode { snapshot?.turnMode ?? .continuousConversation }
 
-    var availableTurnModes: [TurnMode] { [.manual, .patientAuto] }
+    var availableTurnModes: [TurnMode] { [.continuousConversation, .patientAuto, .manual] }
+
+    var advancedTurnModes: [TurnMode] { [.patientAuto, .manual] }
 
     var canSelectTurnMode: Bool {
         guard !isWorking, let snapshot else { return false }
@@ -110,6 +112,7 @@ final class BehavioralRoomModel: ObservableObject {
 
     func turnModeTitle(_ mode: TurnMode) -> String {
         switch mode {
+        case .continuousConversation: "Automatic"
         case .manual: "Manual"
         case .patientAuto: "Patient Auto"
         case .cueOnly: "Cue Only"
@@ -198,7 +201,41 @@ final class BehavioralRoomModel: ObservableObject {
     }
 
     var showsRecordControl: Bool {
-        snapshot?.phase == .candidateFloor && !canStopRecording
+        guard snapshot?.phase == .candidateFloor, !canStopRecording else {
+            return false
+        }
+        if snapshot?.turnMode == .continuousConversation {
+            return !hasUsableGroqCredential
+                || draftSegments.contains {
+                    $0.lifecycle == .failed
+                        || ($0.lifecycle == .audioReady && $0.selectedCandidate == nil)
+                }
+        }
+        return true
+    }
+
+    var isFloorHeld: Bool { snapshot?.isFloorHeld == true }
+
+    var showsHoldFloorControl: Bool {
+        snapshot?.turnMode == .continuousConversation
+            && snapshot?.phase == .candidateFloor
+            && !showsRecordControl
+    }
+
+    var holdFloorTitle: String { isFloorHeld ? "Send answer" : "Hold floor" }
+
+    var canToggleFloorHold: Bool {
+        guard showsHoldFloorControl, !isWorking else { return false }
+        if isFloorHeld {
+            let unresolved = draftSegments.contains {
+                $0.lifecycle != .excluded && $0.selectedCandidate == nil
+            }
+            let hasSelected = draftSegments.contains {
+                $0.lifecycle != .excluded && $0.selectedCandidate != nil
+            }
+            return hasSelected && !unresolved
+        }
+        return true
     }
 
     var canRecordSegment: Bool {
@@ -223,6 +260,9 @@ final class BehavioralRoomModel: ObservableObject {
         guard !isWorking, let snapshot else { return false }
         switch snapshot.phase {
         case .candidateFloor:
+            if snapshot.turnMode == .continuousConversation {
+                return false
+            }
             let unresolved = draftSegments.contains {
                 $0.lifecycle != .excluded && $0.selectedCandidate == nil
             }
@@ -290,7 +330,6 @@ final class BehavioralRoomModel: ObservableObject {
                     sessionID: Self.fallbackSessionID,
                     activityID: "local-behavioral-tracer",
                     activityPrompt: activityPrompt,
-                    turnMode: .manual,
                     manifestStore: manifestStore,
                     interviewerRuntime: codexRuntime,
                     recording: recording,
@@ -298,21 +337,22 @@ final class BehavioralRoomModel: ObservableObject {
                     credentialReader: credentialStore,
                     semanticEndpointClassifier: GroqEndpointClassifier(
                         credentialReader: credentialStore
-                    )
+                    ),
+                    acousticSegmenter: VoiceCoreAcousticSegmenter()
                 )
             } else {
                 opened = try await SegmentSpeechCoordinator.openLocal(
                     sessionID: Self.fallbackSessionID,
                     activityID: "local-behavioral-tracer",
                     activityPrompt: activityPrompt,
-                    turnMode: .manual,
                     interviewerRuntime: codexRuntime,
                     recording: VoiceCoreSegmentRecorder(),
                     transcriber: VoiceCoreSegmentTranscriber(),
                     credentialReader: credentialStore,
                     semanticEndpointClassifier: GroqEndpointClassifier(
                         credentialReader: credentialStore
-                    )
+                    ),
+                    acousticSegmenter: VoiceCoreAcousticSegmenter()
                 )
             }
             coordinator = opened
@@ -331,6 +371,9 @@ final class BehavioralRoomModel: ObservableObject {
             } catch {
                 restored = opened.snapshot
                 errorMessage = "A recording recovery needs attention. Preserved evidence remains visible."
+            }
+            if restored.turnMode == .continuousConversation {
+                await opened.enableContinuousListening()
             }
             if restored.phase == .ready {
                 restored = try await opened.giveCandidateFloor(
@@ -422,6 +465,30 @@ final class BehavioralRoomModel: ObservableObject {
         } catch {
             publish(coordinator.snapshot)
             errorMessage = "Automatic Hand off could not be cancelled."
+        }
+    }
+
+    func toggleFloorHold() async {
+        guard let coordinator, canToggleFloorHold else { return }
+        isWorking = true
+        errorMessage = nil
+        defer { isWorking = false }
+        do {
+            if isFloorHeld {
+                let updated = try await coordinator.sendAnswer(
+                    commandID: commandID("send-answer"),
+                    boardAttachment: .noBoard
+                )
+                publish(updated)
+            } else {
+                let updated = try await coordinator.activateFloorHold(
+                    commandID: commandID("hold-floor")
+                )
+                publish(updated)
+            }
+        } catch {
+            publish(coordinator.snapshot)
+            errorMessage = safeMessage(for: error)
         }
     }
 
@@ -557,7 +624,11 @@ final class BehavioralRoomModel: ObservableObject {
                 isInterviewerRequestInFlight: isInterviewerRequestInFlight,
                 isCodexReady: isCodexReady,
                 canStopRecording: canStopRecording,
-                roomAvailability: snapshot == nil ? .restoring : .ready
+                roomAvailability: snapshot == nil ? .restoring : .ready,
+                turnMode: snapshot?.turnMode ?? .continuousConversation,
+                isFloorHeld: snapshot?.isFloorHeld == true,
+                isCheckingAnswer: snapshot?.endpointEvaluations.last?.lifecycle == .authorized
+                    || snapshot?.endpointGraces.contains(where: { $0.lifecycle == .pending }) == true
             )
         )
     }
@@ -573,8 +644,13 @@ final class BehavioralRoomModel: ObservableObject {
                 showsRecordControl: showsRecordControl,
                 canRecordSegment: canRecordSegment,
                 recordTitle: recordActionTitle,
-                showsKeepFloor: activeEndpointGrace != nil,
+                showsKeepFloor: activeEndpointGrace != nil
+                    && snapshot?.turnMode != .continuousConversation,
                 canKeepFloor: canKeepFloor,
+                showsHoldFloor: showsHoldFloorControl,
+                canToggleFloorHold: canToggleFloorHold,
+                holdFloorTitle: holdFloorTitle,
+                holdFloorSystemImage: isFloorHeld ? "paperplane.fill" : "hand.raised.fill",
                 phaseActionTitle: actionTitle,
                 phaseActionSystemImage: actionIcon,
                 canPerformPhaseAction: canAct

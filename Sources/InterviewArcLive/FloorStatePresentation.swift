@@ -5,9 +5,14 @@ struct FloorStatePresentation: Equatable {
         case restoring
         case preparing
         case candidateFloor
+        case listening
+        case speechDetected
         case recording
         case saving
         case transcribing
+        case checkingAnswer
+        case holdingFloor
+        case handingOff
         case interviewerWorking
         case retryRequired
         case interviewerTurn
@@ -60,6 +65,9 @@ struct FloorStatePresentation: Equatable {
         var isCodexReady: Bool
         var canStopRecording: Bool
         var roomAvailability: RoomAvailability
+        var turnMode: TurnMode
+        var isFloorHeld: Bool
+        var isCheckingAnswer: Bool
 
         init(
             phase: InterviewRoomPhase? = nil,
@@ -72,7 +80,10 @@ struct FloorStatePresentation: Equatable {
             isOpeningInterviewer: Bool = false,
             isCodexReady: Bool = false,
             canStopRecording: Bool = false,
-            roomAvailability: RoomAvailability = .ready
+            roomAvailability: RoomAvailability = .ready,
+            turnMode: TurnMode = .manual,
+            isFloorHeld: Bool = false,
+            isCheckingAnswer: Bool = false
         ) {
             self.phase = phase
             self.candidateSegmentLifecycles = candidateSegmentLifecycles
@@ -85,6 +96,9 @@ struct FloorStatePresentation: Equatable {
             self.isCodexReady = isCodexReady
             self.canStopRecording = canStopRecording
             self.roomAvailability = roomAvailability
+            self.turnMode = turnMode
+            self.isFloorHeld = isFloorHeld
+            self.isCheckingAnswer = isCheckingAnswer
         }
     }
 
@@ -154,6 +168,11 @@ struct FloorStatePresentation: Equatable {
             || normalizedStatus.contains("transcrib") {
             return (.transcribing, .working, input.statusMessage, "waveform")
         }
+        if input.turnMode == .continuousConversation,
+           input.candidateSegmentLifecycles.contains(.recording)
+            || input.canStopRecording {
+            return (.speechDetected, .candidate, "Speech detected", "waveform")
+        }
         if input.candidateSegmentLifecycles.contains(.recording) {
             return (.recording, .candidate, input.statusMessage, "record.circle.fill")
         }
@@ -187,6 +206,40 @@ struct FloorStatePresentation: Equatable {
                 .working,
                 input.statusMessage,
                 "ellipsis.bubble.fill"
+            )
+        }
+
+        if input.turnMode == .continuousConversation, input.phase == .candidateFloor {
+            if input.isFloorHeld {
+                return (
+                    .holdingFloor,
+                    .candidate,
+                    "Holding your floor",
+                    "hand.raised.fill"
+                )
+            }
+            if input.isCheckingAnswer
+                || normalizedStatus.contains("checking") {
+                return (
+                    .checkingAnswer,
+                    .working,
+                    "Checking answer",
+                    "text.magnifyingglass"
+                )
+            }
+            if normalizedStatus.contains("handing off") {
+                return (
+                    .handingOff,
+                    .working,
+                    "Handing off",
+                    "arrowshape.right.circle.fill"
+                )
+            }
+            return (
+                .listening,
+                .candidate,
+                "Listening",
+                "ear"
             )
         }
 
@@ -289,6 +342,15 @@ struct FloorStatePresentation: Equatable {
 
         switch input.phase {
         case .candidateFloor:
+            if input.turnMode == .continuousConversation {
+                if input.isFloorHeld {
+                    return Surface(label: "Holding your floor", detail: candidateDetail(for: input))
+                }
+                if input.isCheckingAnswer {
+                    return Surface(label: "Checking answer", detail: "Semantic endpoint is evaluating this answer")
+                }
+                return Surface(label: "Listening", detail: candidateDetail(for: input))
+            }
             return Surface(
                 label: "Your floor",
                 detail: candidateDetail(for: input)
@@ -352,7 +414,13 @@ struct FloorStatePresentation: Equatable {
         }
 
         switch input.phase {
-        case .candidateFloor: return "Your floor"
+        case .candidateFloor:
+            if input.turnMode == .continuousConversation {
+                if input.isFloorHeld { return "Holding your floor" }
+                if input.isCheckingAnswer { return "Checking answer" }
+                return "Listening"
+            }
+            return "Your floor"
         case .interviewerProcessing: return "Answer saved"
         case .interviewerTurn: return "Interviewer turn"
         case .completed: return "Interview complete"
@@ -413,7 +481,11 @@ extension SystemDesignRoomModel {
                         || isInterviewerRequestInFlight),
                 isCodexReady: isCodexReady,
                 canStopRecording: canStopRecording,
-                roomAvailability: floorRoomAvailability
+                roomAvailability: floorRoomAvailability,
+                turnMode: snapshot?.turnMode ?? .continuousConversation,
+                isFloorHeld: snapshot?.isFloorHeld == true,
+                isCheckingAnswer: snapshot?.endpointEvaluations.last?.lifecycle == .authorized
+                    || snapshot?.endpointGraces.contains(where: { $0.lifecycle == .pending }) == true
             )
         )
     }

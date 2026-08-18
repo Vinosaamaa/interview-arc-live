@@ -5,6 +5,69 @@ import InterviewArcLiveCore
 
 @MainActor
 final class SystemDesignBoardModelTests: XCTestCase {
+    func testBackgroundDraftPersistenceKeepsRevisionStatusStable() async throws {
+        let (model, store) = try await makeCompletionBlockingRoomModel()
+        await store.holdNextBoardRevisionSave()
+
+        XCTAssertTrue(
+            model.applyBoardAction(
+                .createLabel(
+                    origin: BoardPoint(x: 80, y: 80),
+                    text: "Autosaved draft"
+                )
+            )
+        )
+        await store.waitUntilBoardRevisionSaveStarts()
+
+        XCTAssertTrue(model.isBoardSaving)
+        XCTAssertFalse(model.isBoardRevisionSaving)
+        XCTAssertTrue(model.canSaveBoardRevision)
+        XCTAssertEqual(model.boardRevisionStatusPresentation, .unsaved)
+        XCTAssertEqual(model.boardRevisionStatus, "Unsaved board")
+
+        await store.releaseBoardRevisionSave()
+        await model.waitForBoardPersistence()
+
+        XCTAssertFalse(model.isBoardSaving)
+        XCTAssertEqual(model.boardRevisionStatusPresentation, .unsaved)
+    }
+
+    func testExplicitRevisionSaveOwnsTheSavingStatus() async throws {
+        let (model, store) = try await makeCompletionBlockingRoomModel()
+        XCTAssertTrue(
+            model.applyBoardAction(
+                .createLabel(
+                    origin: BoardPoint(x: 80, y: 80),
+                    text: "Revision candidate"
+                )
+            )
+        )
+        await model.waitForBoardPersistence()
+        await store.holdNextBoardRevisionSave()
+
+        let save = Task { @MainActor in
+            await model.saveBoardRevision()
+        }
+        await store.waitUntilBoardRevisionSaveStarts()
+
+        XCTAssertTrue(model.isBoardRevisionSaving)
+        XCTAssertEqual(
+            model.boardRevisionStatusPresentation,
+            .savingRevision
+        )
+        XCTAssertEqual(model.boardRevisionStatus, "Saving revision…")
+        XCTAssertEqual(
+            model.boardRevisionStatusPresentation.compactText,
+            "Saving revision…"
+        )
+
+        await store.releaseBoardRevisionSave()
+        await save.value
+
+        XCTAssertFalse(model.isBoardRevisionSaving)
+        XCTAssertEqual(model.boardRevisionStatusPresentation, .saved(revision: 1))
+    }
+
     func testTerminationFlushesEnhancedSceneAndAwaitsDurableBoardTail() async throws {
         let (model, store) = try await makeCompletionBlockingRoomModel()
         await store.holdNextBoardRevisionSave()
@@ -56,7 +119,7 @@ final class SystemDesignBoardModelTests: XCTestCase {
                 phase: nil,
                 isWorking: false,
                 isInspectingRevision: false,
-                isSaving: false,
+                isRevisionSaving: false,
                 isExporting: false
             )
         )
@@ -66,7 +129,7 @@ final class SystemDesignBoardModelTests: XCTestCase {
                 phase: .candidateFloor,
                 isWorking: true,
                 isInspectingRevision: false,
-                isSaving: false,
+                isRevisionSaving: false,
                 isExporting: false
             )
         )
@@ -76,10 +139,53 @@ final class SystemDesignBoardModelTests: XCTestCase {
                 phase: .candidateFloor,
                 isWorking: false,
                 isInspectingRevision: false,
-                isSaving: false,
+                isRevisionSaving: false,
                 isExporting: false
             )
         )
+        XCTAssertFalse(
+            SystemDesignRoomModel.boardRevisionSaveIsAvailable(
+                coordinatorIsAvailable: true,
+                phase: .candidateFloor,
+                isWorking: false,
+                isInspectingRevision: false,
+                isRevisionSaving: true,
+                isExporting: false
+            )
+        )
+    }
+
+    func testSaveRevisionWaitsForPendingDraftPersistence() async throws {
+        let (model, store) = try await makeCompletionBlockingRoomModel()
+        await store.holdNextBoardRevisionSave()
+        XCTAssertTrue(
+            model.applyBoardAction(
+                .createLabel(
+                    origin: BoardPoint(x: 80, y: 80),
+                    text: "Persist before revision"
+                )
+            )
+        )
+        await store.waitUntilBoardRevisionSaveStarts()
+        XCTAssertTrue(model.canSaveBoardRevision)
+
+        let save = Task { @MainActor in
+            await model.saveBoardRevision()
+        }
+        await Task.yield()
+        XCTAssertTrue(model.isBoardRevisionSaving)
+        XCTAssertFalse(model.canSaveBoardRevision)
+        XCTAssertTrue(model.snapshot?.board.revisions.isEmpty == true)
+
+        await store.releaseBoardRevisionSave()
+        await save.value
+
+        XCTAssertEqual(model.snapshot?.board.revisions.count, 1)
+        XCTAssertEqual(
+            model.snapshot?.board.revisions.first?.document,
+            model.boardEditor.document
+        )
+        XCTAssertEqual(model.boardRevisionStatusPresentation, .saved(revision: 1))
     }
 
     func testSaveRevisionFailsClosedAgainstConcurrentReentry() async throws {

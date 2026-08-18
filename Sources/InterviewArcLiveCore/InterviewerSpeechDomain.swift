@@ -590,6 +590,7 @@ public enum SynthesisAttemptLifecycle: String, Codable, Sendable, Equatable {
 public enum InterviewerSynthesisStopReason: String, Codable, Sendable, Equatable {
     case userStopped = "user_stopped"
     case muted
+    case bargeIn = "barge_in"
 }
 
 public enum InterviewerSynthesisFailureReason: String, Codable, Sendable, Equatable {
