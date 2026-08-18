@@ -144,6 +144,8 @@ final class SystemDesignRoomModel: ObservableObject {
     @Published private(set) var candidateNotesDraft = ""
     @Published private(set) var candidateNotesSavePresentation: CandidateNotesSavePresentation = .saved
     @Published private(set) var isFinishingInterview = false
+    @Published private(set) var recordingPowerHistory: [Float] = []
+    @Published private(set) var recordingElapsedSeconds: TimeInterval = 0
 
     @Published var isCredentialSetupPresented = false
     @Published private(set) var isSavingCredential = false
@@ -189,6 +191,7 @@ final class SystemDesignRoomModel: ObservableObject {
     private var credentialState: CredentialState = .checking
     private var errorWasCodexFailure = false
     private var coordinator: SegmentSpeechCoordinator?
+    private var segmentRecorder: VoiceCoreSegmentRecorder?
     private var interviewerSpeechCoordinator: InterviewerSpeechCoordinator?
     private var speechPreparationTask: Task<Void, Never>?
     private var audioPlayer: AVAudioPlayer?
@@ -273,13 +276,16 @@ final class SystemDesignRoomModel: ObservableObject {
     }
 
     var hostedElapsedText: String? {
+        hostedElapsedText(at: Date())
+    }
+
+    func hostedElapsedText(at date: Date) -> String? {
         guard let seconds = hostedSnapshot.elapsedSeconds(
             localNow: LiveEpochMilliseconds(
-                (Date().timeIntervalSince1970 * 1_000).rounded()
+                (date.timeIntervalSince1970 * 1_000).rounded()
             )
         ) else { return nil }
-        let total = max(0, Int(seconds.rounded(.down)))
-        return String(format: "%02d:%02d", total / 60, total % 60)
+        return FullRoomHostedTimerLayout.elapsedText(seconds: seconds)
     }
 
     var hostedResult: LiveResult? {
@@ -1170,7 +1176,7 @@ final class SystemDesignRoomModel: ObservableObject {
                 activityPrompt: launchPrompt,
                 turnMode: .manual,
                 interviewerRuntime: codexRuntime,
-                recording: VoiceCoreSegmentRecorder(),
+                recording: makeBoundSegmentRecorder(),
                 transcriber: VoiceCoreSegmentTranscriber(),
                 credentialReader: credentialStore,
                 semanticEndpointClassifier: GroqEndpointClassifier(
@@ -1715,6 +1721,10 @@ final class SystemDesignRoomModel: ObservableObject {
         speechPreparationTask = nil
         interviewerSpeechCoordinator = nil
         coordinator = nil
+        segmentRecorder?.onMetering = nil
+        segmentRecorder = nil
+        recordingPowerHistory = []
+        recordingElapsedSeconds = 0
         snapshot = nil
         segments = []
         localPersistenceTail = nil
@@ -2052,6 +2062,16 @@ final class SystemDesignRoomModel: ObservableObject {
             ),
             audioStore: audioStore
         )
+    }
+
+    private func makeBoundSegmentRecorder() -> VoiceCoreSegmentRecorder {
+        let recorder = VoiceCoreSegmentRecorder()
+        segmentRecorder = recorder
+        recorder.onMetering = { [weak self] sample in
+            self?.recordingPowerHistory = sample.powerHistory
+            self?.recordingElapsedSeconds = sample.elapsedSeconds
+        }
+        return recorder
     }
 
     private static func makeDefaultCodexRuntime(

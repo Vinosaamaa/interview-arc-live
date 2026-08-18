@@ -476,6 +476,61 @@ final class SystemDesignRoomLayoutTests: XCTestCase {
         )
     }
 
+    func testHostedElapsedTextFormatsWholeSeconds() {
+        XCTAssertEqual(FullRoomHostedTimerLayout.elapsedText(seconds: 0), "00:00")
+        XCTAssertEqual(FullRoomHostedTimerLayout.elapsedText(seconds: 61.9), "01:01")
+        XCTAssertEqual(FullRoomHostedTimerLayout.elapsedText(seconds: -3), "00:00")
+        XCTAssertEqual(FullRoomHostedTimerLayout.elapsedText(seconds: 3599), "59:59")
+        XCTAssertEqual(FullRoomHostedTimerLayout.elapsedText(seconds: 3600), "60:00")
+    }
+
+    func testRecordingWaveformUsesMicrophoneDecibelsAndStaysIdleWhenQuiet() {
+        let levels = FullRoomWaveformLayout.displayedLevels(
+            powerHistory: [-12, -18]
+        )
+        XCTAssertEqual(levels.count, FullRoomWaveformLayout.sampleCount)
+        XCTAssertEqual(levels.suffix(2).map(Float.init), [-12, -18])
+        XCTAssertEqual(levels.first, -60)
+
+        XCTAssertEqual(
+            FullRoomWaveformLayout.barHeight(
+                decibel: -12,
+                canvasHeight: 40,
+                isActive: false,
+                elapsedSeconds: 1.4,
+                index: 3,
+                reduceMotion: false
+            ),
+            0
+        )
+
+        let reduced = FullRoomWaveformLayout.barHeight(
+            decibel: -12,
+            canvasHeight: 40,
+            isActive: true,
+            elapsedSeconds: 0,
+            index: 0,
+            reduceMotion: true
+        )
+        let pulsed = FullRoomWaveformLayout.barHeight(
+            decibel: -12,
+            canvasHeight: 40,
+            isActive: true,
+            elapsedSeconds: 0,
+            index: 0,
+            reduceMotion: false
+        )
+        let expectedReduced = max(
+            3,
+            40
+                * FullRoomWaveformLayout.activeHeightFraction
+                * CGFloat(FullRoomWaveformLayout.normalizedLevel(-12))
+        )
+        XCTAssertEqual(reduced, expectedReduced, accuracy: 0.001)
+        XCTAssertNotEqual(pulsed, reduced, accuracy: 0.001)
+        XCTAssertGreaterThan(pulsed, 3)
+    }
+
     func testFullRoomAccessibilityIdentifiersAreStableAndUnique() {
         XCTAssertEqual(
             Set(FullRoomAccessibility.allIdentifiers).count,

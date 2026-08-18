@@ -248,6 +248,7 @@ final class VoiceCoreSegmentRecorderTests: XCTestCase {
 @MainActor
 private final class RecordingDriverSpy: VoiceCoreRecordingDriving {
     var onUnexpectedTermination: (@MainActor () -> Void)?
+    var onMetering: (@MainActor (VoiceCoreRecordingMetering) -> Void)?
     var finalFileName: String
     var finalizedURLOverride: URL?
     var stopFailuresRemaining = 0
