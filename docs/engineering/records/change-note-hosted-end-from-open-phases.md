@@ -23,12 +23,12 @@ capabilities: ["hosted-activity-finish"]
 amends: []
 supersedes: []
 learningRefs: []
-sources: [{"label":"Issue #72","url":"https://github.com/Vinosaamaa/interview-arc-live/issues/72","kind":"issue"},{"label":"Issue #1","url":"https://github.com/Vinosaamaa/interview-arc-live/issues/1","kind":"issue"}]
-verification: {"state":"verified","evidenceRefs":["test:InterviewRoomSessionTests.testFinishCompletesFromCandidateFloorWhenNoCaptureIsInFlight","test:SystemDesignRoomFinishTests.testFinishInterviewReportsWhenTheLocalRoomIsNotOpen"]}
+sources: [{"label":"Issue #72","url":"https://github.com/Vinosaamaa/interview-arc-live/issues/72","kind":"issue"},{"label":"Issue #1","url":"https://github.com/Vinosaamaa/interview-arc-live/issues/1","kind":"issue"},{"label":"Pull request #92","url":"https://github.com/Vinosaamaa/interview-arc-live/pull/92","kind":"pull-request"}]
+verification: {"state":"verified","evidenceRefs":["test:InterviewRoomSessionTests.testFinishCompletesFromCandidateFloorWhenNoCaptureIsInFlight","test:SystemDesignRoomFinishTests.testFinishInterviewReportsWhenTheLocalRoomIsNotOpen","pull-request:92"]}
 visibility: public-safe
 publicationEligibility: eligible
 issue: 72
-pr: null
+pr: 92
 release: null
 run: null
 ---
