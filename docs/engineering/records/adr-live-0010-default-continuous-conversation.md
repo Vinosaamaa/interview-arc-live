@@ -16,7 +16,7 @@ interfaces: ["turn-mode","floor-hold","continuous-conversation-state"]
 seams: ["candidate floor ↔ local acoustic segmentation","durable segment evidence ↔ semantic endpoint evaluation","interviewer playback ↔ candidate capture re-arming"]
 adapters: ["local candidate audio adapter","Groq transcription and endpoint adapters","local interviewer speech adapter"]
 relatedRecords: ["adr-live-0004-durable-segmented-speech@1","feature-retrospective-live-issue-11@1"]
-decisions: ["default-continuous-conversation","durable-floor-hold","first-shipment-half-duplex"]
+decisions: ["default-continuous-conversation","durable-floor-hold","local-candidate-barge-in"]
 incidents: []
 features: ["continuous-conversation","floor-hold"]
 capabilities: ["automatic-local-speech-segmentation","semantic-automatic-hand-off","long-answer-floor-hold"]
@@ -35,16 +35,16 @@ run: null
 
 # Default new Live sessions to durable Continuous Conversation
 
-New Interview Room Sessions default to a half-duplex Continuous Conversation
-mode. Live automatically arms local capture only during Candidate Floor,
-durably segments and transcribes speech, evaluates the accumulated answer, and
-uses Endpoint Grace plus the canonical at-most-once Hand off. Restored Sessions
-preserve their stored Turn Mode.
+New Interview Room Sessions default to Continuous Conversation. Live locally
+detects candidate speech, durably segments and transcribes it, evaluates the
+accumulated answer, and uses Endpoint Grace plus the canonical at-most-once
+Hand off. Restored Sessions preserve their stored Turn Mode.
 
 A durable Floor Hold suppresses automatic completion across long pauses and
 multiple Segments. Send answer releases that hold only after active Segment
 evidence is durable, then invokes the same canonical Hand off.
 
-The first shipment does not listen through interviewer TTS or infer a
-Candidate Turn from speech over playback. Autonomous barge-in and full-duplex
-audio remain separate decisions.
+During interviewer TTS, local echo cancellation and speech-start detection
+remain armed for candidate barge-in. Confirmed speech stops stale playback and
+opens Candidate Floor before evidence capture. Simultaneous overlapping
+dialogue remains a separate decision.

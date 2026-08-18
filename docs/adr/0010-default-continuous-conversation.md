@@ -50,10 +50,18 @@ Continuous Conversation adds one durable two-state candidate control:
   selected evidence are durable, it invokes the same canonical Hand off used
   by automatic and manual completion.
 
-The first shipment remains half-duplex. Capture is not armed while interviewer
-TTS is playing. Candidate speech over playback is not silently promoted into a
-turn; the candidate must stop playback or wait for it to finish. Autonomous
-barge-in, echo cancellation, and full-duplex audio require a separate decision.
+These are the only two user-facing conversation states in the first shipment:
+Automatic and Hold floor. Floor Hold is a temporary durable state inside
+Continuous Conversation, not another Turn Mode. Legacy Turn Modes remain
+decodable and available only as recovery or advanced behavior.
+
+The first shipment supports candidate barge-in without adopting simultaneous
+two-speaker dialogue. While interviewer TTS plays, its exact output frames are
+the far-end reference for local echo cancellation. Local speech-start
+detection receives only the cleaned near-end signal. Confirmed candidate speech
+stops playback and stale generation, preserves a bounded pre-roll, durably
+opens Candidate Floor, and then records normal Segment evidence. Unconfirmed
+noise or residual playback cannot create a Candidate Turn or leave the device.
 
 Every capture, boundary, transcription, endpoint, hold, grace, and Hand off
 transition remains manifest-owned and recoverable. Module boundaries emit
@@ -73,4 +81,5 @@ they never log audio, transcripts, credentials, private IDs, or paths.
   visible manual controls; they never fabricate a transcript or Hand off.
 - Local VAD, re-arming, termination recovery, and Hold-floor reconciliation add
   lifecycle complexity and require headed audio tests plus relaunch coverage.
-- Automatic barge-in and full-duplex speech are intentionally deferred.
+- Simultaneous overlapping candidate/interviewer dialogue remains deferred;
+  interruption itself is part of the first shipment.

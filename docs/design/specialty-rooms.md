@@ -9,10 +9,10 @@ All specialties are projections of one active `InterviewRoomSession`. Changing t
 - The Live mark is two asymmetric open arcs with one moving handoff point. A microphone icon is reserved for literal permission, mute, or input-device controls; it is not the Live product mark.
 - The transcript uses role-tagged typographic blocks on one continuous Turnline, not chat bubbles.
 - The current question is the visual anchor. Prior turns recede without disappearing.
-- New Sessions default to half-duplex **Continuous Conversation**: Live locally arms capture during Candidate Floor and uses durable segmentation, semantic endpointing, grace, and the canonical Hand off without requiring Record / Stop / Hand off on the normal path.
+- New Sessions default to **Continuous Conversation**: Live locally detects candidate speech, supports barge-in during interviewer playback, and uses durable segmentation, semantic endpointing, grace, and the canonical Hand off without requiring Record / Stop / Hand off on the normal path.
 - **Hold floor** is the candidate's deliberate long-answer control. While held, Live cannot automatically Hand off; **Send answer** releases the hold and completes the same canonical transition after active evidence is durable.
 - `Record segment`, `Stop segment`, and explicit `Hand off` remain recovery and compatibility controls, not the default conversation chrome.
-- The first shipment does not perform autonomous barge-in. Candidate capture is off while interviewer TTS is playing and arms after playback ends or is explicitly stopped.
+- During interviewer TTS, local echo cancellation and speech-start detection may listen only for candidate barge-in. Confirmed speech stops Mara, invalidates stale output, and opens Candidate Floor before candidate evidence is recorded; simultaneous overlapping dialogue remains out of scope.
 - The compact capsule is another presentation of the same session and phase. It never creates another recorder or conversation.
 - Interviewer turns keep one canonical pair: rich `displayMarkdown` for the room and concise `spokenText` for TTS.
 - The work surface changes by specialty while the transcript, persona, timer, privacy state, and floor rail remain consistent.

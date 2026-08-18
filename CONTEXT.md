@@ -35,9 +35,9 @@ may finalize an audio Segment but never ends the Candidate Floor by itself.
 The default Turn Mode for new Sessions. While the Candidate Floor is open,
 Live locally detects speech, creates durable Segments, transcribes finalized
 audio, evaluates the accumulated answer, and may complete the canonical Hand
-off after Endpoint Grace. Interviewer speech remains half-duplex in the first
-shipment: candidate capture arms only after playback ends or is explicitly
-stopped.
+off after Endpoint Grace. During interviewer playback, local echo cancellation
+and speech-start detection remain armed only to recognize candidate barge-in;
+confirmed candidate speech stops playback and durably opens Candidate Floor.
 
 ### Floor Hold
 
@@ -45,7 +45,8 @@ A durable candidate intent that suppresses automatic Hand off while a longer
 answer is in progress. Activating **Hold floor** keeps silence and semantic
 endpoint proposals from yielding the floor; **Send answer** ends the hold and
 uses the same canonical Hand off transition after active Segment evidence is
-durable.
+durable. It is a temporary state inside Continuous Conversation, not another
+persisted Turn Mode.
 
 ### Hand off
 
@@ -215,9 +216,10 @@ separate recording, model, transcript, or persistence state.
 - One current `likely_end` Endpoint Evaluation owns at most one Endpoint Grace,
   and automatic completion uses the same at-most-once Hand off transition as
   the explicit action.
-- Continuous Conversation may arm capture only during Candidate Floor. It does
-  not listen through Interviewer TTS or infer a Candidate Turn from speech over
-  playback in the first shipment.
+- Continuous Conversation records candidate evidence only during Candidate
+  Floor. During interviewer TTS it may process echo-cancelled microphone frames
+  locally for barge-in; confirmed candidate speech must stop playback before
+  it opens and records the new Candidate Floor.
 - Floor Hold cancels or suppresses Endpoint Grace and automatic Hand off until
   **Send answer** explicitly releases it.
 - Acoustic silence may finalize one Segment but never commits a Candidate Turn
