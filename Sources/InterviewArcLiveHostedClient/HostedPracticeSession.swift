@@ -1,4 +1,5 @@
 import Foundation
+import InterviewArcLiveCore
 
 public protocol LiveClock: Sendable {
     func epochMilliseconds() -> LiveEpochMilliseconds
@@ -20,6 +21,19 @@ public enum HostedPracticeConnection: Equatable, Sendable {
     case writable
     case offline
     case recoveryRequired(code: String)
+
+    public var debugCode: String {
+        switch self {
+        case .signedOut: "signedOut"
+        case .loading: "loading"
+        case .noOpenSystemDesignActivity: "noOpenSystemDesignActivity"
+        case .readOnly: "readOnly"
+        case .writable: "writable"
+        case .offline: "offline"
+        case .recoveryRequired(let code):
+            "recoveryRequired.\(LiveDebugTrace.token(code))"
+        }
+    }
 }
 
 public struct HostedPracticeSnapshot: Equatable, Sendable {
@@ -133,6 +147,7 @@ public actor HostedPracticeSession {
 
     @discardableResult
     public func open(acquireWriterLease: Bool = true) async -> HostedPracticeSnapshot {
+        LiveDebugTrace.event("hosted.open.start")
         state = copy(connection: .loading)
         do {
             let fingerprint = try await tokenReader.credentialFingerprint()
@@ -206,6 +221,13 @@ public actor HostedPracticeSession {
         } catch {
             state = copy(connection: .offline)
         }
+        LiveDebugTrace.event(
+            "hosted.open.end",
+            [
+                "connection": state.connection.debugCode,
+                "count": "\(state.pendingOperationCount)",
+            ]
+        )
         return state
     }
 
@@ -578,9 +600,21 @@ public actor HostedPracticeSession {
                 credentialFingerprint: credentialFingerprint
             )
             applyRecoveredReceipt(record)
+            LiveDebugTrace.event(
+                "hosted.recover.receipt",
+                ["operation": record.operation, "ok": "true"]
+            )
             return true
         } catch let error as LiveV1ClientError {
             guard error.code == "receipt_not_found" else {
+                LiveDebugTrace.event(
+                    "hosted.recover.receipt",
+                    [
+                        "operation": record.operation,
+                        "ok": "false",
+                        "code": error.code ?? "hosted_response",
+                    ]
+                )
                 if error.code == "unauthorized" {
                     state = copy(connection: .signedOut)
                 } else {
@@ -591,17 +625,28 @@ public actor HostedPracticeSession {
         }
 
         guard record.holderSessionId == holderSessionID else {
-            try await markRecovery(
-                record,
-                error: LiveV1ClientError.server(
-                    statusCode: 404,
-                    code: "receipt_not_found",
-                    retryable: false
-                )
+            // A previous room prepared this mutation. Replaying it would
+            // rewrite that session's fence. The server has no receipt, so
+            // abandon the row and let this launch acquire a fresh lease.
+            LiveDebugTrace.event(
+                "hosted.recover.abandon",
+                [
+                    "operation": record.operation,
+                    "code": "receipt_not_found",
+                    "reason": "foreign_holder_session",
+                ]
             )
-            return false
+            try await outbox.remove(
+                operationID: record.operationId,
+                credentialFingerprint: credentialFingerprint
+            )
+            return true
         }
         do {
+            LiveDebugTrace.event(
+                "hosted.recover.replay",
+                ["operation": record.operation]
+            )
             if record.method == .put {
                 try await replayClipUpload(record)
             } else {

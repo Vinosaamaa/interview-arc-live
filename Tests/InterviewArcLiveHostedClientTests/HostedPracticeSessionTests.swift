@@ -166,11 +166,8 @@ final class HostedPracticeSessionTests: XCTestCase {
 
         let snapshot = await fixture.session.open()
 
-        XCTAssertEqual(
-            snapshot.connection,
-            .recoveryRequired(code: "receipt_not_found")
-        )
-        XCTAssertEqual(snapshot.pendingOperationCount, 1)
+        XCTAssertEqual(snapshot.connection, .writable)
+        XCTAssertEqual(snapshot.pendingOperationCount, 0)
         let paths = await fixture.transport.paths()
         XCTAssertEqual(
             paths,
@@ -178,8 +175,11 @@ final class HostedPracticeSessionTests: XCTestCase {
                 "/live/v1/today",
                 "/live/v1/activities/activity-1",
                 "/live/v1/activities/activity-1/receipts/old-op",
+                "/live/v1/activities/activity-1/lease/acquire",
             ]
         )
+        let commandBodies = await fixture.transport.commandBodies()
+        XCTAssertEqual(commandBodies, [])
     }
 
     func testCredentialChangeQuarantineNeverAcquiresWritableLease() async throws {
