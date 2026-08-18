@@ -192,7 +192,8 @@ final class InterviewRoomSessionTests: XCTestCase {
         )
         XCTAssertEqual(duplicate.phase, .interviewerProcessing)
         XCTAssertTrue(duplicate.turns.isEmpty)
-        XCTAssertEqual(await runtime.invocationCount(), 1)
+        let openingInvocations = await runtime.invocationCount()
+        XCTAssertEqual(openingInvocations, 1)
 
         let restored = try await InterviewRoomSession.restore(
             sessionID: sessionID,
@@ -314,7 +315,8 @@ final class InterviewRoomSessionTests: XCTestCase {
             manifestStore: InMemorySessionManifestStore(manifests: [openingOnly]),
             interviewerRuntime: runtime
         )
-        XCTAssertEqual(await restoredOpening.snapshot().turns.count, 1)
+        let restoredOpeningSnapshot = await restoredOpening.snapshot()
+        XCTAssertEqual(restoredOpeningSnapshot.turns.count, 1)
 
         let openingPlusPair = SessionManifest(
             sessionID: SessionID("restore-opening-pair"),
@@ -331,7 +333,8 @@ final class InterviewRoomSessionTests: XCTestCase {
             manifestStore: InMemorySessionManifestStore(manifests: [openingPlusPair]),
             interviewerRuntime: runtime
         )
-        XCTAssertEqual(await restoredPair.snapshot().turns.count, 3)
+        let restoredPairSnapshot = await restoredPair.snapshot()
+        XCTAssertEqual(restoredPairSnapshot.turns.count, 3)
 
         let pendingOpening = SessionManifest(
             sessionID: SessionID("restore-opening-processing"),
@@ -348,7 +351,8 @@ final class InterviewRoomSessionTests: XCTestCase {
             manifestStore: InMemorySessionManifestStore(manifests: [pendingOpening]),
             interviewerRuntime: runtime
         )
-        XCTAssertEqual(await restoredPending.snapshot().phase, .interviewerProcessing)
+        let restoredPendingSnapshot = await restoredPending.snapshot()
+        XCTAssertEqual(restoredPendingSnapshot.phase, .interviewerProcessing)
 
         try await assertRestoreRejects(
             SessionManifest(
