@@ -315,6 +315,36 @@ final class FloorStatePresentationTests: XCTestCase {
         XCTAssertEqual(presentation.compact.detail, status)
     }
 
+    func testOpeningInterviewerChromeDoesNotClaimASavedAnswer() {
+        let inFlight = FloorStatePresentation.make(
+            input: .init(
+                phase: .interviewerProcessing,
+                statusMessage: "Mara is opening the interview…",
+                isInterviewerRequestInFlight: true,
+                isOpeningInterviewer: true
+            )
+        )
+        XCTAssertEqual(inFlight.statusKind, .interviewerWorking)
+        XCTAssertEqual(inFlight.full.label, "Mara is opening")
+        XCTAssertEqual(inFlight.full.detail, "Codex is preparing the greeting")
+        XCTAssertEqual(inFlight.compact.label, "Opening")
+        XCTAssertFalse(inFlight.full.label.localizedCaseInsensitiveContains("answer saved"))
+        XCTAssertFalse(inFlight.compact.label.localizedCaseInsensitiveContains("answer saved"))
+
+        let retry = FloorStatePresentation.make(
+            input: .init(
+                phase: .interviewerProcessing,
+                statusMessage: "Opening greeting needs retry",
+                isOpeningInterviewer: true,
+                isCodexReady: true
+            )
+        )
+        XCTAssertEqual(retry.statusKind, .retryRequired)
+        XCTAssertEqual(retry.full.label, "Opening greeting needs retry")
+        XCTAssertEqual(retry.full.detail, "No candidate answer yet")
+        XCTAssertEqual(retry.compact.label, "Opening retry")
+    }
+
     func testEveryPhaseActionHintIsExplicitAndTimerFree() {
         let phases: [InterviewRoomPhase?] = [
             nil,

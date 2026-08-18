@@ -456,6 +456,9 @@ struct SystemDesignRoomView: View {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 0) {
                     if model.usesHostedAuthority && !model.hostedPairs.isEmpty {
+                        if let opening = model.localOpeningInterviewerTurn {
+                            turnlineEntry(.interviewer(opening), isLast: false)
+                        }
                         ForEach(Array(model.hostedPairs.enumerated()), id: \.element.id) {
                             index, pair in
                             hostedTurnlineEntry(
@@ -893,7 +896,7 @@ struct SystemDesignRoomView: View {
         case .quiet: return LivePalette.muted
         case .working: return LivePalette.interviewer
         case .speaking: return LivePalette.interviewer
-        case .ready: return LivePalette.candidateText
+        case .ready: return LivePalette.interviewer
         case .warning: return LivePalette.warning
         }
     }
@@ -953,7 +956,11 @@ struct SystemDesignRoomView: View {
             .accessibilityLabel(floorState.full.label)
             .accessibilityValue(floorState.full.detail)
 
-            LiveWaveform(isActive: model.canStopRecording)
+            LiveWaveform(
+                isActive: model.canStopRecording,
+                powerHistory: model.recordingPowerHistory,
+                elapsedSeconds: model.recordingElapsedSeconds
+            )
                 .frame(
                     minWidth: compact
                         ? FullRoomLayout.floorCompactWaveformWidth
@@ -962,27 +969,43 @@ struct SystemDesignRoomView: View {
                 )
                 .frame(height: FullRoomLayout.minimumActionHitTarget)
 
-            if model.usesHostedAuthority {
+            if model.usesHostedAuthority, model.snapshot != nil {
                 Button {
                     Task { await model.toggleHostedTimer() }
                 } label: {
-                    floorActionLabel(
-                        model.hostedElapsedText
-                            ?? (model.hostedTimerIsRunning ? "Pause" : "Start"),
-                        systemImage: model.hostedTimerIsRunning
-                            ? "pause.circle.fill"
-                            : "play.circle.fill",
-                        compact: compact,
-                        wideMinimumWidth: 76
-                    )
-                    .monospacedDigit()
+                    TimelineView(.periodic(from: .now, by: 1)) { context in
+                        floorActionLabel(
+                            model.hostedElapsedText(at: context.date)
+                                ?? (model.hostedTimerIsRunning ? "Pause" : "Start"),
+                            systemImage: model.hostedTimerIsRunning
+                                ? "pause.circle.fill"
+                                : "play.circle.fill",
+                            compact: compact,
+                            wideMinimumWidth: 76
+                        )
+                        .monospacedDigit()
+                        .accessibilityValue(
+                            model.hostedElapsedText(at: context.date) ?? ""
+                        )
+                    }
+                    .allowsHitTesting(false)
                 }
-                .buttonStyle(.bordered)
-                .disabled(!model.isHostedWritable)
+                .buttonStyle(RoomChromeButtonStyle())
+                .foregroundStyle(LivePalette.violet)
                 .accessibilityLabel(
                     model.hostedTimerIsRunning
                         ? "Pause hosted activity timer"
                         : "Start hosted activity timer"
+                )
+                .accessibilityHint(
+                    model.isHostedWritable
+                        ? "Starts or pauses the Interview Arc Today timer"
+                        : "Reconnects the hosted writer, then starts the Today timer"
+                )
+                .help(
+                    model.isHostedWritable
+                        ? "Start or pause the hosted activity timer"
+                        : "Hosted writer is not ready; Start will reconnect and retry"
                 )
 
                 Menu {
@@ -1225,8 +1248,12 @@ struct SystemDesignRoomView: View {
 
     private var turnlineSummary: String {
         if model.usesHostedAuthority, !model.hostedPairs.isEmpty {
-            let count = model.hostedPairs.count * 2
-            return count == 1 ? "1 HOSTED TURN" : "\(count) HOSTED TURNS"
+            let hostedCount = model.hostedPairs.count * 2
+            if model.localOpeningInterviewerTurn != nil {
+                let count = hostedCount + 1
+                return count == 1 ? "1 SAVED TURN" : "\(count) SAVED TURNS"
+            }
+            return hostedCount == 1 ? "1 HOSTED TURN" : "\(hostedCount) HOSTED TURNS"
         }
         guard let snapshot = model.snapshot else {
             return "RESTORING SESSION"
@@ -1788,12 +1815,9 @@ enum LivePalette {
 
 private struct LiveWaveform: View {
     let isActive: Bool
-
-    private let levels: [Double] = [
-        0.18, 0.42, 0.24, 0.66, 0.31, 0.52, 0.2, 0.76, 0.38, 0.24,
-        0.58, 0.33, 0.7, 0.28, 0.45, 0.2, 0.62, 0.35, 0.22, 0.48,
-        0.3, 0.68, 0.26, 0.5, 0.21, 0.4, 0.18, 0.34, 0.2, 0.28,
-    ]
+    let powerHistory: [Float]
+    let elapsedSeconds: TimeInterval
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         Canvas { context, size in
@@ -1807,15 +1831,21 @@ private struct LiveWaveform: View {
                 lineWidth: 1
             )
 
+            let levels = FullRoomWaveformLayout.displayedLevels(
+                powerHistory: powerHistory
+            )
             let barPositions = FullRoomWaveformLayout.barXPositions(
                 width: size.width,
                 levelCount: levels.count
             )
-            for (level, x) in zip(levels, barPositions) {
+            for (index, (level, x)) in zip(levels, barPositions).enumerated() {
                 let height = FullRoomWaveformLayout.barHeight(
-                    level: level,
+                    decibel: level,
                     canvasHeight: size.height,
-                    isActive: isActive
+                    isActive: isActive,
+                    elapsedSeconds: elapsedSeconds,
+                    index: index,
+                    reduceMotion: reduceMotion
                 )
                 guard height > 0 else { continue }
                 var bar = Path()
@@ -1828,7 +1858,17 @@ private struct LiveWaveform: View {
                 )
             }
         }
-        .accessibilityHidden(true)
+        .accessibilityHidden(!isActive)
+        .accessibilityLabel("Live microphone level")
+        .animation(.linear(duration: 0.09), value: powerHistory)
+        .animation(.linear(duration: 0.09), value: elapsedSeconds)
+    }
+}
+
+enum FullRoomHostedTimerLayout {
+    static func elapsedText(seconds: Double) -> String {
+        let total = max(0, Int(seconds.rounded(.down)))
+        return String(format: "%02d:%02d", total / 60, total % 60)
     }
 }
 
@@ -1836,6 +1876,22 @@ enum FullRoomWaveformLayout {
     static let traceCoverageFraction: CGFloat = 0.58
     static let horizontalInset: CGFloat = 10
     static let activeHeightFraction: CGFloat = 0.88
+    static let sampleCount = 30
+    static let pulseAmplitude = 0.18
+
+    static func displayedLevels(powerHistory: [Float]) -> [Float] {
+        Array(
+            (
+                Array(repeating: Float(-60), count: sampleCount)
+                    + powerHistory
+            )
+            .suffix(sampleCount)
+        )
+    }
+
+    static func normalizedLevel(_ decibel: Float) -> Double {
+        Double(max(0.08, min(1, (decibel + 55) / 45)))
+    }
 
     static func barHeight(
         level: Double,
@@ -1844,6 +1900,30 @@ enum FullRoomWaveformLayout {
     ) -> CGFloat {
         guard isActive else { return 0 }
         return max(3, CGFloat(level) * canvasHeight * activeHeightFraction)
+    }
+
+    static func barHeight(
+        decibel: Float,
+        canvasHeight: CGFloat,
+        isActive: Bool,
+        elapsedSeconds: TimeInterval,
+        index: Int,
+        reduceMotion: Bool
+    ) -> CGFloat {
+        guard isActive else { return 0 }
+        let normalized = normalizedLevel(decibel)
+        let pulse: Double
+        if reduceMotion {
+            pulse = 1
+        } else {
+            pulse = 0.82
+                + pulseAmplitude
+                * sin(elapsedSeconds * 11 + Double(index) * 0.72)
+        }
+        return max(
+            3,
+            canvasHeight * activeHeightFraction * CGFloat(normalized * pulse)
+        )
     }
 
     static func barXPositions(

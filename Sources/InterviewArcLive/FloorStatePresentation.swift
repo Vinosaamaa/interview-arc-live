@@ -61,6 +61,7 @@ struct FloorStatePresentation: Equatable {
         var attentionMessage: String?
         var speechActivity: SpeechActivity?
         var isInterviewerRequestInFlight: Bool
+        var isOpeningInterviewer: Bool
         var isCodexReady: Bool
         var canStopRecording: Bool
         var roomAvailability: RoomAvailability
@@ -76,6 +77,7 @@ struct FloorStatePresentation: Equatable {
             attentionMessage: String? = nil,
             speechActivity: SpeechActivity? = nil,
             isInterviewerRequestInFlight: Bool = false,
+            isOpeningInterviewer: Bool = false,
             isCodexReady: Bool = false,
             canStopRecording: Bool = false,
             roomAvailability: RoomAvailability = .ready,
@@ -90,6 +92,7 @@ struct FloorStatePresentation: Equatable {
             self.attentionMessage = attentionMessage
             self.speechActivity = speechActivity
             self.isInterviewerRequestInFlight = isInterviewerRequestInFlight
+            self.isOpeningInterviewer = isOpeningInterviewer
             self.isCodexReady = isCodexReady
             self.canStopRecording = canStopRecording
             self.roomAvailability = roomAvailability
@@ -325,6 +328,12 @@ struct FloorStatePresentation: Equatable {
         }
 
         if input.isInterviewerRequestInFlight {
+            if input.isOpeningInterviewer {
+                return Surface(
+                    label: "Mara is opening",
+                    detail: "Codex is preparing the greeting"
+                )
+            }
             return Surface(
                 label: "Answer saved · Codex working",
                 detail: "Codex is preparing Mara"
@@ -347,6 +356,14 @@ struct FloorStatePresentation: Equatable {
                 detail: candidateDetail(for: input)
             )
         case .interviewerProcessing:
+            if input.isOpeningInterviewer {
+                return Surface(
+                    label: input.isCodexReady
+                        ? "Opening greeting needs retry"
+                        : "Opening greeting needs Codex to retry",
+                    detail: "No candidate answer yet"
+                )
+            }
             return Surface(
                 label: input.isCodexReady
                     ? "Answer saved · interviewer retry required"
@@ -390,6 +407,10 @@ struct FloorStatePresentation: Equatable {
             case .hostedRecoveryRequired: return "Hosted recovery required"
             case .ready, .restoring: break
             }
+        }
+
+        if input.isOpeningInterviewer {
+            return input.isInterviewerRequestInFlight ? "Opening" : "Opening retry"
         }
 
         switch input.phase {
@@ -454,6 +475,10 @@ extension SystemDesignRoomModel {
                     ?? codexAttentionMessage,
                 speechActivity: speechActivity,
                 isInterviewerRequestInFlight: isInterviewerRequestInFlight,
+                isOpeningInterviewer: snapshot?.turns.isEmpty == true
+                    && snapshot?.phase != .candidateFloor
+                    && (snapshot?.phase == .interviewerProcessing
+                        || isInterviewerRequestInFlight),
                 isCodexReady: isCodexReady,
                 canStopRecording: canStopRecording,
                 roomAvailability: floorRoomAvailability,

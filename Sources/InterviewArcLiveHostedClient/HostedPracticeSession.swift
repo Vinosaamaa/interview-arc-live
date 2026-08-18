@@ -1,4 +1,5 @@
 import Foundation
+import InterviewArcLiveCore
 
 public protocol LiveClock: Sendable {
     func epochMilliseconds() -> LiveEpochMilliseconds
@@ -20,6 +21,19 @@ public enum HostedPracticeConnection: Equatable, Sendable {
     case writable
     case offline
     case recoveryRequired(code: String)
+
+    public var debugCode: String {
+        switch self {
+        case .signedOut: "signedOut"
+        case .loading: "loading"
+        case .noOpenSystemDesignActivity: "noOpenSystemDesignActivity"
+        case .readOnly: "readOnly"
+        case .writable: "writable"
+        case .offline: "offline"
+        case .recoveryRequired(let code):
+            "recoveryRequired.\(LiveDebugTrace.token(code))"
+        }
+    }
 }
 
 public struct HostedPracticeSnapshot: Equatable, Sendable {
@@ -133,6 +147,7 @@ public actor HostedPracticeSession {
 
     @discardableResult
     public func open(acquireWriterLease: Bool = true) async -> HostedPracticeSnapshot {
+        LiveDebugTrace.event("hosted.open.start")
         state = copy(connection: .loading)
         do {
             let fingerprint = try await tokenReader.credentialFingerprint()
@@ -206,6 +221,13 @@ public actor HostedPracticeSession {
         } catch {
             state = copy(connection: .offline)
         }
+        LiveDebugTrace.event(
+            "hosted.open.end",
+            [
+                "connection": state.connection.debugCode,
+                "count": "\(state.pendingOperationCount)",
+            ]
+        )
         return state
     }
 
@@ -269,19 +291,35 @@ public actor HostedPracticeSession {
         }
 
         let writable = leaseIsCurrent(in: activity)
+        if writable {
+            state = HostedPracticeSnapshot(
+                connection: .writable,
+                today: authority.today,
+                activity: activity,
+                lease: state.lease,
+                pendingOperationCount: try await pendingCount(),
+                hasQuarantinedOperations: state.hasQuarantinedOperations,
+                lastLiveInvalidationRevision: state.lastLiveInvalidationRevision,
+                localToServerOffsetMilliseconds:
+                    activity.serverTime - clock.epochMilliseconds()
+            )
+            return state
+        }
+
         state = HostedPracticeSnapshot(
-            connection: writable
-                ? .writable
-                : .readOnly(reason: "Writer lease required"),
+            connection: .readOnly(reason: "Acquiring writer lease"),
             today: authority.today,
             activity: activity,
-            lease: writable ? state.lease : nil,
             pendingOperationCount: try await pendingCount(),
             hasQuarantinedOperations: state.hasQuarantinedOperations,
             lastLiveInvalidationRevision: state.lastLiveInvalidationRevision,
             localToServerOffsetMilliseconds:
                 activity.serverTime - clock.epochMilliseconds()
         )
+        if activity.activity.lifecycle == .planned
+            || activity.activity.lifecycle == .running {
+            try await acquireLease()
+        }
         return state
     }
 
@@ -314,6 +352,21 @@ public actor HostedPracticeSession {
     }
 
     public func acquireLease() async throws {
+        do {
+            try await performAcquire()
+        } catch let error as LiveV1ClientError where error.code == "lease_conflict" {
+            // Acquire itself can 409 when a D1 fence CAS races. Reread, then
+            // take a fresh grant instead of trapping the room in recovery.
+            LiveDebugTrace.event(
+                "hosted.lease.conflict",
+                ["operation": "lease.acquire", "ok": "retry"]
+            )
+            try await rereadAuthorityForLeaseRecovery()
+            try await performAcquire()
+        }
+    }
+
+    private func performAcquire() async throws {
         guard let installation,
               let activity = state.activity,
               let fingerprint else {
@@ -578,9 +631,21 @@ public actor HostedPracticeSession {
                 credentialFingerprint: credentialFingerprint
             )
             applyRecoveredReceipt(record)
+            LiveDebugTrace.event(
+                "hosted.recover.receipt",
+                ["operation": record.operation, "ok": "true"]
+            )
             return true
         } catch let error as LiveV1ClientError {
             guard error.code == "receipt_not_found" else {
+                LiveDebugTrace.event(
+                    "hosted.recover.receipt",
+                    [
+                        "operation": record.operation,
+                        "ok": "false",
+                        "code": error.code ?? "hosted_response",
+                    ]
+                )
                 if error.code == "unauthorized" {
                     state = copy(connection: .signedOut)
                 } else {
@@ -591,17 +656,28 @@ public actor HostedPracticeSession {
         }
 
         guard record.holderSessionId == holderSessionID else {
-            try await markRecovery(
-                record,
-                error: LiveV1ClientError.server(
-                    statusCode: 404,
-                    code: "receipt_not_found",
-                    retryable: false
-                )
+            // A previous room prepared this mutation. Replaying it would
+            // rewrite that session's fence. The server has no receipt, so
+            // abandon the row and let this launch acquire a fresh lease.
+            LiveDebugTrace.event(
+                "hosted.recover.abandon",
+                [
+                    "operation": record.operation,
+                    "code": "receipt_not_found",
+                    "reason": "foreign_holder_session",
+                ]
             )
-            return false
+            try await outbox.remove(
+                operationID: record.operationId,
+                credentialFingerprint: credentialFingerprint
+            )
+            return true
         }
         do {
+            LiveDebugTrace.event(
+                "hosted.recover.replay",
+                ["operation": record.operation]
+            )
             if record.method == .put {
                 try await replayClipUpload(record)
             } else {
@@ -613,6 +689,23 @@ public actor HostedPracticeSession {
                 apply(response)
                 applyRecoveredReceipt(record)
             }
+            try await outbox.remove(
+                operationID: record.operationId,
+                credentialFingerprint: credentialFingerprint
+            )
+            return true
+        } catch let error as LiveV1ClientError where error.code == "lease_conflict" {
+            // Retryable stale/foreign fence. The canonical body still carries
+            // the dead token, so replaying it cannot succeed. Abandon and let
+            // this launch acquire a fresh lease.
+            LiveDebugTrace.event(
+                "hosted.recover.abandon",
+                [
+                    "operation": record.operation,
+                    "code": "lease_conflict",
+                    "reason": "stale_fence",
+                ]
+            )
             try await outbox.remove(
                 operationID: record.operationId,
                 credentialFingerprint: credentialFingerprint
@@ -925,6 +1018,26 @@ public actor HostedPracticeSession {
                     clearLease: error.code == "lease_held",
                     pendingOperationCount: try await pendingCount()
                 )
+            } else if error.code == "lease_conflict" {
+                try await outbox.remove(
+                    operationID: operationID,
+                    credentialFingerprint: fingerprint
+                )
+                state = copy(
+                    clearLease: true,
+                    pendingOperationCount: try await pendingCount()
+                )
+                LiveDebugTrace.event(
+                    "hosted.lease.conflict",
+                    [
+                        "operation": operation,
+                        "ok": pathSuffix.hasSuffix("lease/acquire") ? "false" : "retry",
+                    ]
+                )
+                if !pathSuffix.hasSuffix("lease/acquire") {
+                    try await rereadAuthorityForLeaseRecovery()
+                    try await acquireLease()
+                }
             } else {
                 try await outbox.mark(
                     operationID: operationID,
@@ -941,6 +1054,22 @@ public actor HostedPracticeSession {
             }
             throw error
         }
+    }
+
+    private func rereadAuthorityForLeaseRecovery() async throws {
+        let authority = try await readAuthority()
+        guard let activity = authority.activity else {
+            throw HostedPracticeSessionError.noOpenSystemDesignActivity
+        }
+        state = copy(
+            connection: .readOnly(reason: "Reacquiring writer lease"),
+            today: authority.today,
+            activity: activity,
+            clearLease: true,
+            pendingOperationCount: try await pendingCount(),
+            localToServerOffsetMilliseconds:
+                activity.serverTime - clock.epochMilliseconds()
+        )
     }
 
     private func apply(_ response: LiveMutationResponse) {
@@ -965,6 +1094,11 @@ public actor HostedPracticeSession {
                 connection: .readOnly(reason: "Another writer holds this activity"),
                 clearLease: true
             )
+        } else if error.code == "lease_conflict" {
+            state = copy(
+                connection: .readOnly(reason: "Writer lease required"),
+                clearLease: true
+            )
         } else {
             state = copy(
                 connection: .recoveryRequired(
@@ -976,7 +1110,8 @@ public actor HostedPracticeSession {
 
     /// These server gates are explicit, non-retryable rejections: the server
     /// promises no mutation and therefore there is no ambiguous receipt to
-    /// recover. Conflict/fence errors deliberately remain in recovery.
+    /// recover. Retryable `lease_conflict` is abandoned and reacquired instead
+    /// of remaining in recovery.
     private static func isDefinitiveNoMutation(_ error: LiveV1ClientError) -> Bool {
         guard !error.retryable, let code = error.code else { return false }
         return [

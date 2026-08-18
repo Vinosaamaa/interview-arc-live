@@ -63,6 +63,17 @@ thinking or work. Segments are never sent to the interviewer independently.
 One canonical response containing rich `displayMarkdown` and concise
 `spokenText` under one stable identity.
 
+### Opening Interviewer Turn
+
+The first Interviewer Turn of a fresh Interview Room Session. It has no
+Candidate Turn (`replyToTurnID` is nil). It states the Activity Prompt and
+invites clarifying questions; it must not design the system or wait for an
+answer that does not exist. App `open()` always requests it before the
+candidate floor. A Codex failure stays in interviewer processing with empty
+turns until an explicit Retry interviewer. Hosted `/live/v1` pairs remain
+candidate-then-interviewer, so this turn is local until a hosted opening
+contract exists.
+
 ### Interviewer Utterance
 
 The durable local-speech identity owned by one Interviewer Turn. It references

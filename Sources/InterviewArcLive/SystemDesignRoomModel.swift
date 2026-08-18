@@ -145,6 +145,8 @@ final class SystemDesignRoomModel: ObservableObject {
     @Published private(set) var candidateNotesDraft = ""
     @Published private(set) var candidateNotesSavePresentation: CandidateNotesSavePresentation = .saved
     @Published private(set) var isFinishingInterview = false
+    @Published private(set) var recordingPowerHistory: [Float] = []
+    @Published private(set) var recordingElapsedSeconds: TimeInterval = 0
 
     @Published var isCredentialSetupPresented = false
     @Published private(set) var isSavingCredential = false
@@ -190,6 +192,7 @@ final class SystemDesignRoomModel: ObservableObject {
     private var credentialState: CredentialState = .checking
     private var errorWasCodexFailure = false
     private var coordinator: SegmentSpeechCoordinator?
+    private var segmentRecorder: VoiceCoreSegmentRecorder?
     private var interviewerSpeechCoordinator: InterviewerSpeechCoordinator?
     private var speechPreparationTask: Task<Void, Never>?
     private var audioPlayer: AVAudioPlayer?
@@ -274,13 +277,24 @@ final class SystemDesignRoomModel: ObservableObject {
     }
 
     var hostedElapsedText: String? {
+        hostedElapsedText(at: Date())
+    }
+
+    func hostedElapsedText(at date: Date) -> String? {
+        guard let timer = hostedSnapshot.activity?.activity.timer else {
+            return nil
+        }
+        let hasLiveRun = timer.runningSince != nil && timer.completed == false
+        let hasAccumulatedTime = timer.accumulatedSeconds > 0.5
+        guard hasLiveRun || hasAccumulatedTime || timer.completed else {
+            return nil
+        }
         guard let seconds = hostedSnapshot.elapsedSeconds(
             localNow: LiveEpochMilliseconds(
-                (Date().timeIntervalSince1970 * 1_000).rounded()
+                (date.timeIntervalSince1970 * 1_000).rounded()
             )
         ) else { return nil }
-        let total = max(0, Int(seconds.rounded(.down)))
-        return String(format: "%02d:%02d", total / 60, total % 60)
+        return FullRoomHostedTimerLayout.elapsedText(seconds: seconds)
     }
 
     var hostedResult: LiveResult? {
@@ -288,6 +302,15 @@ final class SystemDesignRoomModel: ObservableObject {
     }
 
     var hostedPairs: [LivePair] { hostedSnapshot.activity?.pairs ?? [] }
+
+    /// Local-only Opening Turn. Hosted pairs stay candidate-then-interviewer.
+    var localOpeningInterviewerTurn: InterviewerTurn? {
+        guard case .interviewer(let opening)? = snapshot?.turns.first,
+              opening.replyToTurnID == nil else {
+            return nil
+        }
+        return opening
+    }
 
     var hostedNextSystemDesignActivityID: String? {
         guard let today = hostedSnapshot.today,
@@ -1193,7 +1216,13 @@ final class SystemDesignRoomModel: ObservableObject {
         isCheckingCodex = true
         errorMessage = nil
         errorWasCodexFailure = false
-        defer { isWorking = false }
+        defer {
+            isWorking = false
+            LiveDebugTrace.event(
+                "room.open.end",
+                ["ok": coordinator == nil ? "false" : "true"]
+            )
+        }
 
         async let codexCheck = codexRuntime.preflight()
 
@@ -1202,6 +1231,10 @@ final class SystemDesignRoomModel: ObservableObject {
         var launchActivityID = "local-system-design-tracer"
         if let hostedController {
             hostedSnapshot = await hostedController.open()
+            LiveDebugTrace.event(
+                "room.open.hosted",
+                ["connection": hostedSnapshot.connection.debugCode]
+            )
             switch hostedSnapshot.connection {
             case .signedOut:
                 isLiveIntegrationSetupPresented = true
@@ -1219,9 +1252,11 @@ final class SystemDesignRoomModel: ObservableObject {
                 statusMessage = hostedController.errorMessage
                     ?? "Hosted recovery needs attention"
                 errorMessage = hostedController.errorMessage
-                isCheckingCodex = false
-                _ = await codexCheck
-                return
+                if hostedSnapshot.activity == nil {
+                    isCheckingCodex = false
+                    _ = await codexCheck
+                    return
+                }
             case .loading:
                 statusMessage = "Reading Interview Arc Today…"
             case .readOnly, .writable:
@@ -1265,7 +1300,7 @@ final class SystemDesignRoomModel: ObservableObject {
                 activityID: launchActivityID,
                 activityPrompt: launchPrompt,
                 interviewerRuntime: codexRuntime,
-                recording: VoiceCoreSegmentRecorder(),
+                recording: makeBoundSegmentRecorder(),
                 transcriber: VoiceCoreSegmentTranscriber(),
                 credentialReader: credentialStore,
                 semanticEndpointClassifier: GroqEndpointClassifier(
@@ -1297,9 +1332,18 @@ final class SystemDesignRoomModel: ObservableObject {
                 await opened.enableContinuousListening()
             }
             if restored.phase == .ready {
-                restored = try await opened.giveCandidateFloor(
-                    commandID: CommandID("local-give-floor-0")
-                )
+                isInterviewerRequestInFlight = true
+                statusMessage = "Mara is opening the interview…"
+                do {
+                    restored = try await opened.requestOpeningInterviewerTurn(
+                        commandID: CommandID("local-opening-0")
+                    )
+                } catch {
+                    restored = opened.snapshot
+                    errorWasCodexFailure = applyCodexFailure(error)
+                    errorMessage = safeMessage(for: error)
+                }
+                isInterviewerRequestInFlight = false
             }
             publish(restored)
             await recoverBoardArtifacts(in: restored.board)
@@ -1376,6 +1420,10 @@ final class SystemDesignRoomModel: ObservableObject {
         defer { isCheckingCodex = false }
 
         applyCodexReadiness(await codexRuntime.preflight())
+        LiveDebugTrace.event(
+            "codex.preflight",
+            ["ok": isCodexReady ? "true" : "false"]
+        )
     }
 
     func saveLiveIntegrationToken(_ value: String, untilQuit: Bool) async {
@@ -1418,8 +1466,14 @@ final class SystemDesignRoomModel: ObservableObject {
     }
 
     func toggleHostedTimer() async {
-        guard let hostedController, hostedSnapshot.connection == .writable else {
-            errorMessage = "Reconnect the hosted writer before changing the timer."
+        guard let hostedController else { return }
+        if hostedSnapshot.connection != .writable {
+            await hostedController.refresh()
+            hostedSnapshot = hostedController.snapshot
+        }
+        guard hostedSnapshot.connection == .writable else {
+            errorMessage = hostedController.errorMessage
+                ?? "Reconnect the hosted writer before changing the timer."
             return
         }
         do {
@@ -1429,6 +1483,18 @@ final class SystemDesignRoomModel: ObservableObject {
             errorMessage = nil
         } catch {
             hostedSnapshot = hostedController.snapshot
+            if hostedSnapshot.connection == .writable, !hostedTimerIsRunning {
+                do {
+                    try await hostedController.startTimer()
+                    hostedSnapshot = hostedController.snapshot
+                    errorMessage = nil
+                    return
+                } catch {
+                    hostedSnapshot = hostedController.snapshot
+                    errorMessage = error.localizedDescription
+                    return
+                }
+            }
             errorMessage = error.localizedDescription
         }
     }
@@ -1474,6 +1540,10 @@ final class SystemDesignRoomModel: ObservableObject {
     }
 
     func recordSegment() async {
+        LiveDebugTrace.event(
+            "room.record",
+            ["ok": canRecordSegment ? "true" : "false"]
+        )
         guard let coordinator else { return }
         guard hasUsableGroqCredential else {
             presentCredentialSetup()
@@ -1718,6 +1788,13 @@ final class SystemDesignRoomModel: ObservableObject {
     }
 
     func performPrimaryAction() async {
+        LiveDebugTrace.event(
+            "room.handoff",
+            [
+                "phase": snapshot?.phase.rawValue ?? "none",
+                "ok": canAct ? "true" : "false",
+            ]
+        )
         guard let coordinator, let snapshot else { return }
         if snapshot.phase == .candidateFloor,
            boardAttachmentForHandOff == nil {
@@ -1781,10 +1858,12 @@ final class SystemDesignRoomModel: ObservableObject {
         }
     }
 
-    /// Uses the existing durable finish command without broadening the phases
-    /// Core accepts. Presentation close remains fail-closed when the current
-    /// phase cannot finish safely. An operation already awaiting its Adapter
-    /// keeps sole ownership of the model's visible and durable state.
+    /// Hosted finish is authoritative. Local completion follows only after
+    /// the hosted activity actually finishes, so a gate such as missing
+    /// result cannot leave the room looking ended while Today stays open.
+    /// Presentation close remains fail-closed when the current phase cannot
+    /// finish safely. An operation already awaiting its Adapter keeps sole
+    /// ownership of the model's visible and durable state.
     @discardableResult
     func finishInterview() async -> Bool {
         await finishInterview(hostedNextActivityID: nil)
@@ -1806,14 +1885,47 @@ final class SystemDesignRoomModel: ObservableObject {
     }
 
     private func finishInterview(hostedNextActivityID: String?) async -> Bool {
-        guard !isWorking, !hasPendingLocalPersistence else { return false }
-        guard let coordinator, let snapshot else { return false }
+        guard !isWorking else { return false }
+        if hasPendingLocalPersistence {
+            errorMessage = "Wait for the latest local save to finish, then press End again."
+            return false
+        }
+        guard let coordinator, let snapshot else {
+            errorMessage = "The interview room is not open yet, so End cannot finish this activity."
+            return false
+        }
         if snapshot.phase == .completed,
            (
                hostedController == nil
                    || hostedSnapshot.activity?.activity.lifecycle == .completed
            ) {
             return true
+        }
+        if hostedController != nil {
+            switch hostedSnapshot.connection {
+            case .writable:
+                break
+            case .recoveryRequired(let code):
+                errorMessage = "Hosted recovery is required before ending (\(code))."
+                return false
+            case .offline:
+                errorMessage = "Interview Arc is offline. End needs a hosted connection; local work is kept."
+                return false
+            default:
+                errorMessage = HostedPracticeSessionError.leaseUnavailable.errorDescription
+                return false
+            }
+        }
+        if snapshot.segments.contains(where: { segment in
+            switch segment.lifecycle {
+            case .captureAuthorized, .recording, .finalizationAuthorized, .transcribing:
+                return true
+            default:
+                return false
+            }
+        }) {
+            errorMessage = "Stop the in-progress recording before ending. Local work stays saved."
+            return false
         }
 
         isFinishingInterview = true
@@ -1830,10 +1942,6 @@ final class SystemDesignRoomModel: ObservableObject {
             await waitForBoardPersistence()
             if snapshot.phase != .completed {
                 try await syncHostedPairs(from: snapshot)
-                let updated = try await coordinator.finishSession(
-                    commandID: commandID("finish-interview")
-                )
-                publish(updated)
             }
             if let hostedController {
                 if let hostedNextActivityID {
@@ -1845,9 +1953,18 @@ final class SystemDesignRoomModel: ObservableObject {
                 }
                 hostedSnapshot = hostedController.snapshot
             }
+            if coordinator.snapshot.phase != .completed {
+                let updated = try await coordinator.finishSession(
+                    commandID: commandID("finish-interview")
+                )
+                publish(updated)
+            }
             return true
         } catch {
             publish(coordinator.snapshot)
+            if let hostedController {
+                hostedSnapshot = hostedController.snapshot
+            }
             errorMessage = safeMessage(for: error)
             return false
         }
@@ -1860,6 +1977,10 @@ final class SystemDesignRoomModel: ObservableObject {
         speechPreparationTask = nil
         interviewerSpeechCoordinator = nil
         coordinator = nil
+        segmentRecorder?.onMetering = nil
+        segmentRecorder = nil
+        recordingPowerHistory = []
+        recordingElapsedSeconds = 0
         snapshot = nil
         segments = []
         localPersistenceTail = nil
@@ -2098,16 +2219,19 @@ final class SystemDesignRoomModel: ObservableObject {
 
         do {
             try await credentialStore.saveAndVerify(value)
+            LiveDebugTrace.event("groq.save", ["ok": "true"])
             credentialState = .readyFromKeychain
             statusMessage = segments.contains(where: { $0.transcriptionAction != nil })
                 ? "Groq key saved to Keychain · transcribe the affected segment"
                 : status(for: snapshot)
             return true
         } catch let error as LiveGroqCredentialStoreError {
+            LiveDebugTrace.event("groq.save", ["ok": "false"])
             credentialState = .unusable
             credentialErrorMessage = error.localizedDescription
             return false
         } catch {
+            LiveDebugTrace.event("groq.save", ["ok": "false"])
             credentialState = .unusable
             credentialErrorMessage = "macOS Keychain could not save the Groq API key."
             return false
@@ -2199,6 +2323,16 @@ final class SystemDesignRoomModel: ObservableObject {
             ),
             audioStore: audioStore
         )
+    }
+
+    private func makeBoundSegmentRecorder() -> VoiceCoreSegmentRecorder {
+        let recorder = VoiceCoreSegmentRecorder()
+        segmentRecorder = recorder
+        recorder.onMetering = { [weak self] sample in
+            self?.recordingPowerHistory = sample.powerHistory
+            self?.recordingElapsedSeconds = sample.elapsedSeconds
+        }
+        return recorder
     }
 
     private static func makeDefaultCodexRuntime(
@@ -2521,6 +2655,14 @@ final class SystemDesignRoomModel: ObservableObject {
             }
             return "\(selectedCount) segment\(selectedCount == 1 ? "" : "s") ready"
         case .interviewerProcessing:
+            if snapshot.turns.isEmpty {
+                if isInterviewerRequestInFlight {
+                    return "Mara is opening the interview…"
+                }
+                return isCodexReady
+                    ? "Opening greeting needs retry"
+                    : "Opening greeting needs Codex to retry"
+            }
             if isInterviewerRequestInFlight {
                 return "Answer saved · Codex is preparing the next question"
             }
@@ -2619,9 +2761,23 @@ final class SystemDesignRoomModel: ObservableObject {
                 return "This recording has insufficient speech signal. Play it, then exclude it or add another segment."
             case .commandInProgress:
                 return "Another durable room operation is still in progress."
+            case .invalidTransition(let command, _):
+                if command == "finish" {
+                    return "Stop the in-progress recording before ending. Local work stays saved."
+                }
+                return "The room rejected this action. Its latest durable state is still shown."
             default:
                 return "The room rejected this action. Its latest durable state is still shown."
             }
+        }
+
+        if let hostedError = error as? LiveV1ClientError {
+            return hostedError.errorDescription
+                ?? "Interview Arc rejected this action. Local work is still shown."
+        }
+        if let hostedSessionError = error as? HostedPracticeSessionError {
+            return hostedSessionError.errorDescription
+                ?? "Hosted recovery is required before this action."
         }
 
         return "The operation did not complete. The latest durable state is still shown."

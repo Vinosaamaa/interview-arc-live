@@ -30,6 +30,10 @@ Do not create or change a thread Goal unless the user explicitly asks.
   a Live-specific Application Support root. Never commit credentials, audio,
   transcripts, model caches, private IDs, personal paths, or personal contact
   information.
+- Emit public-safe `LiveDebugTrace` events at hosted/session/handoff
+  boundaries (command, phase, result code, counts). Never log secrets,
+  transcripts, audio, private IDs, or paths. Traces must not change control
+  flow.
 
 ## Architecture
 

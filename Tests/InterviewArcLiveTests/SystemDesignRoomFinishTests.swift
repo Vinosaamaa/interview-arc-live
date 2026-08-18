@@ -1,5 +1,6 @@
 import XCTest
 
+import InterviewArcLiveCodexAdapter
 import InterviewArcLiveCore
 @testable import InterviewArcLive
 
@@ -37,5 +38,33 @@ final class SystemDesignRoomFinishTests: XCTestCase {
         XCTAssertEqual(model.snapshot?.phase, .completed)
         let finalSaveCount = await store.completionSaveCount()
         XCTAssertEqual(finalSaveCount, 1)
+    }
+
+    func testFinishInterviewReportsWhenTheLocalRoomIsNotOpen() async {
+        let model = SystemDesignRoomModel(
+            codexRuntime: UnopenedRoomCodexRuntime()
+        )
+
+        let didFinish = await model.finishInterview()
+
+        XCTAssertFalse(didFinish)
+        XCTAssertEqual(
+            model.errorMessage,
+            "The interview room is not open yet, so End cannot finish this activity."
+        )
+        XCTAssertNil(model.snapshot)
+    }
+}
+
+private actor UnopenedRoomCodexRuntime: LiveCodexInterviewerRuntime {
+    func preflight() async -> CodexAppServerReadiness { .ready }
+
+    func respond(
+        to request: InterviewerRequest
+    ) async throws -> CanonicalInterviewerResponse {
+        CanonicalInterviewerResponse(
+            displayMarkdown: "Unused.",
+            spokenText: "Unused."
+        )
     }
 }

@@ -22,11 +22,13 @@ unexpected server request or tool item fails the turn closed. It never
 attaches an arbitrary terminal thread.
 
 The Adapter receives one durable `InterviewerRequest` containing the Activity
-Prompt, exact Candidate Turn, and bounded visible history. It constrains the
-final assistant output to one strict object containing nonempty
-`displayMarkdown` and `spokenText`. Only that canonical pair crosses the
-Interface. All working, reasoning, tool, approval, and process events remain
-transient diagnostics.
+Prompt, optional Candidate Turn, and bounded visible history. A nil Candidate
+Turn is the session Opening Turn: prompt plus empty history, encoded as
+`kind: opening`. Reply turns still send the exact Candidate Turn as
+`kind: reply`. It constrains the final assistant output to one strict object
+containing nonempty `displayMarkdown` and `spokenText`. Only that canonical
+pair crosses the Interface. All working, reasoning, tool, approval, and
+process events remain transient diagnostics.
 
 The private runtime uses the user's authenticated Codex home. Current Codex
 can still contribute home-level user instructions even when project discovery
@@ -38,7 +40,8 @@ hosted runtime removes this personal-configuration dependency.
 The Interview Room Session persists `interviewerProcessing` before invoking
 the Adapter and persists the canonical Interviewer Turn before publishing it.
 Failure never replays automatically. A user retry has a fresh Command identity
-while retaining the Candidate and intended Interviewer identities.
+while retaining the intended Interviewer identity. Reply retries also retain
+the Candidate Turn; Opening retries have no Candidate Turn.
 
 ## Consequences
 
