@@ -30,6 +30,23 @@ thread is a replaceable runtime binding, not the Session identity.
 The interval in which the candidate may speak, think, code, or draw. Silence
 may finalize an audio Segment but never ends the Candidate Floor by itself.
 
+### Continuous Conversation
+
+The default Turn Mode for new Sessions. While the Candidate Floor is open,
+Live locally detects speech, creates durable Segments, transcribes finalized
+audio, evaluates the accumulated answer, and may complete the canonical Hand
+off after Endpoint Grace. Interviewer speech remains half-duplex in the first
+shipment: candidate capture arms only after playback ends or is explicitly
+stopped.
+
+### Floor Hold
+
+A durable candidate intent that suppresses automatic Hand off while a longer
+answer is in progress. Activating **Hold floor** keeps silence and semantic
+endpoint proposals from yielding the floor; **Send answer** ends the hold and
+uses the same canonical Hand off transition after active Segment evidence is
+durable.
+
 ### Hand off
 
 The durable transition that commits one Candidate Turn and permits an
@@ -89,8 +106,10 @@ controls its evidence status, never whether the text remains visible.
 
 ### Turn Mode
 
-The policy controlling Hand off: `Cue Only`, functional `Patient Auto`, or
-`Manual`.
+The policy controlling capture and Hand off. New Sessions default to
+`Continuous Conversation`; restored Sessions preserve their recorded mode.
+`Cue Only`, `Patient Auto`, and `Manual` remain explicit compatibility and
+recovery modes.
 
 ### Endpoint Proposal
 
@@ -196,6 +215,13 @@ separate recording, model, transcript, or persistence state.
 - One current `likely_end` Endpoint Evaluation owns at most one Endpoint Grace,
   and automatic completion uses the same at-most-once Hand off transition as
   the explicit action.
+- Continuous Conversation may arm capture only during Candidate Floor. It does
+  not listen through Interviewer TTS or infer a Candidate Turn from speech over
+  playback in the first shipment.
+- Floor Hold cancels or suppresses Endpoint Grace and automatic Hand off until
+  **Send answer** explicitly releases it.
+- Acoustic silence may finalize one Segment but never commits a Candidate Turn
+  without current durable semantic and grace policy.
 - Accepted transitions advance the Session Manifest revision monotonically.
 - Every nonempty audio-derived transcript candidate remains visible with an
   explicit quality state.
