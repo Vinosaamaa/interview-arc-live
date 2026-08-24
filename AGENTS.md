@@ -11,6 +11,20 @@ state and APIs; `interview-arc-voice` owns the system-wide dictation client.
 
 Do not create or change a thread Goal unless the user explicitly asks.
 
+## Issue worktrees
+
+Create Live worktrees only under
+`$HOME/Projects/interview-prep-support/worktrees` and name them
+`live-<issue>-<slug>`. Before creating or resuming work, inspect
+`git worktree list --porcelain`, reuse the registered issue worktree, and honor
+any Git lock reason. Never implement in the primary/shared checkout or create a
+duplicate worktree.
+
+The owner removes a worktree only after verifying the exact tested PR head,
+merge, released `main`, cleanliness, and absence of unpublished work. Use
+`git worktree remove <exact-path>` without `--force`; never recursively delete
+a registered worktree.
+
 ## Product invariants
 
 - One `InterviewRoomSession` is bound to one Interview Arc activity.
@@ -61,9 +75,11 @@ as ADRs instead of duplicating narrative across guides.
   available. A CLT-only Fastlane may use focused build/typecheck, JS/runtime,
   and headed-app proof instead; do not install full Xcode solely for local
   XCTest. Hosted XCTest must pass before merge.
-- All Live worktrees share the existing workspace cache at
-  `.cache/interview-arc-live-swift`. Derive it from the workspace root, source
-  its `env.sh` when present, and pass
+- All Live worktrees share the existing support cache at
+  `$HOME/Projects/interview-prep-support/cache/interview-arc-live-swift`.
+  Resolve the support root from `$INTERVIEW_PREP_SUPPORT_ROOT` when set or
+  `$HOME/Projects/interview-prep-support` otherwise, source the cache's
+  `env.sh`, and pass
   `--cache-path "$INTERVIEW_ARC_LIVE_SWIFTPM_CACHE"` to `swift build`,
   `swift test`, and other SwiftPM `swift` subcommands. The environment also
   owns the Clang and Swift module caches. Never create
