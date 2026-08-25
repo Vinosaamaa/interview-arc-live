@@ -22,17 +22,35 @@ This representation keeps the Python policy gate and Arc's deterministic JavaScr
 
 ## Forward authoring protocol
 
-The implementation coordinator owns the receipt as part of the pull request. The user does not need to request a separate Journal operation.
+The implementation coordinator owns the receipt as part of the pull request.
+The user does not need to request a separate Journal operation. Follow
+[`Engineering record authorship`](../agents/issue-lifecycle.md#engineering-record-authorship):
+classify the change during issue work, author or select any exact rich record
+before review, use a draft pull request to obtain the Live repository number,
+then scaffold and commit its numbered receipt. Material work may add a record or
+reuse an exact existing rich record whose reviewed cluster genuinely covers the
+change.
 
-1. Open or identify the pull request so its Live repository number is known.
-2. Add exactly one compact receipt at `docs/engineering/changes/pr-<number>.md`.
-3. Record a public-safe title and one factual summary paragraph of at most 280 characters.
-4. Classify a small or non-material pull request as `none` and leave `richRecordRefs` empty.
-5. For a material pull request, link the exact `id@revision` of a suitable existing rich record or add the appropriate rich record. Reusing a reviewed record lets one dossier or retrospective cover an explicit multi-PR cluster without duplicating prose.
-6. Let CI validate the classification, receipt, and rich-record linkage. Arc deterministically projects reviewed Live receipts from an exact trusted commit pin.
-7. Merge and release through Live's normal verification workflow.
+After the pull request number is known, run:
 
-CI does not invent motivation, architecture, root cause, impact, prose, or diagrams from a diff. The coordinator authors the factual receipt and any required rich record while it has the implementation context. Canonical state is Markdown in Git; generated JSON and HTML are disposable Arc projections, not a database or second source of narrative truth.
+```sh
+python3 scripts/new-engineering-receipt.py \
+  --pr <number> \
+  --title "<exact pull-request title>" \
+  --summary "<one public-safe factual paragraph>" \
+  --classification none
+```
+
+Run `python3 scripts/new-engineering-receipt.py --help` for complete
+non-material and material examples. The helper is non-interactive, makes no
+GitHub, network, Xcode, installation, or runtime call, and refuses unsafe values
+or an existing target.
+
+CI does not invent motivation, architecture, root cause, impact, prose, or
+diagrams from a diff. The coordinator authors the factual receipt and any
+required rich record while it has the implementation context. Canonical state
+is Markdown in Git; generated JSON and the portable static HTML export are
+disposable Arc projections, not a database or second source of narrative truth.
 
 ## Compact receipt example
 

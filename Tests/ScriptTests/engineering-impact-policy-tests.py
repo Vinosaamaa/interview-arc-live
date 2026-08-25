@@ -131,7 +131,16 @@ Adopted complete pull-request receipts and a curated Engineering record for the 
         self.assertIn("'source'", concurrency_group)
         self.assertEqual(self.workflow_scalar(concurrency, "cancel-in-progress", 2), "true")
         self.assertIn("Test Engineering impact policy", policy_job)
+        self.assertIn("Test Engineering receipt scaffold", policy_job)
         self.assertIn("Validate Engineering impact classification", policy_job)
+
+    def test_protocol_teaches_the_draft_pr_authorship_boundary(self):
+        protocol = (Path(__file__).parents[2] / "docs/engineering/pull-request-history.md").read_text(encoding="utf-8")
+        lifecycle = (Path(__file__).parents[2] / "docs/agents/issue-lifecycle.md").read_text(encoding="utf-8")
+        self.assertIn("use a draft pull request to obtain the Live repository number", protocol)
+        self.assertIn("new-engineering-receipt.py --help", protocol)
+        self.assertIn("portable static HTML export", lifecycle)
+        self.assertIn("CI never invents them", lifecycle)
 
     def test_packaging_uses_a_clean_exact_tree_after_mutating_tests(self):
         workflow = WORKFLOW.read_text(encoding="utf-8")
