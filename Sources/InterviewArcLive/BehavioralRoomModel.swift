@@ -1,6 +1,5 @@
 import Combine
 import Foundation
-import InterviewArcLiveCodexAdapter
 import InterviewArcLiveCore
 import InterviewArcLiveVoiceAdapter
 
@@ -18,8 +17,8 @@ final class BehavioralRoomModel: ObservableObject {
     @Published var isCredentialSetupPresented = false
     @Published private(set) var isSavingCredential = false
     @Published private(set) var credentialErrorMessage: String?
-    @Published private(set) var isCheckingCodex = false
-    @Published private(set) var isCodexReady = false
+    @Published private(set) var isCheckingInterviewer = false
+    @Published private(set) var isInterviewerReady = false
     @Published private(set) var isFinishingInterview = false
     @Published private(set) var isInterviewerRequestInFlight = false
 
@@ -54,7 +53,7 @@ final class BehavioralRoomModel: ObservableObject {
 
     private let activityPrompt: ActivityPrompt
     private let credentialStore: LiveGroqCredentialStore
-    private let codexRuntime: any LiveCodexInterviewerRuntime
+    private let interviewerRuntime: any InterviewerProvider
     private let recording: (any SegmentRecording)?
     private let transcriber: (any SegmentTranscribing)?
     private let manifestStore: (any SessionManifestStore)?
@@ -64,7 +63,7 @@ final class BehavioralRoomModel: ObservableObject {
 
     init(
         credentialStore: LiveGroqCredentialStore = LiveGroqCredentialStore(),
-        codexRuntime: (any LiveCodexInterviewerRuntime)? = nil,
+        interviewerRuntime: (any InterviewerProvider)? = nil,
         activityPrompt: ActivityPrompt? = nil,
         initialCoordinator: SegmentSpeechCoordinator? = nil,
         recording: (any SegmentRecording)? = nil,
@@ -73,7 +72,7 @@ final class BehavioralRoomModel: ObservableObject {
         workSurface: BehavioralWorkSurface = .preflightFixture()
     ) {
         self.credentialStore = credentialStore
-        self.codexRuntime = codexRuntime ?? Self.makeDefaultCodexRuntime()
+        self.interviewerRuntime = interviewerRuntime ?? LiveInterviewerProviders.makeDefault()
         self.activityPrompt = activityPrompt ?? Self.tracerActivityPrompt
         self.recording = recording
         self.transcriber = transcriber
@@ -269,9 +268,9 @@ final class BehavioralRoomModel: ObservableObject {
             let hasSelected = draftSegments.contains {
                 $0.lifecycle != .excluded && $0.selectedCandidate != nil
             }
-            return isCodexReady && hasSelected && !unresolved
+            return isInterviewerReady && hasSelected && !unresolved
         case .interviewerProcessing:
-            return isCodexReady
+            return isInterviewerReady
         case .interviewerTurn:
             return true
         case .ready, .completed:
@@ -316,11 +315,11 @@ final class BehavioralRoomModel: ObservableObject {
     func open() async {
         guard coordinator == nil, !isWorking else { return }
         isWorking = true
-        isCheckingCodex = true
+        isCheckingInterviewer = true
         errorMessage = nil
         defer { isWorking = false }
 
-        async let codexCheck = codexRuntime.preflight()
+        async let interviewerCheck = interviewerRuntime.preflight()
         await refreshCredentialReadiness(presentWhenMissing: false)
 
         do {
@@ -331,7 +330,7 @@ final class BehavioralRoomModel: ObservableObject {
                     activityID: "local-behavioral-tracer",
                     activityPrompt: activityPrompt,
                     manifestStore: manifestStore,
-                    interviewerRuntime: codexRuntime,
+                    interviewerRuntime: interviewerRuntime,
                     recording: recording,
                     transcriber: transcriber,
                     credentialReader: credentialStore,
@@ -345,7 +344,7 @@ final class BehavioralRoomModel: ObservableObject {
                     sessionID: Self.fallbackSessionID,
                     activityID: "local-behavioral-tracer",
                     activityPrompt: activityPrompt,
-                    interviewerRuntime: codexRuntime,
+                    interviewerRuntime: interviewerRuntime,
                     recording: VoiceCoreSegmentRecorder(),
                     transcriber: VoiceCoreSegmentTranscriber(),
                     credentialReader: credentialStore,
@@ -386,8 +385,8 @@ final class BehavioralRoomModel: ObservableObject {
             errorMessage = safeMessage(for: error)
         }
 
-        applyCodexReadiness(await codexCheck)
-        isCheckingCodex = false
+        applyInterviewerReadiness(await interviewerCheck)
+        isCheckingInterviewer = false
         if snapshot == nil {
             statusMessage = "Local Behavioral room · session engine did not open"
         }
@@ -603,11 +602,11 @@ final class BehavioralRoomModel: ObservableObject {
         }
     }
 
-    func checkCodex() async {
-        guard !isCheckingCodex else { return }
-        isCheckingCodex = true
-        defer { isCheckingCodex = false }
-        applyCodexReadiness(await codexRuntime.preflight())
+    func checkInterviewer() async {
+        guard !isCheckingInterviewer else { return }
+        isCheckingInterviewer = true
+        defer { isCheckingInterviewer = false }
+        applyInterviewerReadiness(await interviewerRuntime.preflight())
     }
 
     var floorStatePresentation: FloorStatePresentation {
@@ -622,7 +621,7 @@ final class BehavioralRoomModel: ObservableObject {
                 statusMessage: statusMessage,
                 attentionMessage: errorMessage,
                 isInterviewerRequestInFlight: isInterviewerRequestInFlight,
-                isCodexReady: isCodexReady,
+                isInterviewerReady: isInterviewerReady,
                 canStopRecording: canStopRecording,
                 roomAvailability: snapshot == nil ? .restoring : .ready,
                 turnMode: snapshot?.turnMode ?? .continuousConversation,
@@ -714,8 +713,8 @@ final class BehavioralRoomModel: ObservableObject {
         }
     }
 
-    private func applyCodexReadiness(_ readiness: CodexAppServerReadiness) {
-        isCodexReady = readiness == .ready
+    private func applyInterviewerReadiness(_ readiness: InterviewerReadiness) {
+        isInterviewerReady = readiness == .ready
     }
 
     private func status(for snapshot: InterviewRoomSnapshot?) -> String {
@@ -758,40 +757,5 @@ final class BehavioralRoomModel: ObservableObject {
             }
         }
         return "The operation did not complete. The latest durable state is still shown."
-    }
-
-    private static func makeDefaultCodexRuntime(
-        fileManager: FileManager = .default
-    ) -> any LiveCodexInterviewerRuntime {
-        do {
-            let root = try LivePaths.applicationSupportRoot(fileManager: fileManager)
-            let workingDirectory = root.appendingPathComponent(
-                "CodexRuntime",
-                isDirectory: true
-            )
-            try fileManager.createDirectory(
-                at: workingDirectory,
-                withIntermediateDirectories: true,
-                attributes: [.posixPermissions: 0o700]
-            )
-            return CodexAppServerInterviewerRuntime(
-                workingDirectoryURL: workingDirectory,
-                model: CodexAppServerInterviewerRuntime.defaultInterviewerModel
-            )
-        } catch {
-            return BehavioralUnavailableCodexRuntime()
-        }
-    }
-}
-
-private actor BehavioralUnavailableCodexRuntime: LiveCodexInterviewerRuntime {
-    func preflight() async -> CodexAppServerReadiness {
-        .transportFailure
-    }
-
-    func respond(
-        to request: InterviewerRequest
-    ) async throws -> CanonicalInterviewerResponse {
-        throw CodexAppServerRuntimeError.transportFailure
     }
 }

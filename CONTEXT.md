@@ -58,6 +58,14 @@ Interviewer Turn. It may be explicit or proposed by the selected Turn Mode.
 One logical candidate answer. It may contain multiple Segments separated by
 thinking or work. Segments are never sent to the interviewer independently.
 
+### Interviewer Provider
+
+The selected AI adapter that checks its own readiness and produces a canonical
+Interviewer Turn through the Core-owned `InterviewerProvider` contract. Codex
+is the first adapter; Pi, Cursor, and other providers are future integrations.
+Provider authentication and transport stay inside the adapter. A provider change
+never changes Activity or Session identity, and voice is selected independently.
+
 ### Interviewer Turn
 
 One canonical response containing rich `displayMarkdown` and concise

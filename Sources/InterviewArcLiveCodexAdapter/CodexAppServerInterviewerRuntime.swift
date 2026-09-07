@@ -1,32 +1,13 @@
 import Foundation
 import InterviewArcLiveCore
 
-public enum CodexAppServerReadiness: Sendable, Equatable {
-    case ready
-    case missing
-    case incompatible(actualVersion: String, requiredVersion: String)
-    case unauthenticated
-    case transportFailure
-}
-
-public enum CodexAppServerRuntimeError: Error, Sendable, Equatable {
-    case missing
-    case incompatible(actualVersion: String, requiredVersion: String)
-    case unauthenticated
-    case transportFailure
-    case protocolFailure
-    case serverFailure(code: Int?)
-    case malformedFinalResponse
-    case cancelled
-}
-
 /// Production Adapter at the Interviewer Runtime Seam.
 ///
 /// Each invocation owns a new ephemeral App Server thread and process. Protocol
 /// events remain inside this Module; only the canonical response pair crosses
 /// the Interface.
-public actor CodexAppServerInterviewerRuntime: InterviewerRuntime {
-    public static let testedCLIVersion = "codex-cli 0.148.0-alpha.9"
+public actor CodexAppServerInterviewerRuntime: InterviewerProvider {
+    public nonisolated let providerName = "Codex"
     public static let defaultInterviewerModel = "gpt-5.6-terra"
 
     private static let commandTimeoutNanoseconds: UInt64 = 5_000_000_000
@@ -84,7 +65,7 @@ public actor CodexAppServerInterviewerRuntime: InterviewerRuntime {
         self.turnTimeoutNanoseconds = turnTimeoutNanoseconds
     }
 
-    public func preflight() async -> CodexAppServerReadiness {
+    public func preflight() async -> InterviewerReadiness {
         do {
             let session = try await makeSession()
             do {
@@ -99,12 +80,10 @@ public actor CodexAppServerInterviewerRuntime: InterviewerRuntime {
                 await session.close()
                 throw error
             }
-        } catch let error as CodexAppServerRuntimeError {
+        } catch let error as InterviewerRuntimeError {
             switch error {
             case .missing:
                 return .missing
-            case .incompatible(let actual, let required):
-                return .incompatible(actualVersion: actual, requiredVersion: required)
             case .unauthenticated:
                 return .unauthenticated
             case .transportFailure,
@@ -133,7 +112,7 @@ public actor CodexAppServerInterviewerRuntime: InterviewerRuntime {
                     onTimeout: { await session.cancel() },
                     operation: {
                         guard try await session.initializeAndCheckAuthentication() else {
-                            throw CodexAppServerRuntimeError.unauthenticated
+                            throw InterviewerRuntimeError.unauthenticated
                         }
                         return try await session.runTurn(
                             request: request,
@@ -146,21 +125,21 @@ public actor CodexAppServerInterviewerRuntime: InterviewerRuntime {
                 return response
             } catch is CancellationError {
                 await session.cancel()
-                throw CodexAppServerRuntimeError.cancelled
-            } catch let error as CodexAppServerRuntimeError {
+                throw InterviewerRuntimeError.cancelled
+            } catch let error as InterviewerRuntimeError {
                 if Task.isCancelled {
                     await session.cancel()
-                    throw CodexAppServerRuntimeError.cancelled
+                    throw InterviewerRuntimeError.cancelled
                 }
                 await session.close()
                 throw error
             } catch {
                 if Task.isCancelled {
                     await session.cancel()
-                    throw CodexAppServerRuntimeError.cancelled
+                    throw InterviewerRuntimeError.cancelled
                 }
                 await session.close()
-                throw CodexAppServerRuntimeError.transportFailure
+                throw InterviewerRuntimeError.transportFailure
             }
         } onCancel: {
             Task { await session.cancel() }
@@ -169,40 +148,13 @@ public actor CodexAppServerInterviewerRuntime: InterviewerRuntime {
 
     private func makeSession() async throws -> CodexWireSession {
         guard isValidWorkingDirectory(workingDirectoryURL) else {
-            throw CodexAppServerRuntimeError.transportFailure
+            throw InterviewerRuntimeError.transportFailure
         }
         guard let executableURL = resolveExecutableURL() else {
-            throw CodexAppServerRuntimeError.missing
+            throw InterviewerRuntimeError.missing
         }
 
         let childEnvironment = minimalChildEnvironment()
-        let versionResult: CodexCommandResult
-        do {
-            versionResult = try await launcher.run(
-                executableURL: executableURL,
-                arguments: ["--version"],
-                environment: childEnvironment,
-                timeoutNanoseconds: commandTimeoutNanoseconds,
-                outputLimit: Self.commandOutputLimit
-            )
-        } catch {
-            throw CodexAppServerRuntimeError.transportFailure
-        }
-        guard versionResult.exitCode == 0,
-              let actualVersion = String(
-                data: versionResult.standardOutput,
-                encoding: .utf8
-              )?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !actualVersion.isEmpty else {
-            throw CodexAppServerRuntimeError.transportFailure
-        }
-        guard actualVersion == Self.testedCLIVersion else {
-            throw CodexAppServerRuntimeError.incompatible(
-                actualVersion: actualVersion,
-                requiredVersion: Self.testedCLIVersion
-            )
-        }
-
         let mcpServerIDs = try await enabledMCPServerIDs(
             executableURL: executableURL,
             environment: childEnvironment
@@ -218,7 +170,7 @@ public actor CodexAppServerInterviewerRuntime: InterviewerRuntime {
                 totalOutputLimit: Self.protocolOutputLimit
             )
         } catch {
-            throw CodexAppServerRuntimeError.transportFailure
+            throw InterviewerRuntimeError.transportFailure
         }
         return CodexWireSession(connection: connection)
     }
@@ -237,19 +189,19 @@ public actor CodexAppServerInterviewerRuntime: InterviewerRuntime {
                 outputLimit: Self.commandOutputLimit
             )
         } catch {
-            throw CodexAppServerRuntimeError.transportFailure
+            throw InterviewerRuntimeError.transportFailure
         }
         guard result.exitCode == 0,
               let object = try? JSONSerialization.jsonObject(with: result.standardOutput),
               let rows = object as? [[String: Any]] else {
-            throw CodexAppServerRuntimeError.transportFailure
+            throw InterviewerRuntimeError.transportFailure
         }
 
         var identifiers: [String] = []
         for row in rows where (row["enabled"] as? Bool) != false {
             guard let identifier = row["name"] as? String,
                   Self.isSafeMCPIdentifier(identifier) else {
-                throw CodexAppServerRuntimeError.transportFailure
+                throw InterviewerRuntimeError.transportFailure
             }
             identifiers.append(identifier)
         }
@@ -484,7 +436,7 @@ private actor CodexWireSession {
         guard initialized["userAgent"] is String,
               initialized["platformFamily"] is String,
               initialized["platformOs"] is String else {
-            throw CodexAppServerRuntimeError.protocolFailure
+            throw InterviewerRuntimeError.protocolFailure
         }
 
         try await sendNotification(method: "initialized")
@@ -495,7 +447,7 @@ private actor CodexWireSession {
         )
         let account = try await response(id: Self.accountRequestID)
         guard account["requiresOpenaiAuth"] is Bool else {
-            throw CodexAppServerRuntimeError.protocolFailure
+            throw InterviewerRuntimeError.protocolFailure
         }
         // Retain only the non-identifying auth-mode discriminator. API-key and
         // external-provider modes must not silently spend metered credentials.
@@ -534,7 +486,7 @@ private actor CodexWireSession {
               let sandbox = threadResult["sandbox"] as? [String: Any],
               sandbox["type"] as? String == "readOnly",
               sandbox["networkAccess"] as? Bool == false else {
-            throw CodexAppServerRuntimeError.protocolFailure
+            throw InterviewerRuntimeError.protocolFailure
         }
         self.threadID = threadID
 
@@ -564,7 +516,7 @@ private actor CodexWireSession {
               let turnID = turn["id"] as? String,
               !turnID.isEmpty,
               turn["status"] as? String == "inProgress" else {
-            throw CodexAppServerRuntimeError.protocolFailure
+            throw InterviewerRuntimeError.protocolFailure
         }
         try Self.rejectToolItems(in: turn["items"])
         self.turnID = turnID
@@ -617,7 +569,7 @@ private actor CodexWireSession {
             try Self.rejectServerRequestOrToolEvent(message)
             guard let method = message["method"] as? String else {
                 if message["id"] != nil {
-                    throw CodexAppServerRuntimeError.protocolFailure
+                    throw InterviewerRuntimeError.protocolFailure
                 }
                 continue
             }
@@ -631,12 +583,12 @@ private actor CodexWireSession {
                let text = item["text"] as? String {
                 finalTexts.append(text)
                 guard finalTexts.count == 1 else {
-                    throw CodexAppServerRuntimeError.malformedFinalResponse
+                    throw InterviewerRuntimeError.malformedFinalResponse
                 }
             }
 
             if method == "error", params["willRetry"] as? Bool == false {
-                throw CodexAppServerRuntimeError.serverFailure(code: nil)
+                throw InterviewerRuntimeError.serverFailure(code: nil)
             }
 
             if method == "turn/completed" {
@@ -644,20 +596,20 @@ private actor CodexWireSession {
                       let completedTurn = params["turn"] as? [String: Any],
                       completedTurn["id"] as? String == turnID,
                       let status = completedTurn["status"] as? String else {
-                    throw CodexAppServerRuntimeError.protocolFailure
+                    throw InterviewerRuntimeError.protocolFailure
                 }
                 switch status {
                 case "completed":
                     guard finalTexts.count == 1 else {
-                        throw CodexAppServerRuntimeError.malformedFinalResponse
+                        throw InterviewerRuntimeError.malformedFinalResponse
                     }
                     return try Self.parseCanonicalResponse(finalTexts[0])
                 case "interrupted":
-                    throw CodexAppServerRuntimeError.cancelled
+                    throw InterviewerRuntimeError.cancelled
                 case "failed":
-                    throw CodexAppServerRuntimeError.serverFailure(code: nil)
+                    throw InterviewerRuntimeError.serverFailure(code: nil)
                 default:
-                    throw CodexAppServerRuntimeError.protocolFailure
+                    throw InterviewerRuntimeError.protocolFailure
                 }
             }
         }
@@ -669,15 +621,15 @@ private actor CodexWireSession {
             try Self.rejectServerRequestOrToolEvent(message)
             guard let id = Self.integerID(message["id"]) else { continue }
             guard message["method"] == nil, id == expectedID else {
-                throw CodexAppServerRuntimeError.protocolFailure
+                throw InterviewerRuntimeError.protocolFailure
             }
             if let error = message["error"] as? [String: Any] {
-                throw CodexAppServerRuntimeError.serverFailure(
+                throw InterviewerRuntimeError.serverFailure(
                     code: Self.integerID(error["code"])
                 )
             }
             guard let result = message["result"] as? [String: Any] else {
-                throw CodexAppServerRuntimeError.protocolFailure
+                throw InterviewerRuntimeError.protocolFailure
             }
             return result
         }
@@ -688,20 +640,20 @@ private actor CodexWireSession {
             let line: Data
             do {
                 guard let next = try await connection.receiveLine() else {
-                    throw CodexAppServerRuntimeError.transportFailure
+                    throw InterviewerRuntimeError.transportFailure
                 }
                 line = next
-            } catch let error as CodexAppServerRuntimeError {
+            } catch let error as InterviewerRuntimeError {
                 throw error
             } catch is CancellationError {
                 throw CancellationError()
             } catch {
-                throw CodexAppServerRuntimeError.transportFailure
+                throw InterviewerRuntimeError.transportFailure
             }
             if line.isEmpty { continue }
             guard let object = try? JSONSerialization.jsonObject(with: line),
                   let message = object as? [String: Any] else {
-                throw CodexAppServerRuntimeError.protocolFailure
+                throw InterviewerRuntimeError.protocolFailure
             }
             return message
         }
@@ -712,10 +664,10 @@ private actor CodexWireSession {
             try await connection.send(
                 try Self.encodedRequest(method: method, id: id, params: params)
             )
-        } catch let error as CodexAppServerRuntimeError {
+        } catch let error as InterviewerRuntimeError {
             throw error
         } catch {
-            throw CodexAppServerRuntimeError.transportFailure
+            throw InterviewerRuntimeError.transportFailure
         }
     }
 
@@ -728,7 +680,7 @@ private actor CodexWireSession {
             data.append(0x0A)
             try await connection.send(data)
         } catch {
-            throw CodexAppServerRuntimeError.transportFailure
+            throw InterviewerRuntimeError.transportFailure
         }
     }
 
@@ -749,7 +701,7 @@ private actor CodexWireSession {
         _ message: [String: Any]
     ) throws {
         if message["id"] != nil, message["method"] != nil {
-            throw CodexAppServerRuntimeError.protocolFailure
+            throw InterviewerRuntimeError.protocolFailure
         }
         guard let method = message["method"] as? String else { return }
         let forbiddenPrefixes = [
@@ -767,7 +719,7 @@ private actor CodexWireSession {
             "skills/",
         ]
         if forbiddenPrefixes.contains(where: { method.hasPrefix($0) }) {
-            throw CodexAppServerRuntimeError.protocolFailure
+            throw InterviewerRuntimeError.protocolFailure
         }
         if method == "item/started" || method == "item/completed" {
             let params = message["params"] as? [String: Any]
@@ -784,7 +736,7 @@ private actor CodexWireSession {
         } else if value == nil || value is NSNull {
             return
         } else {
-            throw CodexAppServerRuntimeError.protocolFailure
+            throw InterviewerRuntimeError.protocolFailure
         }
         let allowed = Set([
             "userMessage",
@@ -795,7 +747,7 @@ private actor CodexWireSession {
         ])
         for item in items {
             guard let type = item["type"] as? String, allowed.contains(type) else {
-                throw CodexAppServerRuntimeError.protocolFailure
+                throw InterviewerRuntimeError.protocolFailure
             }
         }
     }
@@ -815,7 +767,7 @@ private actor CodexWireSession {
                 <= CanonicalInterviewerResponse.maximumDisplayMarkdownUTF8Bytes,
               spokenText.utf8.count
                 <= CanonicalInterviewerResponse.maximumSpokenTextUTF8Bytes else {
-            throw CodexAppServerRuntimeError.malformedFinalResponse
+            throw InterviewerRuntimeError.malformedFinalResponse
         }
         return CanonicalInterviewerResponse(
             displayMarkdown: displayMarkdown,
@@ -829,7 +781,7 @@ private actor CodexWireSession {
         encoder.outputFormatting = [.sortedKeys]
         let data = try encoder.encode(envelope)
         guard let json = String(data: data, encoding: .utf8) else {
-            throw CodexAppServerRuntimeError.protocolFailure
+            throw InterviewerRuntimeError.protocolFailure
         }
         return """
         Produce the next single interviewer turn from the interview data below.

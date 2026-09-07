@@ -32,7 +32,7 @@ func makeCompletionBlockingRoomModel(
     )
     return (
         SystemDesignRoomModel(
-            codexRuntime: runtime,
+            interviewerRuntime: runtime,
             activityPrompt: prompt,
             preferences: preferences,
             initialCoordinator: coordinator,
@@ -129,8 +129,9 @@ actor CompletionBlockingManifestStore: SessionManifestStore {
     }
 }
 
-private struct FinishRuntimeFixture: LiveCodexInterviewerRuntime {
-    func preflight() async -> CodexAppServerReadiness {
+private struct FinishRuntimeFixture: InterviewerProvider {
+    let providerName = "Fixture"
+    func preflight() async -> InterviewerReadiness {
         .ready
     }
 

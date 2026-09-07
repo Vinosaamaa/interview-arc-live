@@ -82,8 +82,9 @@ npm run bundle
 
 The preview keeps its Session Manifest and source recordings under Live's local
 Application Support root. Manual Hand off joins selected Groq transcripts and
-uses the exactly preflighted, locally authenticated Codex App Server for one
-canonical interviewer response. Continuous Conversation and Patient Auto classify
+uses the locally authenticated Codex App Server for one canonical interviewer
+response. Compatibility is checked through the actual protocol, without a CLI
+version gate. Continuous Conversation and Patient Auto classify
 the accumulated answer after a newly completed Segment and, for a durable
 `likely_end`, start one durable four-second Endpoint Grace before the same
 canonical Hand off unless a Floor Hold is active. Keep my floor, Hold floor,

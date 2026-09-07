@@ -211,7 +211,7 @@ private func makeBehavioralRoomModel() async throws -> (
     }
     return (
         BehavioralRoomModel(
-            codexRuntime: runtime,
+            interviewerRuntime: runtime,
             activityPrompt: prompt,
             initialCoordinator: coordinator,
             recording: BehavioralUnusedRecording(),
@@ -222,8 +222,9 @@ private func makeBehavioralRoomModel() async throws -> (
     )
 }
 
-private actor BehavioralCodexRuntimeFixture: LiveCodexInterviewerRuntime {
-    func preflight() async -> CodexAppServerReadiness { .ready }
+private actor BehavioralCodexRuntimeFixture: InterviewerProvider {
+    let providerName = "Fixture"
+    func preflight() async -> InterviewerReadiness { .ready }
 
     func respond(
         to request: InterviewerRequest

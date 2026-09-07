@@ -112,7 +112,7 @@ struct SystemDesignRoomView: View {
                 windowWidth: geometry.size.width,
                 hasSpeechAttention: !model.isSpeechReady,
                 hasRoomAttention: model.errorMessage != nil
-                    || model.codexAttentionMessage != nil
+                    || model.interviewerAttentionMessage != nil
             )
             let statusPresentation = FullRoomHeaderStatusLayout.presentation(
                 headerPresentation: state.presentation,
@@ -225,7 +225,7 @@ struct SystemDesignRoomView: View {
             if model.needsGroqCredential {
                 Button("Add Groq key") { model.presentCredentialSetup() }
             }
-            Button("Check Codex") { Task { await model.checkCodex() } }
+            Button("Check \(model.interviewerProviderName)") { Task { await model.checkInterviewer() } }
         } label: {
             switch presentation.style {
             case .compact:
@@ -351,7 +351,7 @@ struct SystemDesignRoomView: View {
     }
 
     private var headerRoomStatusColor: Color {
-        model.errorMessage == nil && model.codexAttentionMessage == nil
+        model.errorMessage == nil && model.interviewerAttentionMessage == nil
             ? LivePalette.interviewer
             : LivePalette.warning
     }
@@ -393,8 +393,8 @@ struct SystemDesignRoomView: View {
             if let errorMessage = model.errorMessage {
                 recoveryBanner(errorMessage)
             }
-            if let codexMessage = model.codexAttentionMessage {
-                codexReadinessBanner(codexMessage)
+            if let interviewerMessage = model.interviewerAttentionMessage {
+                interviewerReadinessBanner(interviewerMessage)
             }
             transcript
         }
@@ -1305,10 +1305,10 @@ struct SystemDesignRoomView: View {
         }
     }
 
-    private func codexReadinessBanner(_ message: String) -> some View {
+    private func interviewerReadinessBanner(_ message: String) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             VStack(alignment: .leading, spacing: 2) {
-                Label(model.codexStatusTitle, systemImage: model.codexStatusIcon)
+                Label(model.interviewerStatusTitle, systemImage: model.interviewerStatusIcon)
                     .font(.system(.callout, design: .rounded, weight: .semibold))
                     .foregroundStyle(LivePalette.warning)
                 Text(message)
@@ -1316,12 +1316,12 @@ struct SystemDesignRoomView: View {
                     .foregroundStyle(LivePalette.muted)
                     .fixedSize(horizontal: false, vertical: true)
             }
-            Button("Check Codex") {
-                Task { await model.checkCodex() }
+            Button("Check \(model.interviewerProviderName)") {
+                Task { await model.checkInterviewer() }
             }
             .buttonStyle(.bordered)
             .controlSize(.small)
-            .disabled(model.isCheckingCodex)
+            .disabled(model.isCheckingInterviewer)
             .accessibilityHint("Runs a private local compatibility and sign-in check")
         }
         .padding(.horizontal, 16)

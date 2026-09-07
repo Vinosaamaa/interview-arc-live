@@ -173,7 +173,7 @@ final class FloorStatePresentationTests: XCTestCase {
             input: .init(
                 phase: .interviewerProcessing,
                 statusMessage: "Retry available",
-                isCodexReady: true
+                isInterviewerReady: true
             )
         )
         XCTAssertEqual(
@@ -336,7 +336,7 @@ final class FloorStatePresentationTests: XCTestCase {
                 phase: .interviewerProcessing,
                 statusMessage: "Opening greeting needs retry",
                 isOpeningInterviewer: true,
-                isCodexReady: true
+                isInterviewerReady: true
             )
         )
         XCTAssertEqual(retry.statusKind, .retryRequired)

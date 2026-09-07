@@ -9,49 +9,44 @@ import InterviewArcLiveCore
 final class SystemDesignRoomModelTests: XCTestCase {
     func testReadyCodexEnablesAQuietReadyStatus() async {
         let model = SystemDesignRoomModel(
-            codexRuntime: CodexRuntimeFixture(readiness: .ready)
+            interviewerRuntime: CodexRuntimeFixture(readiness: .ready)
         )
 
-        await model.checkCodex()
+        await model.checkInterviewer()
 
-        XCTAssertTrue(model.isCodexReady)
-        XCTAssertEqual(model.codexStatusTitle, "Codex ready")
-        XCTAssertNil(model.codexAttentionMessage)
+        XCTAssertTrue(model.isInterviewerReady)
+        XCTAssertEqual(model.interviewerStatusTitle, "Fixture ready")
+        XCTAssertNil(model.interviewerAttentionMessage)
     }
 
     func testMissingCodexKeepsRecordingRecoveryCopyActionable() async {
         let model = SystemDesignRoomModel(
-            codexRuntime: CodexRuntimeFixture(readiness: .missing)
+            interviewerRuntime: CodexRuntimeFixture(readiness: .missing)
         )
 
-        await model.checkCodex()
+        await model.checkInterviewer()
 
-        XCTAssertFalse(model.isCodexReady)
-        XCTAssertEqual(model.codexStatusTitle, "Codex not found")
+        XCTAssertFalse(model.isInterviewerReady)
+        XCTAssertEqual(model.interviewerStatusTitle, "Fixture not found")
         XCTAssertEqual(
-            model.codexAttentionMessage,
-            "Install or update ChatGPT or Codex, then check again. Your recorded segments remain saved."
+            model.interviewerAttentionMessage,
+            "Install or configure Fixture, then check again. Your recorded segments remain saved."
         )
     }
 
-    func testIncompatibleCodexShowsRequiredVersionWithoutActualDetails() async {
-        let actual = "codex-cli unsupported-private-detail"
-        let required = CodexAppServerInterviewerRuntime.testedCLIVersion
+    func testFailedCodexReadinessOffersRetryWithoutRequiringAVersion() async {
         let model = SystemDesignRoomModel(
-            codexRuntime: CodexRuntimeFixture(
-                readiness: .incompatible(
-                    actualVersion: actual,
-                    requiredVersion: required
-                )
-            )
+            interviewerRuntime: CodexRuntimeFixture(readiness: .transportFailure)
         )
 
-        await model.checkCodex()
+        await model.checkInterviewer()
 
-        let message = try? XCTUnwrap(model.codexAttentionMessage)
-        XCTAssertEqual(model.codexStatusTitle, "Codex update required")
-        XCTAssertTrue(message?.contains(required) == true)
-        XCTAssertFalse(message?.contains(actual) == true)
+        XCTAssertFalse(model.isInterviewerReady)
+        XCTAssertEqual(model.interviewerStatusTitle, "Fixture unavailable")
+        XCTAssertEqual(
+            model.interviewerAttentionMessage,
+            "Fixture could not complete its readiness check. Check again; your interview draft is unchanged."
+        )
     }
 
     func testInjectedActivityPromptOwnsQuestionCopy() throws {
@@ -62,7 +57,7 @@ final class SystemDesignRoomModelTests: XCTestCase {
             requestedParts: ["Clarify scope."]
         )
         let model = SystemDesignRoomModel(
-            codexRuntime: CodexRuntimeFixture(readiness: .ready),
+            interviewerRuntime: CodexRuntimeFixture(readiness: .ready),
             activityPrompt: prompt
         )
 
@@ -70,14 +65,9 @@ final class SystemDesignRoomModelTests: XCTestCase {
     }
 
     func testRuntimeFailuresUseSafeDurabilityCopy() {
-        let privateActualVersion = "private-actual-version-detail"
         let privateServerCode = 9_999
-        let failures: [CodexAppServerRuntimeError] = [
+        let failures: [InterviewerRuntimeError] = [
             .missing,
-            .incompatible(
-                actualVersion: privateActualVersion,
-                requiredVersion: CodexAppServerInterviewerRuntime.testedCLIVersion
-            ),
             .unauthenticated,
             .transportFailure,
             .protocolFailure,
@@ -87,16 +77,15 @@ final class SystemDesignRoomModelTests: XCTestCase {
         ]
 
         for failure in failures {
-            let message = SystemDesignRoomModel.safeCodexFailureMessage(for: failure)
+            let message = SystemDesignRoomModel.safeInterviewerFailureMessage(for: failure)
             XCTAssertTrue(message.contains("saved"))
-            XCTAssertFalse(message.contains(privateActualVersion))
             XCTAssertFalse(message.contains(String(privateServerCode)))
         }
     }
 
     func testTurnModeSurfaceOffersFunctionalPatientAuto() {
         let model = SystemDesignRoomModel(
-            codexRuntime: CodexRuntimeFixture(readiness: .ready)
+            interviewerRuntime: CodexRuntimeFixture(readiness: .ready)
         )
 
         XCTAssertEqual(
@@ -120,7 +109,7 @@ final class SystemDesignRoomModelTests: XCTestCase {
         defer { preferences.removePersistentDomain(forName: suiteName) }
         let controller = MutingThenFailingSpeechController()
         let model = SystemDesignRoomModel(
-            codexRuntime: CodexRuntimeFixture(readiness: .ready),
+            interviewerRuntime: CodexRuntimeFixture(readiness: .ready),
             preferences: preferences
         )
 
@@ -456,14 +445,15 @@ final class SystemDesignRoomModelTests: XCTestCase {
     }
 }
 
-private actor CodexRuntimeFixture: LiveCodexInterviewerRuntime {
-    private let readiness: CodexAppServerReadiness
+private actor CodexRuntimeFixture: InterviewerProvider {
+    let providerName = "Fixture"
+    private let readiness: InterviewerReadiness
 
-    init(readiness: CodexAppServerReadiness) {
+    init(readiness: InterviewerReadiness) {
         self.readiness = readiness
     }
 
-    func preflight() async -> CodexAppServerReadiness {
+    func preflight() async -> InterviewerReadiness {
         readiness
     }
 

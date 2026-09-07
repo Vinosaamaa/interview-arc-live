@@ -44,6 +44,30 @@ public protocol InterviewerRuntime: Sendable {
     func respond(to request: InterviewerRequest) async throws -> CanonicalInterviewerResponse
 }
 
+public enum InterviewerReadiness: Sendable, Equatable {
+    case ready
+    case missing
+    case unauthenticated
+    case transportFailure
+}
+
+public enum InterviewerRuntimeError: Error, Sendable, Equatable {
+    case missing
+    case unauthenticated
+    case transportFailure
+    case protocolFailure
+    case serverFailure(code: Int?)
+    case malformedFinalResponse
+    case cancelled
+}
+
+/// A selectable interviewer provider. Authentication and transport remain
+/// inside the adapter; the room consumes only this readiness and response contract.
+public protocol InterviewerProvider: InterviewerRuntime {
+    var providerName: String { get }
+    func preflight() async -> InterviewerReadiness
+}
+
 /// Deterministic Adapter used by the tracer-bullet room and behavior tests.
 public struct DeterministicInterviewerRuntime: InterviewerRuntime {
     private let response: CanonicalInterviewerResponse

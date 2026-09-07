@@ -3,17 +3,10 @@ import Combine
 import CryptoKit
 import Foundation
 import InterviewArcLiveCore
-import InterviewArcLiveCodexAdapter
 import InterviewArcLiveHostedClient
 import InterviewArcLiveQwenAdapter
 import InterviewArcLiveSpeechOutputAdapter
 import InterviewArcLiveVoiceAdapter
-
-protocol LiveCodexInterviewerRuntime: InterviewerRuntime {
-    func preflight() async -> CodexAppServerReadiness
-}
-
-extension CodexAppServerInterviewerRuntime: LiveCodexInterviewerRuntime {}
 
 @MainActor
 protocol LiveInterviewerSpeechMuteControlling: AnyObject {
@@ -121,8 +114,8 @@ final class SystemDesignRoomModel: ObservableObject {
     }
     @Published private(set) var statusMessage = "Restoring local session…"
     @Published private(set) var errorMessage: String?
-    @Published private(set) var codexReadiness: CodexAppServerReadiness?
-    @Published private(set) var isCheckingCodex = false
+    @Published private(set) var interviewerReadiness: InterviewerReadiness?
+    @Published private(set) var isCheckingInterviewer = false
     @Published private(set) var isInterviewerRequestInFlight = false
     @Published private(set) var speechReadiness: InterviewerSpeechReadiness = .notInstalled
     @Published private(set) var isSpeechMuted: Bool
@@ -182,7 +175,7 @@ final class SystemDesignRoomModel: ObservableObject {
     private static let fallbackSessionID = SessionID("local-system-design-tracer-v2")
     private let activityPrompt: ActivityPrompt
     private let credentialStore: LiveGroqCredentialStore
-    private let codexRuntime: any LiveCodexInterviewerRuntime
+    private let interviewerRuntime: any InterviewerProvider
     private let speechDependencies: LiveInterviewerSpeechDependencies?
     private let preferences: UserDefaults
     private var boardArtifactStore: PrivateBoardArtifactStore?
@@ -190,7 +183,7 @@ final class SystemDesignRoomModel: ObservableObject {
     private let hostedController: HostedPracticeController?
     private var hostedSnapshotObservation: AnyCancellable?
     private var credentialState: CredentialState = .checking
-    private var errorWasCodexFailure = false
+    private var errorWasInterviewerFailure = false
     private var coordinator: SegmentSpeechCoordinator?
     private var segmentRecorder: VoiceCoreSegmentRecorder?
     private var interviewerSpeechCoordinator: InterviewerSpeechCoordinator?
@@ -211,7 +204,7 @@ final class SystemDesignRoomModel: ObservableObject {
 
     init(
         credentialStore: LiveGroqCredentialStore = LiveGroqCredentialStore(),
-        codexRuntime: (any LiveCodexInterviewerRuntime)? = nil,
+        interviewerRuntime: (any InterviewerProvider)? = nil,
         activityPrompt: ActivityPrompt? = nil,
         speechDependencies: LiveInterviewerSpeechDependencies? = nil,
         preferences: UserDefaults = .standard,
@@ -221,7 +214,7 @@ final class SystemDesignRoomModel: ObservableObject {
         hostedController: HostedPracticeController? = nil
     ) {
         self.credentialStore = credentialStore
-        self.codexRuntime = codexRuntime ?? Self.makeDefaultCodexRuntime()
+        self.interviewerRuntime = interviewerRuntime ?? LiveInterviewerProviders.makeDefault()
         self.activityPrompt = activityPrompt ?? Self.tracerActivityPrompt
         self.speechDependencies = speechDependencies
         self.preferences = preferences
@@ -380,32 +373,32 @@ final class SystemDesignRoomModel: ObservableObject {
         await waitForLocalPersistence()
     }
 
-    var isCodexReady: Bool {
-        codexReadiness == .ready
+    var interviewerProviderName: String { interviewerRuntime.providerName }
+
+    var isInterviewerReady: Bool {
+        interviewerReadiness == .ready
     }
 
-    var codexStatusTitle: String {
-        if isCheckingCodex || codexReadiness == nil {
-            return "Checking Codex"
+    var interviewerStatusTitle: String {
+        if isCheckingInterviewer || interviewerReadiness == nil {
+            return "Checking \(interviewerProviderName)"
         }
-        switch codexReadiness {
-        case .ready: return "Codex ready"
-        case .missing: return "Codex not found"
-        case .incompatible: return "Codex update required"
-        case .unauthenticated: return "Codex sign-in required"
-        case .transportFailure: return "Codex unavailable"
-        case nil: return "Checking Codex"
+        switch interviewerReadiness {
+        case .ready: return "\(interviewerProviderName) ready"
+        case .missing: return "\(interviewerProviderName) not found"
+        case .unauthenticated: return "\(interviewerProviderName) sign-in required"
+        case .transportFailure: return "\(interviewerProviderName) unavailable"
+        case nil: return "Checking \(interviewerProviderName)"
         }
     }
 
-    var codexStatusIcon: String {
-        if isCheckingCodex || codexReadiness == nil {
+    var interviewerStatusIcon: String {
+        if isCheckingInterviewer || interviewerReadiness == nil {
             return "hourglass"
         }
-        switch codexReadiness {
+        switch interviewerReadiness {
         case .ready: return "checkmark.circle.fill"
         case .missing: return "questionmark.circle.fill"
-        case .incompatible: return "arrow.down.circle.fill"
         case .unauthenticated:
             return "person.crop.circle.badge.exclamationmark"
         case .transportFailure: return "exclamationmark.triangle.fill"
@@ -413,19 +406,17 @@ final class SystemDesignRoomModel: ObservableObject {
         }
     }
 
-    var codexAttentionMessage: String? {
-        guard !isCheckingCodex else { return nil }
-        switch codexReadiness {
+    var interviewerAttentionMessage: String? {
+        guard !isCheckingInterviewer else { return nil }
+        switch interviewerReadiness {
         case .ready, nil:
             return nil
         case .missing:
-            return "Install or update ChatGPT or Codex, then check again. Your recorded segments remain saved."
-        case .incompatible(_, let requiredVersion):
-            return "This build requires \(requiredVersion). Update ChatGPT or Codex, then check again."
+            return "Install or configure \(interviewerProviderName), then check again. Your recorded segments remain saved."
         case .unauthenticated:
-            return "Open ChatGPT or Codex and sign in, then check again. Your recorded segments remain saved."
+            return "Open \(interviewerProviderName) and sign in, then check again. Your recorded segments remain saved."
         case .transportFailure:
-            return "Codex could not complete its local readiness check. Check again; your interview draft is unchanged."
+            return "\(interviewerProviderName) could not complete its readiness check. Check again; your interview draft is unchanged."
         }
     }
 
@@ -1183,9 +1174,9 @@ final class SystemDesignRoomModel: ObservableObject {
             let hasSelected = draftSegments.contains {
                 $0.lifecycle != .excluded && $0.selectedCandidate != nil
             }
-            return isCodexReady && hasSelected && !unresolved
+            return isInterviewerReady && hasSelected && !unresolved
         case .interviewerProcessing:
-            return isCodexReady
+            return isInterviewerReady
         case .interviewerTurn:
             return true
         case .ready, .completed:
@@ -1213,9 +1204,9 @@ final class SystemDesignRoomModel: ObservableObject {
     func open() async {
         guard coordinator == nil, !isWorking else { return }
         isWorking = true
-        isCheckingCodex = true
+        isCheckingInterviewer = true
         errorMessage = nil
-        errorWasCodexFailure = false
+        errorWasInterviewerFailure = false
         defer {
             isWorking = false
             LiveDebugTrace.event(
@@ -1224,7 +1215,7 @@ final class SystemDesignRoomModel: ObservableObject {
             )
         }
 
-        async let codexCheck = codexRuntime.preflight()
+        async let interviewerCheck = interviewerRuntime.preflight()
 
         var launchPrompt = activityPrompt
         var launchSessionID = Self.fallbackSessionID
@@ -1239,22 +1230,22 @@ final class SystemDesignRoomModel: ObservableObject {
             case .signedOut:
                 isLiveIntegrationSetupPresented = true
                 statusMessage = "Connect Interview Arc to open Today’s System Design activity"
-                isCheckingCodex = false
-                _ = await codexCheck
+                isCheckingInterviewer = false
+                _ = await interviewerCheck
                 return
             case .noOpenSystemDesignActivity:
                 statusMessage = "No System Design activity is open in Interview Arc Today"
                 errorMessage = "Add a System Design activity to Today, then reopen this room."
-                isCheckingCodex = false
-                _ = await codexCheck
+                isCheckingInterviewer = false
+                _ = await interviewerCheck
                 return
             case .offline, .recoveryRequired:
                 statusMessage = hostedController.errorMessage
                     ?? "Hosted recovery needs attention"
                 errorMessage = hostedController.errorMessage
                 if hostedSnapshot.activity == nil {
-                    isCheckingCodex = false
-                    _ = await codexCheck
+                    isCheckingInterviewer = false
+                    _ = await interviewerCheck
                     return
                 }
             case .loading:
@@ -1278,8 +1269,8 @@ final class SystemDesignRoomModel: ObservableObject {
                 } catch {
                     statusMessage = "Hosted activity is incompatible"
                     errorMessage = "The selected System Design activity has an invalid prompt. Fix it in Interview Arc."
-                    isCheckingCodex = false
-                    _ = await codexCheck
+                    isCheckingInterviewer = false
+                    _ = await interviewerCheck
                     return
                 }
             }
@@ -1299,7 +1290,7 @@ final class SystemDesignRoomModel: ObservableObject {
                 sessionID: launchSessionID,
                 activityID: launchActivityID,
                 activityPrompt: launchPrompt,
-                interviewerRuntime: codexRuntime,
+                interviewerRuntime: interviewerRuntime,
                 recording: makeBoundSegmentRecorder(),
                 transcriber: VoiceCoreSegmentTranscriber(),
                 credentialReader: credentialStore,
@@ -1340,7 +1331,7 @@ final class SystemDesignRoomModel: ObservableObject {
                     )
                 } catch {
                     restored = opened.snapshot
-                    errorWasCodexFailure = applyCodexFailure(error)
+                    errorWasInterviewerFailure = applyInterviewerFailure(error)
                     errorMessage = safeMessage(for: error)
                 }
                 isInterviewerRequestInFlight = false
@@ -1356,8 +1347,8 @@ final class SystemDesignRoomModel: ObservableObject {
             errorMessage = safeMessage(for: error)
         }
 
-        applyCodexReadiness(await codexCheck)
-        isCheckingCodex = false
+        applyInterviewerReadiness(await interviewerCheck)
+        isCheckingInterviewer = false
     }
 
     /// Audits persisted export bundles during app restore. Recovery is
@@ -1414,15 +1405,15 @@ final class SystemDesignRoomModel: ObservableObject {
         }
     }
 
-    func checkCodex() async {
-        guard !isCheckingCodex else { return }
-        isCheckingCodex = true
-        defer { isCheckingCodex = false }
+    func checkInterviewer() async {
+        guard !isCheckingInterviewer else { return }
+        isCheckingInterviewer = true
+        defer { isCheckingInterviewer = false }
 
-        applyCodexReadiness(await codexRuntime.preflight())
+        applyInterviewerReadiness(await interviewerRuntime.preflight())
         LiveDebugTrace.event(
-            "codex.preflight",
-            ["ok": isCodexReady ? "true" : "false"]
+            "interviewer.preflight",
+            ["ok": isInterviewerReady ? "true" : "false"]
         )
     }
 
@@ -1805,7 +1796,7 @@ final class SystemDesignRoomModel: ObservableObject {
 
         isWorking = true
         errorMessage = nil
-        errorWasCodexFailure = false
+        errorWasInterviewerFailure = false
         defer {
             isInterviewerRequestInFlight = false
             isWorking = false
@@ -1853,7 +1844,7 @@ final class SystemDesignRoomModel: ObservableObject {
                 .observeNewlyPersistedSnapshot(updated)
         } catch {
             publish(coordinator.snapshot)
-            errorWasCodexFailure = applyCodexFailure(error)
+            errorWasInterviewerFailure = applyInterviewerFailure(error)
             errorMessage = safeMessage(for: error)
         }
     }
@@ -2335,35 +2326,6 @@ final class SystemDesignRoomModel: ObservableObject {
         return recorder
     }
 
-    private static func makeDefaultCodexRuntime(
-        fileManager: FileManager = .default
-    ) -> any LiveCodexInterviewerRuntime {
-        do {
-            let root = try LivePaths.applicationSupportRoot(fileManager: fileManager)
-            let workingDirectory = root.appendingPathComponent(
-                "CodexRuntime",
-                isDirectory: true
-            )
-            for directory in [root, workingDirectory] {
-                try fileManager.createDirectory(
-                    at: directory,
-                    withIntermediateDirectories: true,
-                    attributes: [.posixPermissions: 0o700]
-                )
-                try fileManager.setAttributes(
-                    [.posixPermissions: 0o700],
-                    ofItemAtPath: directory.path
-                )
-            }
-            return CodexAppServerInterviewerRuntime(
-                workingDirectoryURL: workingDirectory,
-                model: CodexAppServerInterviewerRuntime.defaultInterviewerModel
-            )
-        } catch {
-            return UnavailableLiveCodexRuntime()
-        }
-    }
-
     private static func makeDefaultBoardArtifactStore(
         sessionIdentity: String
     ) -> PrivateBoardArtifactStore? {
@@ -2419,57 +2381,51 @@ final class SystemDesignRoomModel: ObservableObject {
         return "Local interviewer speech did not complete. The written interview remains fully usable."
     }
 
-    private func applyCodexReadiness(_ readiness: CodexAppServerReadiness) {
-        codexReadiness = readiness
-        if readiness == .ready, errorWasCodexFailure {
+    private func applyInterviewerReadiness(_ readiness: InterviewerReadiness) {
+        interviewerReadiness = readiness
+        if readiness == .ready, errorWasInterviewerFailure {
             errorMessage = nil
-            errorWasCodexFailure = false
+            errorWasInterviewerFailure = false
         }
         if snapshot != nil {
             statusMessage = status(for: snapshot)
         }
     }
 
-    static func safeCodexFailureMessage(
-        for error: CodexAppServerRuntimeError
+    static func safeInterviewerFailureMessage(
+        for error: InterviewerRuntimeError,
+        providerName: String = "Interviewer"
     ) -> String {
         switch error {
         case .missing:
-            "Your answer is saved. Install or update ChatGPT or Codex, check readiness, then retry the interviewer."
-        case .incompatible(_, let requiredVersion):
-            "Your answer is saved. This build requires \(requiredVersion); update Codex, check readiness, then retry."
+            "Your answer is saved. Install or configure \(providerName), check readiness, then retry the interviewer."
         case .unauthenticated:
-            "Your answer is saved. Sign in through ChatGPT or Codex, check readiness, then retry the interviewer."
+            "Your answer is saved. Sign in through \(providerName), check readiness, then retry the interviewer."
         case .transportFailure:
-            "Your answer is saved. Codex could not complete the local request; check readiness, then retry explicitly."
+            "Your answer is saved. \(providerName) could not complete the local request; check readiness, then retry explicitly."
         case .protocolFailure:
-            "Your answer is saved. The local Codex protocol failed; check readiness before an explicit retry."
+            "Your answer is saved. The local \(providerName) protocol failed; check readiness before an explicit retry."
         case .serverFailure:
-            "Your answer is saved. Codex could not complete this interviewer turn; retry only when you choose."
+            "Your answer is saved. \(providerName) could not complete this interviewer turn; retry only when you choose."
         case .malformedFinalResponse:
-            "Your answer is saved. Codex returned no usable interviewer response; nothing was added to the transcript."
+            "Your answer is saved. \(providerName) returned no usable interviewer response; nothing was added to the transcript."
         case .cancelled:
-            "Your answer is saved. The Codex request was cancelled; retry only when you choose."
+            "Your answer is saved. The \(providerName) request was cancelled; retry only when you choose."
         }
     }
 
     @discardableResult
-    private func applyCodexFailure(_ error: Error) -> Bool {
-        guard let runtimeError = error as? CodexAppServerRuntimeError else {
+    private func applyInterviewerFailure(_ error: Error) -> Bool {
+        guard let runtimeError = error as? InterviewerRuntimeError else {
             return false
         }
         switch runtimeError {
         case .missing:
-            codexReadiness = .missing
-        case .incompatible(let actualVersion, let requiredVersion):
-            codexReadiness = .incompatible(
-                actualVersion: actualVersion,
-                requiredVersion: requiredVersion
-            )
+            interviewerReadiness = .missing
         case .unauthenticated:
-            codexReadiness = .unauthenticated
+            interviewerReadiness = .unauthenticated
         case .transportFailure:
-            codexReadiness = .transportFailure
+            interviewerReadiness = .transportFailure
         case .protocolFailure,
              .serverFailure,
              .malformedFinalResponse,
@@ -2659,16 +2615,16 @@ final class SystemDesignRoomModel: ObservableObject {
                 if isInterviewerRequestInFlight {
                     return "Mara is opening the interview…"
                 }
-                return isCodexReady
+                return isInterviewerReady
                     ? "Opening greeting needs retry"
-                    : "Opening greeting needs Codex to retry"
+                    : "Opening greeting needs the interviewer to retry"
             }
             if isInterviewerRequestInFlight {
-                return "Answer saved · Codex is preparing the next question"
+                return "Answer saved · interviewer is preparing the next question"
             }
-            return isCodexReady
+            return isInterviewerReady
                 ? "Answer saved · interviewer retry available"
-                : "Answer saved · check Codex to retry"
+                : "Answer saved · check the interviewer to retry"
         case .interviewerTurn:
             return "Interviewer response saved"
         case .completed:
@@ -2719,8 +2675,10 @@ final class SystemDesignRoomModel: ObservableObject {
     }
 
     private func safeMessage(for error: Error) -> String {
-        if let runtimeError = error as? CodexAppServerRuntimeError {
-            return Self.safeCodexFailureMessage(for: runtimeError)
+        if let runtimeError = error as? InterviewerRuntimeError {
+            return Self.safeInterviewerFailureMessage(
+                for: runtimeError, providerName: interviewerProviderName
+            )
         }
 
         if let coordinatorError = error as? SegmentSpeechCoordinatorError {
@@ -2781,17 +2739,5 @@ final class SystemDesignRoomModel: ObservableObject {
         }
 
         return "The operation did not complete. The latest durable state is still shown."
-    }
-}
-
-private actor UnavailableLiveCodexRuntime: LiveCodexInterviewerRuntime {
-    func preflight() async -> CodexAppServerReadiness {
-        .transportFailure
-    }
-
-    func respond(
-        to request: InterviewerRequest
-    ) async throws -> CanonicalInterviewerResponse {
-        throw CodexAppServerRuntimeError.transportFailure
     }
 }

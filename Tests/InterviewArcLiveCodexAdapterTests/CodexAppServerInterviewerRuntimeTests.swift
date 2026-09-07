@@ -13,14 +13,7 @@ final class CodexAppServerInterviewerRuntimeTests: XCTestCase {
         )
     }
 
-    func testCLIProtocolPinMatchesCurrentlyTestedCodex() {
-        XCTAssertEqual(
-            CodexAppServerInterviewerRuntime.testedCLIVersion,
-            "codex-cli 0.148.0-alpha.9"
-        )
-    }
-
-    func testPreflightInitializesChecksOnlyAuthPresenceAndReapsBeforeReturning() async throws {
+    func testPreflightUsesProtocolWithoutRequiringVersionCommandAndReapsBeforeReturning() async throws {
         let connection = ScriptedCodexConnection(lines: Self.authenticationLines())
         let launcher = FixtureCodexLauncher(connection: connection)
         let runtime = Self.runtime(launcher: launcher)
@@ -47,28 +40,13 @@ final class CodexAppServerInterviewerRuntimeTests: XCTestCase {
         }
     }
 
-    func testPreflightReportsMissingIncompatibleUnauthenticatedAndSafeTransportFailure() async {
+    func testPreflightReportsMissingUnauthenticatedAndSafeTransportFailure() async {
         let missing = CodexAppServerInterviewerRuntime(
             codexExecutableURL: URL(fileURLWithPath: "/private/tmp/no-such-codex-fixture"),
             workingDirectoryURL: URL(fileURLWithPath: "/private/tmp")
         )
         let missingReadiness = await missing.preflight()
         XCTAssertEqual(missingReadiness, .missing)
-
-        let incompatibleConnection = ScriptedCodexConnection(lines: [])
-        let incompatibleLauncher = FixtureCodexLauncher(
-            version: "codex-cli 999.0.0",
-            connection: incompatibleConnection
-        )
-        let incompatible = Self.runtime(launcher: incompatibleLauncher)
-        let incompatibleReadiness = await incompatible.preflight()
-        XCTAssertEqual(
-            incompatibleReadiness,
-            .incompatible(
-                actualVersion: "codex-cli 999.0.0",
-                requiredVersion: CodexAppServerInterviewerRuntime.testedCLIVersion
-            )
-        )
 
         let unauthenticatedConnection = ScriptedCodexConnection(
             lines: Self.authenticationLines(account: NSNull())
@@ -95,7 +73,7 @@ final class CodexAppServerInterviewerRuntimeTests: XCTestCase {
         let failedConnection = ScriptedCodexConnection(lines: [])
         let failed = Self.runtime(
             launcher: FixtureCodexLauncher(
-                versionExitCode: 1,
+                mcpExitCode: 1,
                 connection: failedConnection
             )
         )
@@ -277,7 +255,7 @@ final class CodexAppServerInterviewerRuntimeTests: XCTestCase {
         do {
             _ = try await runtime.respond(to: Self.request())
             XCTFail("Expected server failure")
-        } catch let error as CodexAppServerRuntimeError {
+        } catch let error as InterviewerRuntimeError {
             XCTAssertEqual(error, .serverFailure(code: -32602))
             XCTAssertFalse(String(describing: error).contains("identity"))
         }
@@ -357,7 +335,7 @@ final class CodexAppServerInterviewerRuntimeTests: XCTestCase {
         do {
             _ = try await task.value
             XCTFail("Expected cancellation")
-        } catch let error as CodexAppServerRuntimeError {
+        } catch let error as InterviewerRuntimeError {
             XCTAssertEqual(error, .cancelled)
         }
         let didInterrupt = try await connection.sentMethod("turn/interrupt")
@@ -386,7 +364,7 @@ final class CodexAppServerInterviewerRuntimeTests: XCTestCase {
     }
 
     private func XCTAssertRuntimeError(
-        _ expected: CodexAppServerRuntimeError,
+        _ expected: InterviewerRuntimeError,
         operation: () async throws -> Void,
         file: StaticString = #filePath,
         line: UInt = #line
@@ -394,7 +372,7 @@ final class CodexAppServerInterviewerRuntimeTests: XCTestCase {
         do {
             try await operation()
             XCTFail("Expected \(expected)", file: file, line: line)
-        } catch let error as CodexAppServerRuntimeError {
+        } catch let error as InterviewerRuntimeError {
             XCTAssertEqual(error, expected, file: file, line: line)
         } catch {
             XCTFail("Unexpected error type", file: file, line: line)
@@ -594,21 +572,18 @@ final class CodexAppServerInterviewerRuntimeTests: XCTestCase {
 }
 
 private actor FixtureCodexLauncher: CodexAppServerProcessLaunching {
-    private let version: String
-    private let versionExitCode: Int32
+    private let mcpExitCode: Int32
     private let mcpOutput: Data
     private let connection: ScriptedCodexConnection
     private var recordedEnvironments: [[String: String]] = []
     private var recordedConnectionArguments: [String]?
 
     init(
-        version: String = CodexAppServerInterviewerRuntime.testedCLIVersion,
-        versionExitCode: Int32 = 0,
+        mcpExitCode: Int32 = 0,
         mcpOutput: Data = Data("[]".utf8),
         connection: ScriptedCodexConnection
     ) {
-        self.version = version
-        self.versionExitCode = versionExitCode
+        self.mcpExitCode = mcpExitCode
         self.mcpOutput = mcpOutput
         self.connection = connection
     }
@@ -621,18 +596,13 @@ private actor FixtureCodexLauncher: CodexAppServerProcessLaunching {
         outputLimit: Int
     ) async throws -> CodexCommandResult {
         recordedEnvironments.append(environment)
-        if arguments == ["--version"] {
-            return CodexCommandResult(
-                standardOutput: Data(version.utf8),
-                exitCode: versionExitCode
-            )
-        }
+        // A CLI without a version command must still work when its protocol does.
         guard arguments.starts(with: ["mcp", "list", "--json"]) else {
             throw CodexProcessFailure.launch
         }
         return CodexCommandResult(
             standardOutput: mcpOutput,
-            exitCode: 0
+            exitCode: mcpExitCode
         )
     }
 

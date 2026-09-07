@@ -62,7 +62,7 @@ struct FloorStatePresentation: Equatable {
         var speechActivity: SpeechActivity?
         var isInterviewerRequestInFlight: Bool
         var isOpeningInterviewer: Bool
-        var isCodexReady: Bool
+        var isInterviewerReady: Bool
         var canStopRecording: Bool
         var roomAvailability: RoomAvailability
         var turnMode: TurnMode
@@ -78,7 +78,7 @@ struct FloorStatePresentation: Equatable {
             speechActivity: SpeechActivity? = nil,
             isInterviewerRequestInFlight: Bool = false,
             isOpeningInterviewer: Bool = false,
-            isCodexReady: Bool = false,
+            isInterviewerReady: Bool = false,
             canStopRecording: Bool = false,
             roomAvailability: RoomAvailability = .ready,
             turnMode: TurnMode = .manual,
@@ -93,7 +93,7 @@ struct FloorStatePresentation: Equatable {
             self.speechActivity = speechActivity
             self.isInterviewerRequestInFlight = isInterviewerRequestInFlight
             self.isOpeningInterviewer = isOpeningInterviewer
-            self.isCodexReady = isCodexReady
+            self.isInterviewerReady = isInterviewerReady
             self.canStopRecording = canStopRecording
             self.roomAvailability = roomAvailability
             self.turnMode = turnMode
@@ -331,12 +331,12 @@ struct FloorStatePresentation: Equatable {
             if input.isOpeningInterviewer {
                 return Surface(
                     label: "Mara is opening",
-                    detail: "Codex is preparing the greeting"
+                    detail: "The interviewer is preparing the greeting"
                 )
             }
             return Surface(
-                label: "Answer saved · Codex working",
-                detail: "Codex is preparing Mara"
+                label: "Answer saved · interviewer working",
+                detail: "The interviewer is preparing a response"
             )
         }
 
@@ -358,16 +358,16 @@ struct FloorStatePresentation: Equatable {
         case .interviewerProcessing:
             if input.isOpeningInterviewer {
                 return Surface(
-                    label: input.isCodexReady
+                    label: input.isInterviewerReady
                         ? "Opening greeting needs retry"
-                        : "Opening greeting needs Codex to retry",
+                        : "Opening greeting needs the interviewer to retry",
                     detail: "No candidate answer yet"
                 )
             }
             return Surface(
-                label: input.isCodexReady
+                label: input.isInterviewerReady
                     ? "Answer saved · interviewer retry required"
-                    : "Answer saved · check Codex to retry",
+                    : "Answer saved · check the interviewer to retry",
                 detail: "Candidate answer saved"
             )
         case .interviewerTurn:
@@ -472,14 +472,14 @@ extension SystemDesignRoomModel {
                 statusMessage: statusMessage,
                 attentionMessage: errorMessage
                     ?? speechErrorMessage
-                    ?? codexAttentionMessage,
+                    ?? interviewerAttentionMessage,
                 speechActivity: speechActivity,
                 isInterviewerRequestInFlight: isInterviewerRequestInFlight,
                 isOpeningInterviewer: snapshot?.turns.isEmpty == true
                     && snapshot?.phase != .candidateFloor
                     && (snapshot?.phase == .interviewerProcessing
                         || isInterviewerRequestInFlight),
-                isCodexReady: isCodexReady,
+                isInterviewerReady: isInterviewerReady,
                 canStopRecording: canStopRecording,
                 roomAvailability: floorRoomAvailability,
                 turnMode: snapshot?.turnMode ?? .continuousConversation,

@@ -32,7 +32,7 @@ final class SystemDesignWorkSurfaceTests: XCTestCase {
             ["Clarify requirements."]
         )
         let restoredPreference = SystemDesignRoomModel(
-            codexRuntime: WorkSurfaceCodexRuntime(),
+            interviewerRuntime: WorkSurfaceCodexRuntime(),
             preferences: preferences,
             boardArtifactStore: nil
         )
@@ -145,8 +145,9 @@ final class SystemDesignWorkSurfaceTests: XCTestCase {
     }
 }
 
-private struct WorkSurfaceCodexRuntime: LiveCodexInterviewerRuntime {
-    func preflight() async -> CodexAppServerReadiness { .ready }
+private struct WorkSurfaceCodexRuntime: InterviewerProvider {
+    let providerName = "Fixture"
+    func preflight() async -> InterviewerReadiness { .ready }
 
     func respond(
         to request: InterviewerRequest
