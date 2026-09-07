@@ -143,3 +143,5 @@ helper, metadata, and MLX Metal-resource hashes before execution.
 In the System Design room, open the **Mara** menu and choose **Voice engine → Qwen** or **Kokoro**. Download the selected model once when prompted. Qwen uses the existing 1.838 GiB model; Kokoro downloads 321.2 MiB including its English voice and pronunciation files. Both run locally without per-use speech fees. Switching stops current speech and keeps saved audio available; the choice survives relaunch. Removing one model leaves the other model and interview recordings intact.
 
 The AI interviewer provider is separate from the voice engine. Codex is currently implemented, without a CLI version gate; Pi, Cursor subscription, and other provider adapters are roadmap work.
+
+Debug builds support isolated room verification: set `INTERVIEW_ARC_LIVE_DIAGNOSTIC_STATE_ROOT` to a fresh directory beginning with `/private/tmp/interview-arc-live-ui-smoke-` and set `INTERVIEW_ARC_LIVE_DIAGNOSTIC_LOCAL_ROOM=1`. This uses separate local session state and preferences without opening a real hosted activity. Release builds omit both overrides.

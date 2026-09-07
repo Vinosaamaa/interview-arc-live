@@ -39,7 +39,10 @@ let package = Package(
         ),
     ],
     targets: [
-        .target(name: "InterviewArcLiveCore"),
+        .target(
+            name: "InterviewArcLiveCore",
+            swiftSettings: [.define("INTERVIEW_ARC_LIVE_DIAGNOSTIC_STATE_ROOT", .when(configuration: .debug))]
+        ),
         .target(
             name: "InterviewArcLiveHostedClient",
             dependencies: ["InterviewArcLiveCore"]
@@ -82,7 +85,8 @@ let package = Package(
                 "InterviewArcLiveSpeechOutputAdapter",
                 "InterviewArcLiveVoiceAdapter",
             ],
-            resources: [.copy("Resources/BoardEditor")]
+            resources: [.copy("Resources/BoardEditor")],
+            swiftSettings: [.define("INTERVIEW_ARC_LIVE_DIAGNOSTIC_STATE_ROOT", .when(configuration: .debug))]
         ),
         .executableTarget(
             name: "InterviewArcLiveCodexSmoke",
