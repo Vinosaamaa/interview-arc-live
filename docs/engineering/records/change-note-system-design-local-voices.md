@@ -28,7 +28,7 @@ verification: {"state": "verified", "evidenceRefs": ["build:swift6-local-speech-
 visibility: "public-safe"
 publicationEligibility: "eligible"
 issue: 99
-pr: null
+pr: 100
 release: null
 run: null
 ---
@@ -53,7 +53,7 @@ A compile-time diagnostic build can open an isolated local room for headed verif
 ## Verification matrix
 
 - AI: real authenticated Codex 0.153.4 synthetic response passed; the version gate is absent.
-- Native build: the AI-only application built successfully; updated Core strict-concurrency compilation and the dual-engine adapter typecheck passed.
+- Native build: the complete integrated application built successfully in 124.74 seconds; updated Core strict-concurrency compilation and the dual-engine adapter typecheck also passed.
 - Regression coverage added: persisted engine choice, exact Kokoro allowlist, non-Qwen model receipts, bounded Unicode text, preserved audio and provenance after switching, joined producer cancellation, delayed replay cancellation, opening speech versus restore, and End during synthesis.
 - Pending: hosted XCTest and Metal package; real Qwen/Kokoro synthesis and playback; headed microphone/transcription/board/hold/mute/recovery/End session checks. These remain release blockers, not inferred successes.
 
