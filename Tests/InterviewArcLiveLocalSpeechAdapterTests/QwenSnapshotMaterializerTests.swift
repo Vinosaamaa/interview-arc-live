@@ -1,15 +1,15 @@
 import Foundation
 import XCTest
 
-@testable import InterviewArcLiveQwenAdapter
+@testable import InterviewArcLiveLocalSpeechAdapter
 
 @MainActor
-final class QwenSnapshotMaterializerTests: XCTestCase {
+final class LocalSpeechSnapshotMaterializerTests: XCTestCase {
     func testMaterializesHiddenAndNestedAllowlistedFilesFromPrivateCacheSymlinks() throws {
         let fixture = try MaterializerFixture.make()
         defer { fixture.remove() }
 
-        try QwenSnapshotMaterializer().materialize(
+        try LocalSpeechSnapshotMaterializer().materialize(
             manifest: fixture.manifest,
             cachedSnapshot: fixture.snapshot,
             cacheRoot: fixture.cacheRoot,
@@ -41,14 +41,14 @@ final class QwenSnapshotMaterializerTests: XCTestCase {
         defer { fixture.remove() }
 
         XCTAssertThrowsError(
-            try QwenSnapshotMaterializer().materialize(
+            try LocalSpeechSnapshotMaterializer().materialize(
                 manifest: fixture.manifest,
                 cachedSnapshot: fixture.snapshot,
                 cacheRoot: fixture.cacheRoot,
                 destination: fixture.destination
             )
         ) { error in
-            XCTAssertEqual(error as? QwenModelStoreFailure, .symbolicLinkRejected)
+            XCTAssertEqual(error as? LocalSpeechModelStoreFailure, .symbolicLinkRejected)
         }
     }
 
@@ -57,7 +57,7 @@ final class QwenSnapshotMaterializerTests: XCTestCase {
         defer { fixture.remove() }
 
         XCTAssertThrowsError(
-            try QwenSnapshotMaterializer().materialize(
+            try LocalSpeechSnapshotMaterializer().materialize(
                 manifest: fixture.manifest,
                 cachedSnapshot: fixture.snapshot,
                 cacheRoot: fixture.cacheRoot,
@@ -78,7 +78,7 @@ private struct MaterializerFixture {
     let snapshot: URL
     let destination: URL
     let contents: [String: Data]
-    let manifest: QwenSnapshotManifest
+    let manifest: LocalSpeechSnapshotManifest
 
     static func make(escapeCache: Bool = false) throws -> MaterializerFixture {
         let fileManager = FileManager.default
@@ -101,15 +101,15 @@ private struct MaterializerFixture {
             ".gitattributes": Data("*.safetensors filter=lfs".utf8),
             "speech_tokenizer/model.safetensors": Data([2, 4, 0, 0, 0]),
         ]
-        let manifest = QwenSnapshotManifest(
+        let manifest = LocalSpeechSnapshotManifest(
             repositoryID: "fixture/model",
             revision: "0123456789abcdef0123456789abcdef01234567",
             files: contents.keys.sorted().map { path in
                 let data = contents[path]!
-                return QwenSnapshotFile(
+                return LocalSpeechSnapshotFile(
                     path: path,
                     byteCount: Int64(data.count),
-                    sha256: QwenSHA256.string(data)
+                    sha256: LocalSpeechSHA256.string(data)
                 )
             }
         )

@@ -5,6 +5,126 @@ import XCTest
 
 @MainActor
 final class InterviewerSpeechCoordinatorTests: XCTestCase {
+    func testSwitchInvalidatesReplayWaitingForAudioValidation() async throws {
+        let store = InMemorySessionManifestStore()
+        let audio = SpeechAudioStoreFixture()
+        let player = SpeechPlayerFixture()
+        let provider = ScriptedSpeechProvider(readiness: .ready, events: validEvents(), manifestStore: store)
+        let conversation = try await makeConversation(manifestStore: store)
+        let speech = try await InterviewerSpeechCoordinator.attach(to: conversation,
+            provider: provider, player: player, audioStore: audio)
+        let turn = try await completeTurn(in: conversation.interviewRoomSession)
+        await speech.observeNewlyPersistedSnapshot(turn)
+        await speech.waitUntilIdle()
+        let utterance = try XCTUnwrap(speech.snapshot.interviewerUtterances.first)
+        await audio.holdNextValidation()
+        let replay = Task { @MainActor in try await speech.play(utteranceID: utterance.id) }
+        await audio.waitForHeldValidation()
+        let replacement = ScriptedSpeechProvider(readiness: .ready, events: validEvents(), manifestStore: store)
+        _ = try await speech.replaceProvider(with: replacement, commandID: CommandID("switch-during-validation"))
+        await audio.releaseValidation()
+        do {
+            try await replay.value
+            XCTFail("The superseded replay must not start after the switch")
+        } catch is CancellationError { }
+        XCTAssertEqual(player.playCount, 0)
+        XCTAssertEqual(speech.snapshot.interviewerUtterances.first, utterance)
+    }
+
+    func testOpeningSpeaksWhenAttachedBeforeRequestAndRestoreDoesNotReplayIt() async throws {
+        let store = InMemorySessionManifestStore()
+        let provider = ScriptedSpeechProvider(readiness: .ready, events: validEvents(), manifestStore: store)
+        let conversation = try await makeConversation(manifestStore: store)
+        let audio = SpeechAudioStoreFixture()
+        let speech = try await InterviewerSpeechCoordinator.attach(to: conversation,
+            provider: provider, player: SpeechPlayerFixture(), audioStore: audio)
+        let opening = try await conversation.requestOpeningInterviewerTurn(commandID: CommandID("opening"))
+        await speech.observeNewlyPersistedSnapshot(opening)
+        await speech.waitUntilIdle()
+        let spoken = await provider.synthesisCount()
+        XCTAssertEqual(spoken, 1)
+        XCTAssertNotNil(speech.snapshot.interviewerUtterances.first?.selectedAudio)
+        let restored = try await InterviewerSpeechCoordinator.attach(to: conversation,
+            provider: provider, player: SpeechPlayerFixture(), audioStore: audio)
+        _ = try await restored.resumePendingWork()
+        await restored.observeNewlyPersistedSnapshot(restored.snapshot)
+        await restored.waitUntilIdle()
+        let afterRestore = await provider.synthesisCount()
+        XCTAssertEqual(afterRestore, 1)
+    }
+
+    func testEndingConversationJoinsSpeechAndCommitsStoppedAttemptBeforeCompletion() async throws {
+        let store = InMemorySessionManifestStore()
+        let provider = CancellationJoiningSpeechProvider(subsequentEvents: validEvents(), manifestStore: store)
+        let conversation = try await makeConversation(manifestStore: store)
+        let speech = try await InterviewerSpeechCoordinator.attach(to: conversation,
+            provider: provider, player: SpeechPlayerFixture(), audioStore: SpeechAudioStoreFixture())
+        let turn = try await completeTurn(in: conversation.interviewRoomSession)
+        await speech.observeNewlyPersistedSnapshot(turn)
+        try await provider.waitUntilFirstProducerStarts()
+        let completed = try await conversation.finishSession(commandID: CommandID("end-speaking"))
+        let cancellations = await provider.cancellationCount()
+        XCTAssertEqual(cancellations, 1)
+        XCTAssertEqual(completed.phase, .completed)
+        XCTAssertEqual(completed.interviewerUtterances.first?.latestAttempt?.lifecycle, .stopped)
+        XCTAssertEqual(completed.interviewerUtterances.first?.latestAttempt?.stopReason, .userStopped)
+    }
+
+    func testSwitchPreservesSavedAudioAndUsesReplacementOnlyForExplicitRetry() async throws {
+        let store = InMemorySessionManifestStore()
+        let original = ScriptedSpeechProvider(readiness: .ready, events: validEvents(), manifestStore: store)
+        let replacementProvenance = InterviewerSpeechProvenance(
+            providerID: "fixture-other-voice", modelID: "fixture/other-model",
+            modelRevision: "0123456789abcdef0123456789abcdef01234567", profile: .maraV1)
+        let replacement = ScriptedSpeechProvider(readiness: .ready, events: validEvents(),
+            manifestStore: store, provenance: replacementProvenance)
+        let conversation = try await makeConversation(manifestStore: store)
+        let player = SpeechPlayerFixture()
+        let speech = try await InterviewerSpeechCoordinator.attach(to: conversation,
+            provider: original, player: player, audioStore: SpeechAudioStoreFixture())
+        let completed = try await completeTurn(in: conversation.interviewRoomSession)
+        await speech.observeNewlyPersistedSnapshot(completed)
+        await speech.waitUntilIdle()
+        let before = try XCTUnwrap(speech.snapshot.interviewerUtterances.first)
+
+        _ = try await speech.replaceProvider(with: replacement, commandID: CommandID("switch-voice"))
+        XCTAssertEqual(speech.snapshot.interviewerUtterances.first, before)
+        let callsBeforeRetry = await replacement.synthesisCount()
+        XCTAssertEqual(callsBeforeRetry, 0)
+        try await speech.play(utteranceID: before.id)
+        XCTAssertEqual(player.playCount, 1)
+        try await speech.retry(utteranceID: before.id, commandID: CommandID("new-voice-retry"))
+        await speech.waitUntilIdle()
+
+        let after = try XCTUnwrap(speech.snapshot.interviewerUtterances.first)
+        XCTAssertEqual(after.synthesisAttempts.count, 2)
+        XCTAssertEqual(after.synthesisAttempts.first, before.synthesisAttempts.first)
+        XCTAssertEqual(after.latestAttempt?.provenance, replacementProvenance)
+        XCTAssertNotNil(after.selectedAudio)
+    }
+
+    func testSwitchDuringGenerationJoinsProducerAndRetainsStoppedAttempt() async throws {
+        let store = InMemorySessionManifestStore()
+        let original = CancellationJoiningSpeechProvider(subsequentEvents: validEvents(), manifestStore: store)
+        let replacement = ScriptedSpeechProvider(readiness: .notInstalled, events: [], manifestStore: store)
+        let conversation = try await makeConversation(manifestStore: store)
+        let speech = try await InterviewerSpeechCoordinator.attach(to: conversation,
+            provider: original, player: SpeechPlayerFixture(), audioStore: SpeechAudioStoreFixture())
+        let completed = try await completeTurn(in: conversation.interviewRoomSession)
+        await speech.observeNewlyPersistedSnapshot(completed)
+        try await original.waitUntilFirstProducerStarts()
+
+        let readiness = try await speech.replaceProvider(with: replacement,
+            commandID: CommandID("switch-while-speaking"))
+        let cancellations = await original.cancellationCount()
+        let replacementCalls = await replacement.synthesisCount()
+        XCTAssertEqual(cancellations, 1)
+        XCTAssertEqual(replacementCalls, 0)
+        XCTAssertEqual(readiness, .notInstalled)
+        XCTAssertEqual(speech.snapshot.interviewerUtterances.first?.latestAttempt?.lifecycle, .stopped)
+        XCTAssertEqual(speech.snapshot.turns, completed.turns)
+    }
+
     func testReadyNewTurnPersistsAuthorizationBeforeProviderAndStreamsToReadyAudio() async throws {
         let manifestStore = InMemorySessionManifestStore()
         let audioStore = SpeechAudioStoreFixture()
@@ -808,7 +928,7 @@ private func fixtureProvenance() -> InterviewerSpeechProvenance {
 }
 
 private actor ScriptedSpeechProvider: InterviewerSpeechProvider {
-    nonisolated let provenance = fixtureProvenance()
+    nonisolated let provenance: InterviewerSpeechProvenance
     private let readinessValue: InterviewerSpeechReadiness
     private let events: [InterviewerSpeechEvent]
     private let manifestStore: (any SessionManifestStore)?
@@ -821,8 +941,10 @@ private actor ScriptedSpeechProvider: InterviewerSpeechProvider {
     init(
         readiness: InterviewerSpeechReadiness,
         events: [InterviewerSpeechEvent],
-        manifestStore: (any SessionManifestStore)?
+        manifestStore: (any SessionManifestStore)?,
+        provenance: InterviewerSpeechProvenance = fixtureProvenance()
     ) {
+        self.provenance = provenance
         readinessValue = readiness
         self.events = events
         self.manifestStore = manifestStore
@@ -995,6 +1117,10 @@ private actor SpeechAudioStoreFixture: InterviewerSpeechAudioStoring {
     private var appends = 0
     private var finalizes = 0
     private var discards = 0
+    private var holdsNextValidation = false
+    private var validationIsHeld = false
+    private var validationStarted: CheckedContinuation<Void, Never>?
+    private var validationRelease: CheckedContinuation<Void, Never>?
 
     init(
         holdAppend: Bool = false,
@@ -1063,8 +1189,26 @@ private actor SpeechAudioStoreFixture: InterviewerSpeechAudioStoring {
     func validateAudio(
         sessionID: SessionID,
         artifact: InterviewerSpeechAudioArtifact
-    ) -> Bool {
-        finalized.values.contains(artifact)
+    ) async -> Bool {
+        if holdsNextValidation {
+            holdsNextValidation = false
+            validationIsHeld = true
+            validationStarted?.resume()
+            validationStarted = nil
+            await withCheckedContinuation { validationRelease = $0 }
+        }
+        return finalized.values.contains(artifact)
+    }
+
+    func holdNextValidation() { holdsNextValidation = true }
+    func waitForHeldValidation() async {
+        if validationIsHeld { return }
+        await withCheckedContinuation { validationStarted = $0 }
+    }
+    func releaseValidation() {
+        validationRelease?.resume()
+        validationRelease = nil
+        validationIsHeld = false
     }
 
     func waitUntilAppendStarted() async {

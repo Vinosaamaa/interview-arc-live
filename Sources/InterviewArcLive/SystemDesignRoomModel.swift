@@ -4,7 +4,7 @@ import CryptoKit
 import Foundation
 import InterviewArcLiveCore
 import InterviewArcLiveHostedClient
-import InterviewArcLiveQwenAdapter
+import InterviewArcLiveLocalSpeechAdapter
 import InterviewArcLiveSpeechOutputAdapter
 import InterviewArcLiveVoiceAdapter
 
@@ -119,6 +119,8 @@ final class SystemDesignRoomModel: ObservableObject {
     @Published private(set) var isInterviewerRequestInFlight = false
     @Published private(set) var speechReadiness: InterviewerSpeechReadiness = .notInstalled
     @Published private(set) var isSpeechMuted: Bool
+    @Published private(set) var selectedSpeechEngine: LocalSpeechEngine
+    @Published private(set) var isSwitchingSpeechEngine = false
     @Published private(set) var isSpeechModelActionInFlight = false
     @Published private(set) var isSpeechControlActionInFlight = false
     @Published private(set) var playingUtteranceID: InterviewerUtteranceID?
@@ -178,6 +180,8 @@ final class SystemDesignRoomModel: ObservableObject {
     private let interviewerRuntime: any InterviewerProvider
     private let speechDependencies: LiveInterviewerSpeechDependencies?
     private let preferences: UserDefaults
+    private let speechProviderFactory: (LocalSpeechEngine) throws -> any InterviewerSpeechProvider
+    private static let speechEnginePreferenceKey = "live.interviewer-speech.engine"
     private var boardArtifactStore: PrivateBoardArtifactStore?
     private let boardRenderer: DeterministicBoardRenderer
     private let hostedController: HostedPracticeController?
@@ -208,6 +212,9 @@ final class SystemDesignRoomModel: ObservableObject {
         activityPrompt: ActivityPrompt? = nil,
         speechDependencies: LiveInterviewerSpeechDependencies? = nil,
         preferences: UserDefaults = .standard,
+        speechProviderFactory: @escaping (LocalSpeechEngine) throws -> any InterviewerSpeechProvider = {
+            try LocalInterviewerSpeechProvider(engine: $0)
+        },
         initialCoordinator: SegmentSpeechCoordinator? = nil,
         boardArtifactStore: PrivateBoardArtifactStore? = nil,
         boardRenderer: DeterministicBoardRenderer = DeterministicBoardRenderer(),
@@ -218,6 +225,10 @@ final class SystemDesignRoomModel: ObservableObject {
         self.activityPrompt = activityPrompt ?? Self.tracerActivityPrompt
         self.speechDependencies = speechDependencies
         self.preferences = preferences
+        self.speechProviderFactory = speechProviderFactory
+        selectedSpeechEngine = LocalSpeechEngine(
+            rawValue: preferences.string(forKey: Self.speechEnginePreferenceKey) ?? ""
+        ) ?? .qwen
         self.boardArtifactStore = boardArtifactStore
         self.boardRenderer = boardRenderer
         self.hostedController = hostedController
@@ -426,7 +437,10 @@ final class SystemDesignRoomModel: ObservableObject {
 
     var speechReadinessPresentation: InterviewerSpeechReadinessPresentation {
         InterviewerSpeechReadinessPresentation.make(
-            readiness: speechReadiness
+            readiness: speechReadiness,
+            engineName: selectedSpeechEngine.displayName,
+            downloadSize: selectedSpeechEngine.downloadSizeLabel,
+            minimumFreeSpace: selectedSpeechEngine.minimumFreeSpaceLabel
         )
     }
 
@@ -1319,6 +1333,10 @@ final class SystemDesignRoomModel: ObservableObject {
                 restored = opened.snapshot
                 errorMessage = "A recording recovery needs attention. Preserved evidence remains visible below."
             }
+            await attachInterviewerSpeech(
+                to: opened,
+                conversationEngine: conversationEngine
+            )
             if restored.turnMode == .continuousConversation {
                 await opened.enableContinuousListening()
             }
@@ -1338,10 +1356,7 @@ final class SystemDesignRoomModel: ObservableObject {
             }
             publish(restored)
             await recoverBoardArtifacts(in: restored.board)
-            await attachInterviewerSpeech(
-                to: opened,
-                conversationEngine: conversationEngine
-            )
+            await interviewerSpeechCoordinator?.observeNewlyPersistedSnapshot(restored)
         } catch {
             statusMessage = "Local session unavailable"
             errorMessage = safeMessage(for: error)
@@ -2064,8 +2079,38 @@ final class SystemDesignRoomModel: ObservableObject {
         return "pair-\(digest)"
     }
 
+    func selectSpeechEngine(_ engine: LocalSpeechEngine) async {
+        guard engine != selectedSpeechEngine, !isSwitchingSpeechEngine,
+              !isWorking, !isFinishingInterview else { return }
+        isSwitchingSpeechEngine = true
+        defer { isSwitchingSpeechEngine = false }
+        speechErrorMessage = nil
+        // Preparation cancellation must finish before swapping or releasing its model.
+        if let preparation = speechPreparationTask {
+            preparation.cancel()
+            await preparation.value
+        }
+        guard !isSpeechModelActionInFlight else { return }
+        do {
+            if let interviewerSpeechCoordinator {
+                let provider = try speechProviderFactory(engine)
+                _ = try await interviewerSpeechCoordinator.replaceProvider(
+                    with: provider, commandID: commandID("switch-speech-engine"))
+                publish(interviewerSpeechCoordinator.snapshot)
+            } else {
+                speechReadiness = .notInstalled
+            }
+            selectedSpeechEngine = engine
+            preferences.set(engine.rawValue, forKey: Self.speechEnginePreferenceKey)
+            playingUtteranceID = nil
+        } catch {
+            speechErrorMessage = safeSpeechMessage(for: error)
+        }
+    }
+
     func startSpeechModelDownload() {
-        guard speechPreparationTask == nil,
+        guard !isSwitchingSpeechEngine, !isSpeechModelActionInFlight,
+              speechPreparationTask == nil,
               let interviewerSpeechCoordinator else {
             return
         }
@@ -2095,7 +2140,7 @@ final class SystemDesignRoomModel: ObservableObject {
     }
 
     func removeSpeechModel() async {
-        guard speechPreparationTask == nil,
+        guard !isSwitchingSpeechEngine, speechPreparationTask == nil,
               !isSpeechModelActionInFlight,
               let interviewerSpeechCoordinator else {
             return
@@ -2261,7 +2306,8 @@ final class SystemDesignRoomModel: ObservableObject {
                 dependencies = speechDependencies
             } else {
                 dependencies = try Self.makeLiveSpeechDependencies(
-                    engine: conversationEngine
+                    engine: conversationEngine,
+                    provider: speechProviderFactory(selectedSpeechEngine)
                 )
             }
 
@@ -2302,11 +2348,12 @@ final class SystemDesignRoomModel: ObservableObject {
     }
 
     private static func makeLiveSpeechDependencies(
-        engine: AVAudioEngine
+        engine: AVAudioEngine,
+        provider: any InterviewerSpeechProvider
     ) throws -> LiveInterviewerSpeechDependencies {
         let audioStore = LiveInterviewerSpeechAudioStore()
         return LiveInterviewerSpeechDependencies(
-            provider: try QwenInterviewerSpeechProvider(),
+            provider: provider,
             player: AVAudioEngineInterviewerSpeechPlayer(
                 audioStore: audioStore,
                 engine: engine,

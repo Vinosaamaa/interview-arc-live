@@ -45,7 +45,9 @@ public final class InterviewerSpeechCoordinator {
 
     private let session: InterviewRoomSession
     private weak var conversation: SegmentSpeechCoordinator?
-    private let provider: any InterviewerSpeechProvider
+    private var provider: any InterviewerSpeechProvider
+    private var providerGeneration = 0
+    private var isChangingProvider = false
     private let player: any InterviewerSpeechPlaying
     private let audioStore: any InterviewerSpeechAudioStoring
     private var knownInterviewerTurnIDs: Set<TurnID>
@@ -62,6 +64,7 @@ public final class InterviewerSpeechCoordinator {
     private var activeOperation: ActiveOperation?
     private var cancellationFinalizer: CancellationFinalizer?
     private var isPlayingSavedAudio = false
+    private var savedPlaybackGeneration = 0
     private var isPreparingModel = false
     private var preparationToken = 0
     private var snapshotHandler: (@MainActor @Sendable (InterviewRoomSnapshot) -> Void)?
@@ -111,9 +114,9 @@ public final class InterviewerSpeechCoordinator {
             initiallyMuted: initiallyMuted
         )
         coordinator.conversation = conversation
-        conversation.setInterviewerPlaybackStopper { [weak coordinator] commandID in
+        conversation.setInterviewerPlaybackStopper { [weak coordinator] commandID, reason in
             guard let coordinator else { return }
-            try await coordinator.stop(commandID: commandID, reason: .bargeIn)
+            try await coordinator.stop(commandID: commandID, reason: reason, discardPendingAutomaticTurns: true)
         }
         return coordinator
     }
@@ -134,7 +137,9 @@ public final class InterviewerSpeechCoordinator {
 
     @discardableResult
     public func refreshReadiness() async -> InterviewerSpeechReadiness {
+        let generation = providerGeneration
         let next = await provider.readiness()
+        guard generation == providerGeneration else { return readiness }
         publishReadiness(next)
         if next == .ready {
             resetAutomaticDrainRetry()
@@ -341,6 +346,32 @@ public final class InterviewerSpeechCoordinator {
         return snapshot
     }
 
+    /// Changes the model used by future attempts. Existing WAVs and attempt
+    /// provenance remain immutable. Current output and the real producer stop
+    /// before the replacement can become visible or own any work.
+    @discardableResult
+    public func replaceProvider(
+        with replacement: any InterviewerSpeechProvider,
+        commandID: CommandID
+    ) async throws -> InterviewerSpeechReadiness {
+        guard !isPreparingModel else {
+            throw InterviewerSpeechCoordinatorError.modelPreparationInProgress
+        }
+        isPreparingModel = true
+        isChangingProvider = true
+        defer { isPreparingModel = false; isChangingProvider = false }
+        resetAutomaticDrainRetry()
+        pendingAutomaticTurnIDs.removeAll()
+        pendingAutomaticTurnIDSet.removeAll()
+        try await stop(commandID: commandID)
+        await provider.unload()
+        providerGeneration += 1
+        provider = replacement
+        let next = await replacement.readiness()
+        publishReadiness(next)
+        return next
+    }
+
     /// Explicitly synthesizes a pending or prior-attempt Utterance. Model
     /// preparation is never hidden here; the exact revision must already be ready.
     public func retry(
@@ -361,15 +392,17 @@ public final class InterviewerSpeechCoordinator {
 
     public func stop(
         commandID: CommandID,
-        reason: InterviewerSynthesisStopReason = .userStopped
+        reason: InterviewerSynthesisStopReason = .userStopped,
+        discardPendingAutomaticTurns: Bool = false
     ) async throws {
-        if reason == .bargeIn {
+        if reason == .bargeIn || discardPendingAutomaticTurns {
             resetAutomaticDrainRetry()
             pendingAutomaticTurnIDs.removeAll()
             pendingAutomaticTurnIDSet.removeAll()
         }
-        await player.stop()
+        savedPlaybackGeneration += 1
         isPlayingSavedAudio = false
+        await player.stop()
         if let finalizer = cancellationFinalizer {
             try await finalizer.task.value
             await endPlaybackCycle()
@@ -396,8 +429,9 @@ public final class InterviewerSpeechCoordinator {
         resetAutomaticDrainRetry()
         pendingAutomaticTurnIDs.removeAll()
         pendingAutomaticTurnIDSet.removeAll()
-        await player.stop()
+        savedPlaybackGeneration += 1
         isPlayingSavedAudio = false
+        await player.stop()
         if let finalizer = cancellationFinalizer {
             try await finalizer.task.value
             await endPlaybackCycle()
@@ -415,6 +449,9 @@ public final class InterviewerSpeechCoordinator {
 
     /// Plays only a selected, validated WAV. No provider call is possible.
     public func play(utteranceID: InterviewerUtteranceID) async throws {
+        guard !isChangingProvider else {
+            throw InterviewerSpeechCoordinatorError.modelPreparationInProgress
+        }
         guard !isMuted else { throw InterviewerSpeechCoordinatorError.muted }
         if let operation = activeOperation {
             throw InterviewerSpeechCoordinatorError.operationInProgress(operation.attemptID)
@@ -430,27 +467,28 @@ public final class InterviewerSpeechCoordinator {
         guard let audio = utterance.selectedAudio else {
             throw InterviewerSpeechCoordinatorError.noSelectedAudio(utteranceID)
         }
+        savedPlaybackGeneration += 1
+        let generation = savedPlaybackGeneration
         isPlayingSavedAudio = true
-        defer { isPlayingSavedAudio = false }
-        guard await audioStore.validateAudio(
-            sessionID: snapshot.sessionID,
-            artifact: audio
-        ) else {
+        defer {
+            if generation == savedPlaybackGeneration { isPlayingSavedAudio = false }
+        }
+        let valid = await audioStore.validateAudio(sessionID: snapshot.sessionID, artifact: audio)
+        guard generation == savedPlaybackGeneration else { throw CancellationError() }
+        guard valid else {
             throw InterviewerSpeechCoordinatorError.selectedAudioInvalid(utteranceID)
         }
         await beginPlaybackCycle()
+        guard generation == savedPlaybackGeneration else { throw CancellationError() }
         do {
             try await player.play(
-                InterviewerSpeechPlaybackRequest(
-                    sessionID: snapshot.sessionID,
-                    artifact: audio
-                )
+                InterviewerSpeechPlaybackRequest(sessionID: snapshot.sessionID, artifact: audio)
             )
         } catch {
-            await endPlaybackCycle()
+            if generation == savedPlaybackGeneration { await endPlaybackCycle() }
             throw error
         }
-        await endPlaybackCycle()
+        if generation == savedPlaybackGeneration { await endPlaybackCycle() }
     }
 
     /// Deterministic verification hook. Production presentation need not wait;
@@ -505,8 +543,9 @@ public final class InterviewerSpeechCoordinator {
             throw InterviewerSpeechCoordinatorError.operationInProgress(operation.attemptID)
         }
         if isPlayingSavedAudio {
-            await player.stop()
+            savedPlaybackGeneration += 1
             isPlayingSavedAudio = false
+            await player.stop()
         }
         guard let utterance = snapshot.interviewerUtterances.first(where: {
             $0.id == utteranceID

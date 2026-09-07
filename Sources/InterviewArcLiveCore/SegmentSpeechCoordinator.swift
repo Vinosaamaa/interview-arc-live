@@ -30,7 +30,7 @@ public final class SegmentSpeechCoordinator {
     private let boundaryTracer: (any ConversationBoundaryTracing)?
     private var snapshotHandler: (@MainActor @Sendable (InterviewRoomSnapshot) -> Void)?
     private var interviewerPlaybackStopper:
-        (@MainActor @Sendable (CommandID) async throws -> Void)?
+        (@MainActor @Sendable (CommandID, InterviewerSynthesisStopReason) async throws -> Void)?
     private var isFinalizing = false
     private var isHandlingAcousticEvent = false
     private var isHandlingBargeIn = false
@@ -516,7 +516,7 @@ public final class SegmentSpeechCoordinator {
     }
 
     public func setInterviewerPlaybackStopper(
-        _ stopper: (@MainActor @Sendable (CommandID) async throws -> Void)?
+        _ stopper: (@MainActor @Sendable (CommandID, InterviewerSynthesisStopReason) async throws -> Void)?
     ) {
         interviewerPlaybackStopper = stopper
     }
@@ -592,11 +592,16 @@ public final class SegmentSpeechCoordinator {
     public func finishSession(
         commandID: CommandID
     ) async throws -> InterviewRoomSnapshot {
-        let next = try await applyAndPublish(.finish(commandID: commandID)).snapshot
+        // End must quiesce both input and output before committing completion.
+        // Otherwise speech completion can reopen the microphone during teardown.
         cancelScheduledGrace()
         wantsContinuousListening = false
         await disarmAcousticSegmenter()
-        return next
+        try await interviewerPlaybackStopper?(
+            InterviewRoomSession.derivedCommandID(source: commandID, operation: "finish-speech"),
+            .userStopped
+        )
+        return try await applyAndPublish(.finish(commandID: commandID)).snapshot
     }
 
     public func playbackURL(segmentID: SegmentID) async throws -> URL {
@@ -1353,7 +1358,7 @@ public final class SegmentSpeechCoordinator {
             operation: "barge-in-stop"
         )
         do {
-            try await interviewerPlaybackStopper?(stopCommandID)
+            try await interviewerPlaybackStopper?(stopCommandID, .bargeIn)
         } catch {
             trace(command: "acoustic_event", resultCode: "barge_in_stop_failed")
         }

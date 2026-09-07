@@ -1,10 +1,25 @@
 import Foundation
 import XCTest
 
-@testable import InterviewArcLiveQwenAdapter
+@testable import InterviewArcLiveLocalSpeechAdapter
 
 @MainActor
-final class QwenModelStoreTests: XCTestCase {
+final class LocalSpeechModelStoreTests: XCTestCase {
+    func testNonDerivingModelUsesVerifiedSnapshotWithoutQwenTokenizer() async throws {
+        let fixture = try Fixture.make(derivesTokenizer: false)
+        defer { fixture.remove() }
+        let result = try await fixture.store.prepare(allowDownload: true,
+            validateStagedLoad: { _ in }, loadPromoted: { $0 }, progress: { _ in })
+        XCTAssertFalse(fixture.fileManager.fileExists(atPath:
+            result.modelDirectory.appendingPathComponent("tokenizer.json").path))
+        let readiness = await fixture.store.readiness()
+        XCTAssertEqual(readiness, .ready(modelDirectory: result.modelDirectory))
+        let weight = result.modelDirectory.appendingPathComponent("speech_tokenizer/model.safetensors")
+        try Data([9, 9, 9, 9]).write(to: weight)
+        let corrupted = await fixture.store.readiness()
+        XCTAssertEqual(corrupted, .unavailable(.hashMismatch))
+    }
+
     func testPinnedPublicProvenanceIsCompleteAndImmutable() {
         let snapshot = Qwen3TTSProvenance.publicSnapshot
 
@@ -75,7 +90,7 @@ final class QwenModelStoreTests: XCTestCase {
         do {
             _ = try await fixture.prepare(allowDownload: false)
             XCTFail("neverDownload must not install a snapshot")
-        } catch let failure as QwenModelStoreFailure {
+        } catch let failure as LocalSpeechModelStoreFailure {
             XCTAssertEqual(failure, .missingFile)
         }
         XCTAssertFalse(fixture.fileManager.fileExists(atPath: fixture.modelRoot.path))
@@ -106,7 +121,7 @@ final class QwenModelStoreTests: XCTestCase {
                 && $0.completedBytes <= $0.totalBytes
         })
 
-        let receipt = directory.appendingPathComponent(QwenModelStore.verificationReceiptName)
+        let receipt = directory.appendingPathComponent(LocalSpeechModelStore.verificationReceiptName)
         let receiptText = try String(contentsOf: receipt, encoding: .utf8)
         let directoryPermissions = try permissions(directory)
         let configPermissions = try permissions(
@@ -125,7 +140,7 @@ final class QwenModelStoreTests: XCTestCase {
         do {
             _ = try await fixture.prepare(allowDownload: true)
             XCTFail("download should require the configured free-space floor")
-        } catch let failure as QwenModelStoreFailure {
+        } catch let failure as LocalSpeechModelStoreFailure {
             XCTAssertEqual(failure, .insufficientFreeSpace)
         }
 
@@ -136,7 +151,7 @@ final class QwenModelStoreTests: XCTestCase {
 
     func testMalformedManifestFailsBeforeStorageOrNetworkMutation() async throws {
         let validHash = String(repeating: "a", count: 64)
-        let malformedFileSets: [[QwenSnapshotFile]] = [
+        let malformedFileSets: [[LocalSpeechSnapshotFile]] = [
             [.init(path: "../escape", byteCount: 1, sha256: validHash)],
             [.init(path: "config.json", byteCount: 0, sha256: validHash)],
             [.init(path: "config.json", byteCount: 1, sha256: "too-short")],
@@ -153,7 +168,7 @@ final class QwenModelStoreTests: XCTestCase {
             do {
                 _ = try await fixture.prepare(allowDownload: true)
                 XCTFail("a malformed immutable manifest must fail closed")
-            } catch let failure as QwenModelStoreFailure {
+            } catch let failure as LocalSpeechModelStoreFailure {
                 XCTAssertEqual(failure, .invalidStorageRoot)
             }
 
@@ -164,7 +179,7 @@ final class QwenModelStoreTests: XCTestCase {
     }
 
     func testInvalidSnapshotMatrixNeverPromotes() async throws {
-        let cases: [(FixtureDownloader.Behavior, QwenModelStoreFailure)] = [
+        let cases: [(FixtureDownloader.Behavior, LocalSpeechModelStoreFailure)] = [
             (.missingFile, .missingFile),
             (.extraFile, .unexpectedSnapshotShape),
             (.zeroFile, .wrongFileSize),
@@ -181,7 +196,7 @@ final class QwenModelStoreTests: XCTestCase {
             do {
                 _ = try await fixture.prepare(allowDownload: true)
                 XCTFail("\(behavior) must not promote")
-            } catch let failure as QwenModelStoreFailure {
+            } catch let failure as LocalSpeechModelStoreFailure {
                 XCTAssertEqual(failure, expected, "behavior: \(behavior)")
             }
 
@@ -203,7 +218,7 @@ final class QwenModelStoreTests: XCTestCase {
         do {
             _ = try await task.value
             XCTFail("cancelled transfer must fail")
-        } catch let failure as QwenModelStoreFailure {
+        } catch let failure as LocalSpeechModelStoreFailure {
             XCTAssertEqual(failure, .cancelled)
         }
 
@@ -224,12 +239,12 @@ final class QwenModelStoreTests: XCTestCase {
         // Removing the receipt makes the existing tree ineligible for loading,
         // forcing a new staged transfer while retaining the old bytes.
         try fixture.fileManager.removeItem(
-            at: directory.appendingPathComponent(QwenModelStore.verificationReceiptName)
+            at: directory.appendingPathComponent(LocalSpeechModelStore.verificationReceiptName)
         )
         do {
             _ = try await fixture.prepare(allowDownload: true)
             XCTFail("scripted replacement must fail")
-        } catch let failure as QwenModelStoreFailure {
+        } catch let failure as LocalSpeechModelStoreFailure {
             XCTAssertEqual(failure, .downloadFailed)
         }
 
@@ -260,7 +275,7 @@ final class QwenModelStoreTests: XCTestCase {
                 progress: { _ in }
             )
             XCTFail("a promoted loader failure must roll back")
-        } catch let failure as QwenModelStoreFailure {
+        } catch let failure as LocalSpeechModelStoreFailure {
             XCTAssertEqual(failure, .loaderValidationFailed)
         }
 
@@ -300,7 +315,7 @@ final class QwenModelStoreTests: XCTestCase {
                 progress: { _ in }
             )
             XCTFail("a post-replacement validation failure must roll back")
-        } catch let failure as QwenModelStoreFailure {
+        } catch let failure as LocalSpeechModelStoreFailure {
             XCTAssertEqual(failure, .storageFailure)
         }
 
@@ -348,7 +363,7 @@ final class QwenModelStoreTests: XCTestCase {
                 progress: { _ in }
             )
             XCTFail("post-load hash corruption must roll back")
-        } catch let failure as QwenModelStoreFailure {
+        } catch let failure as LocalSpeechModelStoreFailure {
             XCTAssertEqual(failure, .hashMismatch)
         }
 
@@ -390,7 +405,7 @@ final class QwenModelStoreTests: XCTestCase {
         do {
             _ = try await task.value
             XCTFail("cancellation after promotion must roll back")
-        } catch let failure as QwenModelStoreFailure {
+        } catch let failure as LocalSpeechModelStoreFailure {
             XCTAssertEqual(failure, .cancelled)
         }
 
@@ -433,7 +448,7 @@ final class QwenModelStoreTests: XCTestCase {
         defer { fixture.remove() }
         let directory = try await fixture.prepare(allowDownload: true)
 
-        let derivedReceipt = directory.appendingPathComponent(QwenModelStore.derivedReceiptName)
+        let derivedReceipt = directory.appendingPathComponent(LocalSpeechModelStore.derivedReceiptName)
         let receipt = try String(contentsOf: derivedReceipt, encoding: .utf8)
         XCTAssertTrue(receipt.contains("Qwen3TTSModel.fromModelDirectory"))
         XCTAssertTrue(receipt.contains("tokenizer.json"))
@@ -449,7 +464,7 @@ final class QwenModelStoreTests: XCTestCase {
         let directory = try await fixture.prepare(allowDownload: true)
 
         try fixture.fileManager.removeItem(
-            at: directory.appendingPathComponent(QwenModelStore.derivedReceiptName)
+            at: directory.appendingPathComponent(LocalSpeechModelStore.derivedReceiptName)
         )
 
         let readiness = await fixture.store.readiness()
@@ -468,7 +483,7 @@ final class QwenModelStoreTests: XCTestCase {
                 progress: { _ in }
             )
             XCTFail("loader failure must keep the public snapshot in staging")
-        } catch let failure as QwenModelStoreFailure {
+        } catch let failure as LocalSpeechModelStoreFailure {
             XCTAssertEqual(failure, .loaderValidationFailed)
         }
 
@@ -492,7 +507,7 @@ final class QwenModelStoreTests: XCTestCase {
                 progress: { _ in }
             )
             XCTFail("a failed first promoted load must not remain installed")
-        } catch let failure as QwenModelStoreFailure {
+        } catch let failure as LocalSpeechModelStoreFailure {
             XCTAssertEqual(failure, .loaderValidationFailed)
         }
 
@@ -513,7 +528,7 @@ final class QwenModelStoreTests: XCTestCase {
                 allowDownload: true,
                 validateStagedLoad: { directory in
                     let tokenizer = directory.appendingPathComponent(
-                        QwenModelStore.derivedTokenizerName
+                        LocalSpeechModelStore.derivedTokenizerName
                     )
                     try Data(#"{"model":{"type":"BPE"}}"#.utf8).write(to: tokenizer)
                     await gate.wait()
@@ -532,7 +547,7 @@ final class QwenModelStoreTests: XCTestCase {
         do {
             _ = try await task.value
             XCTFail("cancellation observed after staged load must stop promotion")
-        } catch let failure as QwenModelStoreFailure {
+        } catch let failure as LocalSpeechModelStoreFailure {
             XCTAssertEqual(failure, .cancelled)
         }
         XCTAssertEqual(finalLoad.value, 0)
@@ -568,7 +583,7 @@ final class QwenModelStoreTests: XCTestCase {
         do {
             _ = try await fixture.prepare(allowDownload: false)
             XCTFail("every load must run complete public-file hashes")
-        } catch let failure as QwenModelStoreFailure {
+        } catch let failure as LocalSpeechModelStoreFailure {
             XCTAssertEqual(failure, .hashMismatch)
         }
         let downloadCount = await fixture.downloader.callCount()
@@ -588,7 +603,7 @@ final class QwenModelStoreTests: XCTestCase {
         do {
             _ = try await fixture.prepare(allowDownload: true)
             XCTFail("a symlinked private model root must fail closed")
-        } catch let failure as QwenModelStoreFailure {
+        } catch let failure as LocalSpeechModelStoreFailure {
             XCTAssertEqual(failure, .symbolicLinkRejected)
         }
         let downloadCount = await fixture.downloader.callCount()
@@ -628,16 +643,17 @@ final class QwenModelStoreTests: XCTestCase {
 private struct Fixture {
     let temporaryRoot: URL
     let modelRoot: URL
-    let manifest: QwenSnapshotManifest
+    let manifest: LocalSpeechSnapshotManifest
     let downloader: FixtureDownloader
-    let store: QwenModelStore
+    let store: LocalSpeechModelStore
     let fileManager: FileManager
 
     static func make(
         behaviors: [FixtureDownloader.Behavior] = [.valid],
         availableBytes: Int64 = 1_000,
         minimumFreeBytes: Int64 = 100,
-        manifestFiles: [QwenSnapshotFile]? = nil,
+        manifestFiles: [LocalSpeechSnapshotFile]? = nil,
+        derivesTokenizer: Bool = true,
         postReplacementValidation: @escaping @Sendable (URL, URL) throws -> Void = { _, _ in }
     ) throws -> Fixture {
         let fileManager = FileManager.default
@@ -651,15 +667,15 @@ private struct Fixture {
             "config.json": Data(#"{"sample_rate":24000}"#.utf8),
             "speech_tokenizer/model.safetensors": Data([1, 3, 3, 7]),
         ]
-        let manifest = QwenSnapshotManifest(
+        let manifest = LocalSpeechSnapshotManifest(
             repositoryID: "fixture-org/fixture-model",
             revision: "0123456789abcdef0123456789abcdef01234567",
             files: manifestFiles ?? contents.keys.sorted().map { path in
                 let data = contents[path]!
-                return QwenSnapshotFile(
+                return LocalSpeechSnapshotFile(
                     path: path,
                     byteCount: Int64(data.count),
-                    sha256: QwenSHA256.string(data)
+                    sha256: LocalSpeechSHA256.string(data)
                 )
             }
         )
@@ -668,13 +684,14 @@ private struct Fixture {
             contents: contents,
             fileManager: FileManager()
         )
-        let store = QwenModelStore(
+        let store = LocalSpeechModelStore(
             modelRoot: modelRoot,
             manifest: manifest,
             downloader: downloader,
             freeSpaceReader: FixedFreeSpaceReader(availableBytes: availableBytes),
             fileManager: FileManager(),
             minimumFreeBytes: minimumFreeBytes,
+            derivesTokenizer: derivesTokenizer,
             postReplacementValidation: postReplacementValidation
         )
         return Fixture(
@@ -693,7 +710,7 @@ private struct Fixture {
 
     func prepare(
         allowDownload: Bool,
-        progress: @escaping @Sendable (QwenModelStoreProgress) -> Void = { _ in }
+        progress: @escaping @Sendable (LocalSpeechModelStoreProgress) -> Void = { _ in }
     ) async throws -> URL {
         let prepared = try await store.prepare(
             allowDownload: allowDownload,
@@ -727,7 +744,7 @@ private struct Fixture {
     }
 
     func invalidateVerificationReceipt(in directory: URL) throws -> FixtureReceiptRepair {
-        let receipt = directory.appendingPathComponent(QwenModelStore.verificationReceiptName)
+        let receipt = directory.appendingPathComponent(LocalSpeechModelStore.verificationReceiptName)
         let repair = FixtureReceiptRepair(url: receipt, data: try Data(contentsOf: receipt))
         try fileManager.removeItem(at: receipt)
         return repair
@@ -765,7 +782,7 @@ private final class FailFirstPostReplacementValidation: @unchecked Sendable {
             shouldFail = false
             return true
         }
-        if fail { throw QwenModelStoreFailure.storageFailure }
+        if fail { throw LocalSpeechModelStoreFailure.storageFailure }
     }
 
     func didFailAfterSeeingBothDirectories() -> Bool {
@@ -777,13 +794,13 @@ private struct FixtureLoadedModel: Sendable {}
 
 private enum FixtureModelLoader {
     static func validateStaged(from directory: URL) async throws {
-        let tokenizer = directory.appendingPathComponent(QwenModelStore.derivedTokenizerName)
+        let tokenizer = directory.appendingPathComponent(LocalSpeechModelStore.derivedTokenizerName)
         try Data(#"{"model":{"type":"BPE"}}"#.utf8).write(to: tokenizer)
     }
 
     static func loadPromoted(from directory: URL) async throws -> FixtureLoadedModel {
         guard FileManager.default.fileExists(
-            atPath: directory.appendingPathComponent(QwenModelStore.derivedTokenizerName).path
+            atPath: directory.appendingPathComponent(LocalSpeechModelStore.derivedTokenizerName).path
         ) else {
             throw FixtureLoaderFailure.failed
         }
@@ -791,7 +808,7 @@ private enum FixtureModelLoader {
     }
 }
 
-private struct FixedFreeSpaceReader: QwenFreeSpaceReading {
+private struct FixedFreeSpaceReader: LocalSpeechFreeSpaceReading {
     let availableBytes: Int64
 
     func availableBytes(for location: URL) throws -> Int64 {
@@ -800,7 +817,7 @@ private struct FixedFreeSpaceReader: QwenFreeSpaceReading {
     }
 }
 
-private actor FixtureDownloader: QwenSnapshotDownloading {
+private actor FixtureDownloader: LocalSpeechSnapshotDownloading {
     enum Behavior: Equatable, Sendable {
         case valid
         case missingFile
@@ -829,10 +846,10 @@ private actor FixtureDownloader: QwenSnapshotDownloading {
     }
 
     func downloadSnapshot(
-        manifest: QwenSnapshotManifest,
+        manifest: LocalSpeechSnapshotManifest,
         destination: URL,
         cacheRoot: URL,
-        progress: @escaping @Sendable (QwenModelStoreProgress) -> Void
+        progress: @escaping @Sendable (LocalSpeechModelStoreProgress) -> Void
     ) async throws {
         calls += 1
         observedRevisions.append(manifest.revision)
@@ -841,7 +858,7 @@ private actor FixtureDownloader: QwenSnapshotDownloading {
         let behavior = behaviors.isEmpty ? .valid : behaviors.removeFirst()
 
         if behavior == .downloadFailure {
-            throw QwenModelStoreFailure.downloadFailed
+            throw LocalSpeechModelStoreFailure.downloadFailed
         }
         if behavior == .waitForCancellation {
             while !Task.isCancelled {
@@ -888,7 +905,7 @@ private actor FixtureDownloader: QwenSnapshotDownloading {
         }
 
         progress(
-            QwenModelStoreProgress(
+            LocalSpeechModelStoreProgress(
                 stage: .downloading,
                 completedBytes: manifest.byteCount,
                 totalBytes: manifest.byteCount
@@ -920,13 +937,13 @@ private actor FixtureDownloader: QwenSnapshotDownloading {
 
 private final class ProgressRecorder: @unchecked Sendable {
     private let lock = NSLock()
-    private var stored = [QwenModelStoreProgress]()
+    private var stored = [LocalSpeechModelStoreProgress]()
 
-    var values: [QwenModelStoreProgress] {
+    var values: [LocalSpeechModelStoreProgress] {
         lock.withLock { stored }
     }
 
-    func append(_ value: QwenModelStoreProgress) {
+    func append(_ value: LocalSpeechModelStoreProgress) {
         lock.withLock { stored.append(value) }
     }
 }

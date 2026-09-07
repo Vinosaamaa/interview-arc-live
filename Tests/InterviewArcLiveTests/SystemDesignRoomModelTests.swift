@@ -3,10 +3,27 @@ import XCTest
 
 import InterviewArcLiveCodexAdapter
 import InterviewArcLiveCore
+import InterviewArcLiveLocalSpeechAdapter
 @testable import InterviewArcLive
 
 @MainActor
 final class SystemDesignRoomModelTests: XCTestCase {
+    func testVoiceChoiceSurvivesRelaunchAndUnknownPreferenceFallsBackToQwen() async throws {
+        let name = "live-voice-choice-\(UUID().uuidString)"
+        let preferences = try XCTUnwrap(UserDefaults(suiteName: name))
+        defer { preferences.removePersistentDomain(forName: name) }
+        preferences.set("removed-provider", forKey: "live.interviewer-speech.engine")
+        let first = SystemDesignRoomModel(preferences: preferences)
+        XCTAssertEqual(first.selectedSpeechEngine, .qwen)
+        await first.selectSpeechEngine(.kokoro)
+        XCTAssertEqual(first.selectedSpeechEngine, .kokoro)
+        XCTAssertTrue(first.speechReadinessPresentation.detail.contains("321.2 MiB"))
+        let restored = SystemDesignRoomModel(preferences: preferences)
+        XCTAssertEqual(restored.selectedSpeechEngine, .kokoro)
+        await restored.selectSpeechEngine(.qwen)
+        XCTAssertEqual(SystemDesignRoomModel(preferences: preferences).selectedSpeechEngine, .qwen)
+    }
+
     func testReadyCodexEnablesAQuietReadyStatus() async {
         let model = SystemDesignRoomModel(
             interviewerRuntime: CodexRuntimeFixture(readiness: .ready)

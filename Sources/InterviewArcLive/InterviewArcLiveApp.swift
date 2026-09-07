@@ -42,8 +42,27 @@ final class InterviewArcLiveApp: NSObject, NSApplicationDelegate {
     private var terminationGate: InterviewArcLiveTerminationGate?
 
     override init() {
-        let hosted = try? HostedPracticeController.makeDefault()
-        model = SystemDesignRoomModel(hostedController: hosted)
+        let hosted: HostedPracticeController?
+        let roomPreferences: UserDefaults
+#if INTERVIEW_ARC_LIVE_DIAGNOSTIC_STATE_ROOT
+        let environment = ProcessInfo.processInfo.environment
+        let diagnosticRoot = URL(fileURLWithPath:
+            environment["INTERVIEW_ARC_LIVE_DIAGNOSTIC_STATE_ROOT"] ?? "/")
+            .standardizedFileURL
+        if environment["INTERVIEW_ARC_LIVE_DIAGNOSTIC_LOCAL_ROOM"] == "1",
+           diagnosticRoot.path.hasPrefix("/private/tmp/interview-arc-live-ui-smoke-") {
+            hosted = nil
+            roomPreferences = UserDefaults(suiteName:
+                "app.interviewarc.live.diagnostic.\(diagnosticRoot.lastPathComponent)") ?? .standard
+        } else {
+            hosted = try? HostedPracticeController.makeDefault()
+            roomPreferences = .standard
+        }
+#else
+        hosted = try? HostedPracticeController.makeDefault()
+        roomPreferences = .standard
+#endif
+        model = SystemDesignRoomModel(preferences: roomPreferences, hostedController: hosted)
         behavioralModel = BehavioralRoomModel()
         super.init()
     }

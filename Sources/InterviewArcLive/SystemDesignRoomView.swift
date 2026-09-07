@@ -1,6 +1,7 @@
 import AppKit
 import Foundation
 import InterviewArcLiveCore
+import InterviewArcLiveLocalSpeechAdapter
 import InterviewArcLiveHostedClient
 import SwiftUI
 
@@ -93,7 +94,7 @@ struct SystemDesignRoomView: View {
             )
         }
         .confirmationDialog(
-            "Remove Mara’s local model?",
+            "Remove \(model.selectedSpeechEngine.displayName)’s local model?",
             isPresented: $isModelRemovalConfirmationPresented,
             titleVisibility: .visible
         ) {
@@ -265,13 +266,24 @@ struct SystemDesignRoomView: View {
     private func personaMenu(isCompact: Bool) -> some View {
         Menu {
             Text("Mara · Staff Engineer")
+            Picker("Voice engine", selection: Binding(
+                get: { model.selectedSpeechEngine },
+                set: { engine in Task { await model.selectSpeechEngine(engine) } }
+            )) {
+                ForEach(LocalSpeechEngine.allCases, id: \.self) { engine in
+                    Text(engine.displayName).tag(engine)
+                }
+            }
+            .disabled(model.isSwitchingSpeechEngine || model.isWorking || model.isFinishingInterview)
+            if model.isSwitchingSpeechEngine { Text("Switching voice…") }
             Divider()
             Text(model.speechReadinessPresentation.title)
             Text(model.speechReadinessPresentation.detail)
             if model.speechReadinessPresentation.canDownload {
-                Button("Download local voice model") {
+                Button("Download \(model.selectedSpeechEngine.displayName) · \(model.selectedSpeechEngine.downloadSizeLabel)") {
                     model.startSpeechModelDownload()
                 }
+                .disabled(!model.canStartSpeechModelDownload || model.isSwitchingSpeechEngine)
             }
             if model.speechReadinessPresentation.canCancel {
                 Button("Cancel model download") {
@@ -284,9 +296,10 @@ struct SystemDesignRoomView: View {
                 }
             }
             if model.speechReadinessPresentation.canRemove {
-                Button("Remove local voice model", role: .destructive) {
+                Button("Remove \(model.selectedSpeechEngine.displayName) model", role: .destructive) {
                     isModelRemovalConfirmationPresented = true
                 }
+                .disabled(model.isSwitchingSpeechEngine || model.isSpeechModelActionInFlight)
             }
         } label: {
             HStack(spacing: 7) {
@@ -304,7 +317,7 @@ struct SystemDesignRoomView: View {
         }
         .menuStyle(.borderlessButton)
         .accessibilityLabel(FullRoomHeaderAccessibility.personaLabel)
-        .accessibilityValue(model.speechReadinessPresentation.title)
+        .accessibilityValue("\(model.selectedSpeechEngine.displayName) · \(model.speechReadinessPresentation.title)")
     }
 
     private func privacyStatus(isCompact: Bool) -> some View {

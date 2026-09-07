@@ -361,7 +361,8 @@ final class ContinuousConversationTests: XCTestCase {
             acousticSegmenter: segmenter,
             boundaryTracer: tracer
         )
-        coordinator.setInterviewerPlaybackStopper { commandID in
+        coordinator.setInterviewerPlaybackStopper { commandID, reason in
+            XCTAssertEqual(reason, .bargeIn)
             await stopper.stop(commandID: commandID)
         }
         return BargeInFixture(

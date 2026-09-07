@@ -59,7 +59,7 @@ let package = Package(
             dependencies: ["InterviewArcLiveCore"]
         ),
         .target(
-            name: "InterviewArcLiveQwenAdapter",
+            name: "InterviewArcLiveLocalSpeechAdapter",
             dependencies: [
                 "InterviewArcLiveCore",
                 .product(name: "HuggingFace", package: "swift-huggingface"),
@@ -78,7 +78,7 @@ let package = Package(
                 "InterviewArcLiveCore",
                 "InterviewArcLiveHostedClient",
                 "InterviewArcLiveCodexAdapter",
-                "InterviewArcLiveQwenAdapter",
+                "InterviewArcLiveLocalSpeechAdapter",
                 "InterviewArcLiveSpeechOutputAdapter",
                 "InterviewArcLiveVoiceAdapter",
             ],
@@ -102,7 +102,7 @@ let package = Package(
             name: "InterviewArcLiveSpeechSmoke",
             dependencies: [
                 "InterviewArcLiveCore",
-                "InterviewArcLiveQwenAdapter",
+                "InterviewArcLiveLocalSpeechAdapter",
                 "InterviewArcLiveSpeechOutputAdapter",
             ]
         ),
@@ -136,10 +136,10 @@ let package = Package(
             ]
         ),
         .testTarget(
-            name: "InterviewArcLiveQwenAdapterTests",
+            name: "InterviewArcLiveLocalSpeechAdapterTests",
             dependencies: [
                 "InterviewArcLiveCore",
-                "InterviewArcLiveQwenAdapter",
+                "InterviewArcLiveLocalSpeechAdapter",
             ]
         ),
         .testTarget(
@@ -155,7 +155,7 @@ let package = Package(
                 "InterviewArcLive",
                 "InterviewArcLiveCore",
                 "InterviewArcLiveCodexAdapter",
-                "InterviewArcLiveQwenAdapter",
+                "InterviewArcLiveLocalSpeechAdapter",
                 "InterviewArcLiveSpeechOutputAdapter",
             ]
         ),

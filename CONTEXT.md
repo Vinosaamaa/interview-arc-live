@@ -257,3 +257,7 @@ separate recording, model, transcript, or persistence state.
 - A failed transcription never deletes the Source Recording.
 - No client invents speech, hidden model memory, an Accepted verdict, or a
   durable write receipt.
+
+### Local Speech Engine
+
+A Local Speech Engine selects the model and named voice for future interviewer synthesis attempts. Qwen and Kokoro implement the same private model preparation and speech-generation lifecycle. The selection is a Live preference, independent of the AI interviewer provider. Switching joins active synthesis and stops playback; it never changes historical attempt provenance or saved audio.

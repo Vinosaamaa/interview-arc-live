@@ -77,3 +77,13 @@ speech smoke projects the already manifest-verified `default.metallib` into its
 private ephemeral working directory because its standalone helper is not hosted
 by the application bundle; the production application continues loading the
 canonical SwiftPM resource bundle from `Contents/Resources`.
+
+## Selectable local engines (issue #99)
+
+The owner requires both Qwen and Kokoro for comparison during actual practice. The application selects `LocalSpeechEngine` independently of `InterviewerProvider`. Qwen remains the default and retains its existing storage path, model revision, and `mara-v1` provenance. Kokoro uses `mlx-community/Kokoro-82M-bf16` revision `a71e4d38b236d968966a2002c4c895dbd12b1c3c`, the `af_heart` voice, English pronunciation, and fixed speed 1.0. Its combined allowlist is 336,759,320 bytes with a 1 GiB preparation budget.
+
+The existing model store and bounded synthesis implementation now live in `InterviewArcLiveLocalSpeechAdapter`. Both engines use staged hash verification and atomic promotion. Only Qwen derives a tokenizer; Kokoro admits no extra runtime files. Kokoro pronunciation resources are pinned separately at `beshkenadze/kitten-tts-g2p` revision `9c692b92682d959d9013a9cfe6a49541997add18`, and every resource hash participates in the combined snapshot receipt.
+
+The pinned MLX package's public Misaki processor only supports an automatic download to its global cache. Live vendors its 16 MIT-licensed English pronunciation source files, excluding that downloader, and supplies verified private resources through a local `TextProcessor`. This bounded downstream copy avoids changing a second repository or adopting a different MLX version. Source/license receipts ship in `KokoroEnglishG2PNOTICE.txt`; no weights are committed. Reconcile this copy when the dependency exposes a reviewed local-resource initializer.
+
+Kokoro generates bounded text chunks on one owned task; cancellation joins the actual MLX work before releasing the model. `InterviewerSpeechCoordinator.replaceProvider` stops playback, joins synthesis, discards pending automatic eligibility, and unloads the previous model before selecting the replacement. Switching never downloads or replays history. Future attempts use the replacement provenance; earlier WAVs remain replayable through the existing player.

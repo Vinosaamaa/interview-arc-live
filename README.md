@@ -137,3 +137,9 @@ download it unless the same invocation also sets
 default tests and app startup. It requires the retained manifest from the
 exact installed package and verifies the installed signature plus application,
 helper, metadata, and MLX Metal-resource hashes before execution.
+
+### Select a local voice
+
+In the System Design room, open the **Mara** menu and choose **Voice engine → Qwen** or **Kokoro**. Download the selected model once when prompted. Qwen uses the existing 1.838 GiB model; Kokoro downloads 321.2 MiB including its English voice and pronunciation files. Both run locally without per-use speech fees. Switching stops current speech and keeps saved audio available; the choice survives relaunch. Removing one model leaves the other model and interview recordings intact.
+
+The AI interviewer provider is separate from the voice engine. Codex is currently implemented, without a CLI version gate; Pi, Cursor subscription, and other provider adapters are roadmap work.
