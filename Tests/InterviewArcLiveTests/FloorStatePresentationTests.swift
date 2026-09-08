@@ -97,7 +97,7 @@ final class FloorStatePresentationTests: XCTestCase {
             (.candidateFloor, "Your floor", "No segment yet", "Your floor", .candidateFloor),
             (
                 .interviewerProcessing,
-                "Answer saved · check Codex to retry",
+                "Answer saved · check the interviewer to retry",
                 "Candidate answer saved",
                 "Answer saved",
                 .retryRequired
@@ -309,8 +309,8 @@ final class FloorStatePresentationTests: XCTestCase {
         )
 
         XCTAssertEqual(presentation.statusKind, .interviewerWorking)
-        XCTAssertEqual(presentation.full.label, "Answer saved · Codex working")
-        XCTAssertEqual(presentation.full.detail, "Codex is preparing Mara")
+        XCTAssertEqual(presentation.full.label, "Answer saved · interviewer working")
+        XCTAssertEqual(presentation.full.detail, "The interviewer is preparing a response")
         XCTAssertEqual(presentation.compact.label, "Answer saved")
         XCTAssertEqual(presentation.compact.detail, status)
     }
@@ -326,7 +326,7 @@ final class FloorStatePresentationTests: XCTestCase {
         )
         XCTAssertEqual(inFlight.statusKind, .interviewerWorking)
         XCTAssertEqual(inFlight.full.label, "Mara is opening")
-        XCTAssertEqual(inFlight.full.detail, "Codex is preparing the greeting")
+        XCTAssertEqual(inFlight.full.detail, "The interviewer is preparing the greeting")
         XCTAssertEqual(inFlight.compact.label, "Opening")
         XCTAssertFalse(inFlight.full.label.localizedCaseInsensitiveContains("answer saved"))
         XCTAssertFalse(inFlight.compact.label.localizedCaseInsensitiveContains("answer saved"))

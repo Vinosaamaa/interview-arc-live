@@ -51,7 +51,7 @@ final class InterviewArcLiveApp: NSObject, NSApplicationDelegate {
             guard let diagnosticRoot = try? LivePaths.applicationSupportRoot(),
                   diagnosticRoot.path.hasPrefix(
                     URL(fileURLWithPath: "/private/tmp", isDirectory: true)
-                        .resolvingSymlinksInPath().path + "/interview-arc-live-ui-smoke-") else {
+                        .standardizedFileURL.path + "/interview-arc-live-ui-smoke-") else {
                 fatalError("Diagnostic room requires an isolated temporary state root.")
             }
             hosted = nil

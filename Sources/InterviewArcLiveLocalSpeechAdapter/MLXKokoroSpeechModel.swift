@@ -58,7 +58,9 @@ private final class KokoroSpeechGeneration: LocalSpeechGeneration, @unchecked Se
     init(model: KokoroModel, text: String, profile: InterviewerSpeechProfile) {
         self.model = model
         self.profile = profile
-        chunks = ArraySlice(KokoroTextChunks.split(text))
+        chunks = ArraySlice(KokoroTextChunks.split(text).filter {
+            !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        })
     }
 
     func nextSamples() async throws -> [Float]? {
@@ -105,6 +107,7 @@ private final class KokoroSpeechGeneration: LocalSpeechGeneration, @unchecked Se
 enum KokoroTextChunks {
     static func split(_ text: String, maximumCharacters: Int = 180) -> [String] {
         precondition(maximumCharacters > 0)
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return [] }
         var remaining = text[...]
         var result: [String] = []
         while !remaining.isEmpty {
@@ -119,7 +122,7 @@ enum KokoroTextChunks {
                 }
             }
             let chunk = String(remaining[..<end])
-            if !chunk.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { result.append(chunk) }
+            result.append(chunk)
             remaining = remaining[end...]
         }
         return result
