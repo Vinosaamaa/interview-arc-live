@@ -43,6 +43,9 @@ public actor LiveIntegrationTokenStore: LiveIntegrationTokenReading {
 
     private let backend: LiveIntegrationTokenBackend
     private var tokenUntilQuit: String?
+    /// Actor-local reuse after a successful authorized read. This never changes
+    /// Keychain access controls or persists a second copy of the token.
+    private var cachedKeychainToken: String?
 
     public init() {
         backend = Self.securityBackend()
@@ -55,7 +58,7 @@ public actor LiveIntegrationTokenStore: LiveIntegrationTokenReading {
     public func readiness() -> LiveIntegrationTokenReadiness {
         if tokenUntilQuit != nil { return .readyUntilQuit }
         do {
-            return normalized(try backend.read()) == nil ? .missing : .ready
+            return try readSavedToken() == nil ? .missing : .ready
         } catch {
             return .keychainUnavailable
         }
@@ -64,7 +67,7 @@ public actor LiveIntegrationTokenStore: LiveIntegrationTokenReading {
     public func readIntegrationToken() throws -> String {
         if let tokenUntilQuit { return tokenUntilQuit }
         do {
-            guard let value = normalized(try backend.read()) else {
+            guard let value = try readSavedToken() else {
                 throw LiveIntegrationTokenStoreError.missingToken
             }
             return value
@@ -86,6 +89,7 @@ public actor LiveIntegrationTokenStore: LiveIntegrationTokenReading {
         guard let submitted = normalized(value) else {
             throw LiveIntegrationTokenStoreError.emptyToken
         }
+        cachedKeychainToken = nil
         let previous: String?
         do { previous = try backend.read() }
         catch { throw LiveIntegrationTokenStoreError.keychainUnavailable }
@@ -97,6 +101,7 @@ public actor LiveIntegrationTokenStore: LiveIntegrationTokenReading {
                 throw LiveIntegrationTokenStoreError.verificationFailed
             }
             tokenUntilQuit = nil
+            cachedKeychainToken = submitted
         } catch let error as LiveIntegrationTokenStoreError {
             throw error
         } catch {
@@ -109,13 +114,22 @@ public actor LiveIntegrationTokenStore: LiveIntegrationTokenReading {
         guard let value = normalized(value) else {
             throw LiveIntegrationTokenStoreError.emptyToken
         }
+        cachedKeychainToken = nil
         tokenUntilQuit = value
     }
 
     public func remove() throws {
         tokenUntilQuit = nil
+        cachedKeychainToken = nil
         do { try backend.remove() }
         catch { throw LiveIntegrationTokenStoreError.keychainUnavailable }
+    }
+
+    private func readSavedToken() throws -> String? {
+        if let cachedKeychainToken { return cachedKeychainToken }
+        let value = normalized(try backend.read())
+        cachedKeychainToken = value
+        return value
     }
 
     private func normalized(_ value: String?) -> String? {

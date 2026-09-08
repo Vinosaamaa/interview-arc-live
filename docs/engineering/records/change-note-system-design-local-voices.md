@@ -10,7 +10,7 @@ capabilityIds: ["interview-room-session"]
 createdAt: "2026-09-07"
 reconstructed: false
 confidence: "verified"
-unknowns: ["Hosted XCTest, Metal package, dual-engine runtime and headed session verification pending"]
+unknowns: ["Hosted XCTest, exact Metal package, physical microphone and interactive controls pending"]
 modules: ["local-speech-adapter", "interviewer-speech-coordinator", "segment-speech-coordinator", "system-design-room"]
 interfaces: ["interviewer-speech-provider", "interviewer-provider"]
 seams: ["session-to-interviewer-speech", "session-to-interviewer-runtime"]
@@ -44,6 +44,8 @@ Switching joins model preparation/cancellation and current synthesis before rele
 
 The opening greeting previously completed before speech attached, causing it to be treated as historical audio and remain silent. Speech now attaches before the new opening response and observes that response normally; reopening history still never auto-plays it. End disarms continuous input and joins speech before committing session completion, without discarding the transcript or prior recordings.
 
+Successful Groq and hosted-token Keychain reads are reused in actor-local memory. Background transcription, endpoint classification, lease requests, and token fingerprints no longer reopen Keychain after that successful read. Save, replacement, until-quit override, and removal invalidate the previous cached value; save verification and rollback still access the real backend. A new store reads Keychain again, so external Keychain changes require reopening the app. Keychain access controls remain unchanged.
+
 ## Implementation
 
 `InterviewArcLiveLocalSpeechAdapter` deepens the existing model store and bounded speech implementation with two real model loaders. Qwen retains its joined upstream streaming handle. Kokoro uses bounded text chunks and an owned MLX task. The small vendored MIT English pronunciation module excludes the upstream automatic global-cache downloader; exact source and license receipts are included. No model weights, audio, transcripts, or credentials are committed.
@@ -61,11 +63,13 @@ A compile-time diagnostic build can open an isolated local room for headed verif
 - Diagnostic isolation: a compiled probe reproduced macOS normalization of `/private/tmp` to `/tmp`. Both paths now use identical resolution, invalid roots fail closed, and the compiled probe confirms the intended root.
 - Connected software flow: a synthetic recording passed through the production Groq transcriber, floor hold, real board-aware Codex reply, automatic Kokoro speech, Qwen replacement/retry, replay of the prior Kokoro WAV, mute, End during active generation, and file-backed session/notes/board/audio recovery. This did not exercise microphone capture or a hosted activity.
 - Board: packaged WKWebView editor runtime passed at widths 780, 992, and 1280, including native bridge state and canonical document retention; exact assets/offline policy/resource notices/icon checks passed.
+- Native room: the actual System Design room model opened with real AI and speech, switched engines, and rendered at 992 and 1280 pixels. Read-only hosted Today access also passed. Neither check created or modified a hosted practice activity.
+- Credential regression coverage: repeated requests reuse one successful backend read, fresh stores reauthorize, replacement/removal discard the cache, failed save verification reloads durable state, and missing/denied reads remain retryable. A standalone runtime check compiled from the actual stores passed these cases with synthetic backends and no OS Keychain access. The complete native app rebuilt in 36.61 seconds. Hosted XCTest remains pending.
 - Pending: hosted XCTest and Metal package; headed microphone and interaction checks. Native UI automation timed out and macOS denied fallback accessibility access. These remain verification blockers, not inferred successes.
 
 ## Execution ledger
 
-2026-09-07: combined the AI fix and voice implementation into issue #99 after the owner requested one PR with multiple commits. Native dependency compilation was bounded to two jobs after memory pressure. The full AI application build completed in 553.33 seconds. A separate Swift 6 typecheck of the real dual-engine MLX adapter passed. Exact per-action Pacific timestamps and provider-reported usage were not instrumented and are unknown. No merge, install, release, or cleanup occurred.
+2026-09-07: combined the AI fix and voice implementation into issue #99 after the owner requested one PR with multiple commits. Native dependency compilation was bounded to two jobs after memory pressure. The full AI application build completed in 553.33 seconds. A separate Swift 6 typecheck of the real dual-engine MLX adapter passed. Exact per-action Pacific timestamps and provider-reported usage were not instrumented and are unknown. No merge, install, release, or cleanup occurred. The first Engineering policy run rejected an overlong compact summary, then all 32 policy tests passed after correction. Earlier source runs were superseded by necessary isolation, board-context, and credential fixes. The repeated password prompt report exposed per-request Keychain reads as well as separately built diagnostic identities; synthetic regression checks verified the process-memory reuse fix without requesting OS credentials.
 
 ## Risks and rollback
 

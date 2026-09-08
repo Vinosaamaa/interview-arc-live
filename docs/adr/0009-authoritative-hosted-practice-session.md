@@ -25,6 +25,10 @@ application boundary:
 - A distinct Interview Arc personal integration token is stored in a dedicated
   Keychain namespace, with an explicit until-quit alternative. Groq, Codex, and
   local speech credentials are never reused or uploaded.
+  A successful integration-token read is reused only in the store's process
+  memory; requests and fingerprints do not reopen Keychain each time. Credential
+  changes and removal discard this cache, and a new store reauthorizes. External
+  Keychain changes become visible after reopening the app.
 - `GET /live/v1/today` selects the authoritative open System Design activity.
   The room question, activity identity, timer, result, pairs, and finish state
   are projections of hosted state rather than locally invented replacements.

@@ -45,6 +45,9 @@ public actor LiveGroqCredentialStore: GroqCredentialReading {
     /// Intentionally actor-local and non-Codable. This value has no Adapter
     /// capable of writing it to disk, diagnostics, manifests, or preferences.
     private var credentialUntilQuit: String?
+    /// Reuse an authorized read within this store instead of reopening Keychain
+    /// for each segment and endpoint request. Never persisted or shared.
+    private var cachedKeychainCredential: String?
 
     public init() {
         backend = Self.securityBackend()
@@ -58,8 +61,10 @@ public actor LiveGroqCredentialStore: GroqCredentialReading {
         if let credentialUntilQuit {
             return credentialUntilQuit
         }
+        if let cachedKeychainCredential { return cachedKeychainCredential }
         do {
             if let keychainCredential = normalized(try backend.read()) {
+                cachedKeychainCredential = keychainCredential
                 return keychainCredential
             }
             return nil
@@ -80,6 +85,7 @@ public actor LiveGroqCredentialStore: GroqCredentialReading {
             throw LiveGroqCredentialStoreError.emptyCredential
         }
 
+        cachedKeychainCredential = nil
         let previousValue: String?
         do {
             previousValue = try backend.read()
@@ -103,6 +109,7 @@ public actor LiveGroqCredentialStore: GroqCredentialReading {
             throw LiveGroqCredentialStoreError.verificationFailed
         }
         credentialUntilQuit = nil
+        cachedKeychainCredential = normalized
     }
 
     /// Uses a credential only in this actor's process memory. It never calls
@@ -111,11 +118,13 @@ public actor LiveGroqCredentialStore: GroqCredentialReading {
         guard let normalized = normalized(value) else {
             throw LiveGroqCredentialStoreError.emptyCredential
         }
+        cachedKeychainCredential = nil
         credentialUntilQuit = normalized
     }
 
     public func remove() throws {
         credentialUntilQuit = nil
+        cachedKeychainCredential = nil
         do {
             try backend.remove()
         } catch {
@@ -128,7 +137,7 @@ public actor LiveGroqCredentialStore: GroqCredentialReading {
             return .readyUntilQuit
         }
         do {
-            if normalized(try backend.read()) != nil {
+            if try read() != nil {
                 return .ready
             }
             return .missing
