@@ -112,6 +112,11 @@ A compile-time diagnostic build can open an isolated local room for headed verif
   preservation (one), and stale Codex-specific presentation expectations (four).
   Fixes are included; local actual-module checks passed path aliases and text
   preservation. A new exact-head hosted result is still required.
+- Hosted run 34179516176 built successfully and passed all eight automatic
+  application-delivery tests and all 42 voice-adapter tests. Its only failing
+  assertion was the compact-room closed action list, which omitted the new
+  microphone toggle. That expectation is now updated; release packaging did
+  not run because the test step failed. A new exact-head run remains required.
 - Pending: hosted XCTest and Metal package; headed microphone and interaction checks. Native UI automation timed out and macOS denied fallback accessibility access. These remain verification blockers, not inferred successes.
 
 ## Execution ledger
