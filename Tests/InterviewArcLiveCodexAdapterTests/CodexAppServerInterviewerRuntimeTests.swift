@@ -204,6 +204,8 @@ final class CodexAppServerInterviewerRuntimeTests: XCTestCase {
         XCTAssertTrue(prompt.contains("prior candidate answer"))
         XCTAssertTrue(prompt.contains("prior interviewer display"))
         XCTAssertTrue(prompt.contains("response-turn"))
+        XCTAssertTrue(prompt.contains("attachedBoard"))
+        XCTAssertTrue(prompt.contains("Board-aware gateway"))
         XCTAssertFalse(prompt.contains(privateInstructionPath))
         XCTAssertFalse(prompt.contains("private work that must not cross"))
 
@@ -434,13 +436,21 @@ final class CodexAppServerInterviewerRuntimeTests: XCTestCase {
                 transcript: CandidateTranscript(
                     body: "candidate answer verbatim",
                     quality: .bestAvailable
-                )
+                ),
+                boardAttachment: .revision(BoardRevisionID("attached-revision"))
             ),
             priorVisibleTurns: [
                 .candidate(priorCandidate),
                 .interviewer(priorInterviewer),
             ],
-            responseTurnID: TurnID("response-turn")
+            responseTurnID: TurnID("response-turn"),
+            attachedBoard: try! InterviewerBoardContext(revision: BoardRevision(
+                id: BoardRevisionID("attached-revision"), ordinal: 1,
+                saveCommandID: CommandID("save-board"),
+                document: try! BoardDocument(canvas: BoardDocument.empty.canvas, elements: [
+                    .label(BoardLabel(id: BoardElementID("gateway"), origin: BoardPoint(x: 20, y: 20),
+                                      text: "Board-aware gateway"))
+                ])))
         )
     }
 

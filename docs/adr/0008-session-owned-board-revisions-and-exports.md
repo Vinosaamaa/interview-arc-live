@@ -51,3 +51,16 @@ canonical Board Document.
   and export lifecycle without automatic save, attachment, or rendering.
 - Local exports remain private, session-relative derived artifacts; hosted
   synchronization and publication require a separate contract.
+
+## Interviewer context (issue #99)
+
+An explicitly attached Board Revision now accompanies the current answer through
+`InterviewerRequest.attachedBoard`. Core resolves that exact immutable revision;
+the Codex adapter sends its structured boxes, connectors, labels and strokes as
+quoted interview data. This does not grant file or tool access. Unattached drafts,
+private scratch notes and exported files remain outside the AI request.
+
+A diagram larger than 256 KiB of encoded document data is rejected before Hand
+off commits the answer; the candidate can choose a smaller saved revision or no
+attachment. Nothing is silently truncated. Provider failure and explicit retry
+keep the same revision even if the draft subsequently changes.

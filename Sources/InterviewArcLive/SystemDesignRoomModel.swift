@@ -2722,6 +2722,9 @@ final class SystemDesignRoomModel: ObservableObject {
     }
 
     private func safeMessage(for error: Error) -> String {
+        if error is InterviewerBoardContextError {
+            return "The attached board is too large for the interviewer (256 KiB). Save a smaller revision or hand off without the board. Your diagram and answer remain saved."
+        }
         if let runtimeError = error as? InterviewerRuntimeError {
             return Self.safeInterviewerFailureMessage(
                 for: runtimeError, providerName: interviewerProviderName

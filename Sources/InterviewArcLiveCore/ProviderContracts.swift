@@ -1,5 +1,25 @@
 import Foundation
 
+public enum InterviewerBoardContextError: Error, Sendable, Equatable {
+    case tooLarge
+}
+
+/// The exact immutable revision explicitly attached to this answer. Scratch
+/// notes, unattached drafts, rendered files and local paths never enter it.
+public struct InterviewerBoardContext: Encodable, Sendable, Equatable {
+    public static let maximumDocumentBytes = 256 * 1_024
+    public let revisionID: BoardRevisionID
+    public let document: BoardDocument
+
+    public init(revision: BoardRevision) throws {
+        guard try JSONEncoder().encode(revision.document).count <= Self.maximumDocumentBytes else {
+            throw InterviewerBoardContextError.tooLarge
+        }
+        revisionID = revision.id
+        document = revision.document
+    }
+}
+
 /// Input presented to the Interviewer Runtime Seam for an Opening Turn or
 /// after an explicit Hand off.
 public struct InterviewerRequest: Sendable, Equatable {
@@ -19,6 +39,7 @@ public struct InterviewerRequest: Sendable, Equatable {
     public let candidateTurn: CandidateTurn?
     public let priorVisibleTurns: [InterviewTurn]
     public let responseTurnID: TurnID
+    public let attachedBoard: InterviewerBoardContext?
 
     public var isOpening: Bool { candidateTurn == nil }
 
@@ -28,7 +49,8 @@ public struct InterviewerRequest: Sendable, Equatable {
         activityPrompt: ActivityPrompt,
         candidateTurn: CandidateTurn?,
         priorVisibleTurns: [InterviewTurn],
-        responseTurnID: TurnID
+        responseTurnID: TurnID,
+        attachedBoard: InterviewerBoardContext? = nil
     ) {
         self.sessionID = sessionID
         self.activityID = activityID
@@ -36,6 +58,7 @@ public struct InterviewerRequest: Sendable, Equatable {
         self.candidateTurn = candidateTurn
         self.priorVisibleTurns = priorVisibleTurns
         self.responseTurnID = responseTurnID
+        self.attachedBoard = attachedBoard
     }
 }
 

@@ -66,6 +66,13 @@ is the first adapter; Pi, Cursor, and other providers are future integrations.
 Provider authentication and transport stay inside the adapter. A provider change
 never changes Activity or Session identity, and voice is selected independently.
 
+### Attached Board Context
+
+The exact immutable Board Revision explicitly attached to the current Candidate
+Turn and supplied to the Interviewer Provider as structured diagram data. Core
+resolves and bounds it; provider adapters cannot read draft boards, files, or
+scratch notes. A later draft edit never changes the context for a retry.
+
 ### Interviewer Turn
 
 One canonical response containing rich `displayMarkdown` and concise
