@@ -52,6 +52,16 @@ public final class VoiceCoreSegmentRecorder: SegmentRecording {
         )
     }
 
+    public convenience init(acousticSegmenter: VoiceCoreAcousticSegmenter) {
+        self.init(
+            driver: acousticSegmenter,
+            paths: LiveVoicePaths(),
+            fileManager: .default,
+            now: Date.init,
+            inspect: RecordingFileInspector.inspect
+        )
+    }
+
     init(
         driver: any VoiceCoreRecordingDriving,
         applicationSupportRoot: URL,
@@ -168,8 +178,8 @@ public final class VoiceCoreSegmentRecorder: SegmentRecording {
         let isPlayable = evidence.fileSizeBytes >= 512
             && evidence.decodedFrameCount > 0
             && evidence.decodedDurationSeconds > 0
-        let startedAt = activeCapture.startedAt
-            ?? endedAt.addingTimeInterval(-max(0, recorded.duration))
+        let audioStartedAt = endedAt.addingTimeInterval(-max(0, recorded.duration))
+        let startedAt = min(activeCapture.startedAt ?? audioStartedAt, audioStartedAt)
 
         return CapturedAudioSegment(
             audioIdentity: authoritativeIdentity,

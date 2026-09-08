@@ -38,8 +38,10 @@ final class InterviewerSpeechCoordinatorTests: XCTestCase {
         let audio = SpeechAudioStoreFixture()
         let speech = try await InterviewerSpeechCoordinator.attach(to: conversation,
             provider: provider, player: SpeechPlayerFixture(), audioStore: audio)
-        let opening = try await conversation.requestOpeningInterviewerTurn(commandID: CommandID("opening"))
-        await speech.observeNewlyPersistedSnapshot(opening)
+        conversation.setInterviewerTurnHandler { [weak speech] next in
+            await speech?.observeNewlyPersistedSnapshot(next)
+        }
+        _ = try await conversation.requestOpeningInterviewerTurn(commandID: CommandID("opening"))
         await speech.waitUntilIdle()
         let spoken = await provider.synthesisCount()
         XCTAssertEqual(spoken, 1)

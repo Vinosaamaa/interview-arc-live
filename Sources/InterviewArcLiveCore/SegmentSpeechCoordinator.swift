@@ -15,6 +15,10 @@ public enum SegmentSpeechCoordinatorError: Error, Sendable, Equatable {
 @MainActor
 public final class SegmentSpeechCoordinator {
     public private(set) var snapshot: InterviewRoomSnapshot
+    public private(set) var acousticFailure: AcousticSegmentationFailure?
+    public var isContinuousListeningEnabled: Bool { wantsContinuousListening }
+    private var acousticFailureHandler:
+        (@MainActor @Sendable (AcousticSegmentationFailure?) -> Void)?
 
     /// Internal handoff to the interviewer-speech Module. The application
     /// never receives the mutable Session actor directly.
@@ -29,14 +33,25 @@ public final class SegmentSpeechCoordinator {
     private let acousticSegmenter: (any AcousticSegmenting)?
     private let boundaryTracer: (any ConversationBoundaryTracing)?
     private var snapshotHandler: (@MainActor @Sendable (InterviewRoomSnapshot) -> Void)?
+    private var interviewerTurnHandler:
+        (@MainActor @Sendable (InterviewRoomSnapshot) async -> Void)?
+    private var deliveredInterviewerTurnIDs: Set<TurnID> = []
+    private var captureValidationHandler: (@MainActor @Sendable () throws -> Void)?
+    private var capturePreparationHandler: (@MainActor @Sendable () async throws -> Void)?
     private var interviewerPlaybackStopper:
         (@MainActor @Sendable (CommandID, InterviewerSynthesisStopReason) async throws -> Void)?
     private var isFinalizing = false
-    private var isHandlingAcousticEvent = false
+    private var acousticEventTask: Task<Void, Never>?
+    private var pendingAcousticEvents: [AcousticSegmentationEvent] = []
+    private var automaticTranscriptionTask: Task<Void, Never>?
+    private var pendingAutomaticTranscriptions: [(SegmentID, CommandID)] = []
     private var isHandlingBargeIn = false
     private var wantsContinuousListening = false
+    private var isPreparingForTermination = false
     private var armedAcousticMode: AcousticSegmentationMode = .disarmed
     private var endpointGraceTask: Task<Void, Never>?
+    private var endpointResponseTask: Task<Void, Never>?
+    private var endpointResponseGeneration = 0
 
     private init(
         session: InterviewRoomSession,
@@ -65,9 +80,7 @@ public final class SegmentSpeechCoordinator {
             )
         }
         acousticSegmenter?.setEventHandler { [weak self] event in
-            Task { @MainActor [weak self] in
-                await self?.handleAcousticEvent(event)
-            }
+            self?.enqueueAcousticEvent(event)
         }
         installUnexpectedTerminationHandler()
     }
@@ -80,6 +93,34 @@ public final class SegmentSpeechCoordinator {
     ) {
         snapshotHandler = handler
         handler?(snapshot)
+    }
+
+    /// Delivers newly completed replies after handoff housekeeping, regardless
+    /// of whether a button or acoustic endpoint initiated the turn. Registration
+    /// remembers existing turns and never replays conversation history.
+    public func setInterviewerTurnHandler(
+        _ handler: (@MainActor @Sendable (InterviewRoomSnapshot) async -> Void)?
+    ) {
+        interviewerTurnHandler = handler
+        deliveredInterviewerTurnIDs.formUnion(interviewerTurnIDs(in: snapshot))
+    }
+
+    public func setAcousticFailureHandler(
+        _ handler: (@MainActor @Sendable (AcousticSegmentationFailure?) -> Void)?
+    ) {
+        acousticFailureHandler = handler
+        handler?(acousticFailure)
+    }
+
+    /// Shared prerequisites for manual capture, acoustic capture and barge-in.
+    /// Validation precedes the command; preparation runs only for newly durable
+    /// capture authorization and before the microphone starts.
+    public func setCaptureHandlers(
+        validate: @escaping @MainActor @Sendable () throws -> Void,
+        prepare: @escaping @MainActor @Sendable () async throws -> Void
+    ) {
+        captureValidationHandler = validate
+        capturePreparationHandler = prepare
     }
 
     /// Opens one canonical Session, hiding start-versus-restore and recovery
@@ -176,9 +217,11 @@ public final class SegmentSpeechCoordinator {
     public func requestOpeningInterviewerTurn(
         commandID: CommandID
     ) async throws -> InterviewRoomSnapshot {
-        try await applyAndPublish(
+        _ = try await applyAndPublish(
             .requestOpeningInterviewerTurn(commandID: commandID)
-        ).snapshot
+        )
+        await deliverNewInterviewerTurns()
+        return snapshot
     }
 
     @discardableResult
@@ -191,6 +234,8 @@ public final class SegmentSpeechCoordinator {
         ).snapshot
         cancelScheduledGraceIfInactive()
         if next.turnMode == .continuousConversation {
+            isPreparingForTermination = false
+            wantsContinuousListening = true
             await armContinuousListeningIfNeeded()
         } else {
             wantsContinuousListening = false
@@ -215,13 +260,16 @@ public final class SegmentSpeechCoordinator {
     public func retryInterviewerResponse(
         commandID: CommandID
     ) async throws -> InterviewRoomSnapshot {
-        try await applyAndPublish(.retryInterviewerResponse(commandID: commandID)).snapshot
+        _ = try await applyAndPublish(.retryInterviewerResponse(commandID: commandID))
+        await deliverNewInterviewerTurns()
+        return snapshot
     }
 
     @discardableResult
     public func beginSegment(
         commandID: CommandID
     ) async throws -> InterviewRoomSnapshot {
+        try captureValidationHandler?()
         let application = try await applyAndPublish(.beginSegment(commandID: commandID))
         cancelScheduledGraceIfInactive()
         guard application.disposition == .accepted else {
@@ -239,8 +287,13 @@ public final class SegmentSpeechCoordinator {
             reservedAudioIdentity: segment.reservedAudioIdentity
         )
         do {
+            try await capturePreparationHandler?()
             try await recording.beginCapture(request)
         } catch {
+            if let failure = error as? AcousticSegmentationFailure {
+                acousticFailure = failure
+                acousticFailureHandler?(failure)
+            }
             _ = try await applyAndPublish(
                 .recordSegmentCaptureOutcome(
                     commandID: InterviewRoomSession.derivedCommandID(
@@ -434,7 +487,7 @@ public final class SegmentSpeechCoordinator {
         commandID: CommandID,
         boardAttachment: CandidateTurnBoardAttachment = .noBoard
     ) async throws -> InterviewRoomSnapshot {
-        let next = try await applyAndPublish(
+        _ = try await applyAndPublish(
             .handOffSegmentsWithBoard(
                 commandID: commandID,
                 boardAttachment: boardAttachment
@@ -442,7 +495,8 @@ public final class SegmentSpeechCoordinator {
         ).snapshot
         cancelScheduledGrace()
         await disarmAcousticSegmenter()
-        return next
+        await deliverNewInterviewerTurns()
+        return snapshot
     }
 
     @discardableResult
@@ -507,10 +561,12 @@ public final class SegmentSpeechCoordinator {
                 "segments": next.segments.count,
             ]
         )
-        return next
+        await deliverNewInterviewerTurns()
+        return snapshot
     }
 
     public func enableContinuousListening() async {
+        isPreparingForTermination = false
         wantsContinuousListening = true
         await armContinuousListeningIfNeeded()
     }
@@ -528,9 +584,7 @@ public final class SegmentSpeechCoordinator {
               snapshot.turnMode == .continuousConversation else {
             return
         }
-        await acousticSegmenter?.arm(.bargeInDetection)
-        armedAcousticMode = .bargeInDetection
-        trace(command: "arm_listening", resultCode: "barge_in_detection")
+        await armAcousticSegmenter(.bargeInDetection)
     }
 
     /// Opens Candidate Floor and re-arms normal listening after uninterrupted
@@ -539,6 +593,7 @@ public final class SegmentSpeechCoordinator {
         guard !isHandlingBargeIn else { return }
         guard wantsContinuousListening,
               snapshot.turnMode == .continuousConversation else {
+            await disarmAcousticSegmenter()
             return
         }
         if snapshot.phase == .interviewerTurn || snapshot.phase == .ready {
@@ -562,6 +617,7 @@ public final class SegmentSpeechCoordinator {
         wantsContinuousListening = false
         await disarmAcousticSegmenter()
         trace(command: "pause_microphone", resultCode: "disarmed")
+        await acousticEventTask?.value
         if snapshot.segments.contains(where: {
             $0.lifecycle == .captureAuthorized
                 || $0.lifecycle == .recording
@@ -592,16 +648,37 @@ public final class SegmentSpeechCoordinator {
     public func finishSession(
         commandID: CommandID
     ) async throws -> InterviewRoomSnapshot {
+        isPreparingForTermination = true
+        defer { isPreparingForTermination = false }
         // End must quiesce both input and output before committing completion.
         // Otherwise speech completion can reopen the microphone during teardown.
         cancelScheduledGrace()
         wantsContinuousListening = false
         await disarmAcousticSegmenter()
+        await acousticEventTask?.value
+        await automaticTranscriptionTask?.value
+        await endpointResponseTask?.value
         try await interviewerPlaybackStopper?(
             InterviewRoomSession.derivedCommandID(source: commandID, operation: "finish-speech"),
             .userStopped
         )
+        await disarmAcousticSegmenter()
         return try await applyAndPublish(.finish(commandID: commandID)).snapshot
+    }
+
+    /// Quiesces input and joins owned work before the application releases its
+    /// hosted writer. An unfinished active recording is preserved for recovery.
+    public func prepareForTermination(commandID: CommandID) async throws {
+        isPreparingForTermination = true
+        _ = try await pauseMicrophone(commandID: commandID)
+        cancelScheduledGrace()
+        await automaticTranscriptionTask?.value
+        await endpointResponseTask?.value
+        try await interviewerPlaybackStopper?(
+            InterviewRoomSession.derivedCommandID(source: commandID, operation: "quit-speech"),
+            .userStopped
+        )
+        await disarmAcousticSegmenter()
     }
 
     public func playbackURL(segmentID: SegmentID) async throws -> URL {
@@ -924,7 +1001,8 @@ public final class SegmentSpeechCoordinator {
         sourceCommandID: CommandID
     ) async -> InterviewRoomSnapshot {
         guard snapshot.phase == .candidateFloor,
-              snapshot.turnMode.usesAutomaticEndpointCompletion else {
+              snapshot.turnMode.usesAutomaticEndpointCompletion,
+              !isPreparingForTermination else {
             return snapshot
         }
 
@@ -1153,6 +1231,17 @@ public final class SegmentSpeechCoordinator {
             cancelScheduledGrace()
             return
         }
+        let previousResponse = endpointResponseTask
+        endpointResponseGeneration += 1
+        let responseGeneration = endpointResponseGeneration
+        endpointResponseTask = endpointGraceTask
+        endpointGraceTask = nil
+        defer {
+            if endpointResponseGeneration == responseGeneration { endpointResponseTask = nil }
+        }
+        // A completed grace owns its full response/delivery task separately
+        // from the cancelable timer. Quit joins the latest ordered response.
+        await previousResponse?.value
         do {
             _ = try await applyAndPublish(
                 .completeEndpointGrace(
@@ -1180,7 +1269,7 @@ public final class SegmentSpeechCoordinator {
                 )
             }
         }
-        cancelScheduledGrace()
+        await deliverNewInterviewerTurns()
     }
 
     private func cancelScheduledGraceIfInactive() {
@@ -1280,11 +1369,20 @@ public final class SegmentSpeechCoordinator {
         throw SegmentSpeechCoordinatorError.credentialUnavailable
     }
 
-    private func handleAcousticEvent(_ event: AcousticSegmentationEvent) async {
-        guard !isHandlingAcousticEvent else { return }
-        isHandlingAcousticEvent = true
-        defer { isHandlingAcousticEvent = false }
+    private func enqueueAcousticEvent(_ event: AcousticSegmentationEvent) {
+        pendingAcousticEvents.append(event)
+        guard acousticEventTask == nil else { return }
+        acousticEventTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            while !pendingAcousticEvents.isEmpty {
+                let next = pendingAcousticEvents.removeFirst()
+                await handleAcousticEvent(next)
+            }
+            acousticEventTask = nil
+        }
+    }
 
+    private func handleAcousticEvent(_ event: AcousticSegmentationEvent) async {
         switch event {
         case .ignoredNoise:
             trace(command: "acoustic_event", resultCode: "ignored_noise")
@@ -1294,7 +1392,8 @@ public final class SegmentSpeechCoordinator {
                 await handleBargeIn()
                 return
             }
-            guard snapshot.turnMode == .continuousConversation,
+            guard wantsContinuousListening,
+                  snapshot.turnMode == .continuousConversation,
                   snapshot.phase == .candidateFloor,
                   canBeginContinuousSegment else { return }
             let commandID = InterviewRoomSession.derivedCommandID(
@@ -1308,9 +1407,9 @@ public final class SegmentSpeechCoordinator {
             }
         case .speechEnded:
             trace(command: "acoustic_event", resultCode: "speech_ended")
-            guard snapshot.segments.contains(where: {
+            guard let segmentID = snapshot.segments.first(where: {
                 $0.lifecycle == .captureAuthorized || $0.lifecycle == .recording
-            }) else {
+            })?.id else {
                 await armContinuousListeningIfNeeded()
                 return
             }
@@ -1319,17 +1418,42 @@ public final class SegmentSpeechCoordinator {
                 operation: "vad-end"
             )
             do {
-                _ = try await finishSegment(
-                    commandID: commandID,
-                    transcriptionCommandID: InterviewRoomSession.derivedCommandID(
-                        source: commandID,
-                        operation: "vad-transcribe"
+                let finalized = try await finalizeSegment(commandID: commandID)
+                if finalized.segments.first(where: { $0.id == segmentID })?.lifecycle == .audioReady {
+                    enqueueAutomaticTranscription(
+                        segmentID: segmentID,
+                        commandID: InterviewRoomSession.derivedCommandID(
+                            source: commandID, operation: "vad-transcribe"
+                        )
                     )
-                )
+                }
             } catch {
                 trace(command: "acoustic_event", resultCode: "speech_end_failed")
             }
             await armContinuousListeningIfNeeded()
+        }
+    }
+
+    /// Capture continues while prior saved segments wait for STT. Only one
+    /// transcription is authorized at a time; the Session still prevents a
+    /// handoff until every non-excluded draft segment has selected evidence.
+    private func enqueueAutomaticTranscription(segmentID: SegmentID, commandID: CommandID) {
+        pendingAutomaticTranscriptions.append((segmentID, commandID))
+        guard automaticTranscriptionTask == nil else { return }
+        automaticTranscriptionTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            while !pendingAutomaticTranscriptions.isEmpty {
+                let (segmentID, commandID) = pendingAutomaticTranscriptions.removeFirst()
+                guard let segment = snapshot.segments.first(where: { $0.id == segmentID }),
+                      segment.lifecycle == .audioReady,
+                      segment.transcriptionAttempts.isEmpty else { continue }
+                do {
+                    _ = try await transcribe(segmentID: segmentID, kind: .initial, commandID: commandID)
+                } catch {
+                    trace(command: "automatic_transcription", resultCode: "segment_requires_recovery")
+                }
+            }
+            automaticTranscriptionTask = nil
         }
     }
 
@@ -1395,8 +1519,7 @@ public final class SegmentSpeechCoordinator {
             $0.committedTurnID == nil
                 && ($0.lifecycle == .captureAuthorized
                     || $0.lifecycle == .recording
-                    || $0.lifecycle == .finalizationAuthorized
-                    || $0.lifecycle == .transcribing)
+                    || $0.lifecycle == .finalizationAuthorized)
         }
     }
 
@@ -1405,16 +1528,32 @@ public final class SegmentSpeechCoordinator {
               snapshot.turnMode == .continuousConversation,
               snapshot.phase == .candidateFloor,
               canBeginContinuousSegment else { return }
-        await acousticSegmenter?.arm(.candidateListening)
-        armedAcousticMode = .candidateListening
-        trace(
-            command: "arm_listening",
-            resultCode: "candidate_listening",
-            counts: ["segments": snapshot.segments.count]
-        )
+        await armAcousticSegmenter(.candidateListening)
+    }
+
+    private func armAcousticSegmenter(_ mode: AcousticSegmentationMode) async {
+        do {
+            try await acousticSegmenter?.arm(mode)
+            guard wantsContinuousListening else {
+                await disarmAcousticSegmenter()
+                return
+            }
+            acousticFailure = nil
+            acousticFailureHandler?(nil)
+            armedAcousticMode = mode
+            trace(command: "arm_listening", resultCode: mode.rawValue)
+        } catch is CancellationError {
+            // An intervening Pause or End invalidated permission/startup work.
+        } catch {
+            acousticFailure = error as? AcousticSegmentationFailure ?? .inputUnavailable
+            acousticFailureHandler?(acousticFailure)
+            await disarmAcousticSegmenter()
+            trace(command: "arm_listening", resultCode: "input_unavailable")
+        }
     }
 
     private func disarmAcousticSegmenter() async {
+        pendingAcousticEvents.removeAll()
         await acousticSegmenter?.disarm()
         armedAcousticMode = .disarmed
     }
@@ -1432,6 +1571,21 @@ public final class SegmentSpeechCoordinator {
                 counts: counts
             )
         )
+    }
+
+    private func interviewerTurnIDs(in snapshot: InterviewRoomSnapshot) -> Set<TurnID> {
+        Set(snapshot.turns.compactMap {
+            guard case .interviewer(let turn) = $0 else { return nil }
+            return turn.id
+        })
+    }
+
+    private func deliverNewInterviewerTurns() async {
+        guard let interviewerTurnHandler else { return }
+        let turnIDs = interviewerTurnIDs(in: snapshot)
+        guard !turnIDs.isSubset(of: deliveredInterviewerTurnIDs) else { return }
+        deliveredInterviewerTurnIDs.formUnion(turnIDs)
+        await interviewerTurnHandler(snapshot)
     }
 
     private func applyAndPublish(

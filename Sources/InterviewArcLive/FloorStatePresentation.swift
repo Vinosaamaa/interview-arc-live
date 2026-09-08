@@ -68,6 +68,7 @@ struct FloorStatePresentation: Equatable {
         var turnMode: TurnMode
         var isFloorHeld: Bool
         var isCheckingAnswer: Bool
+        var isMicrophonePaused: Bool
 
         init(
             phase: InterviewRoomPhase? = nil,
@@ -83,7 +84,8 @@ struct FloorStatePresentation: Equatable {
             roomAvailability: RoomAvailability = .ready,
             turnMode: TurnMode = .manual,
             isFloorHeld: Bool = false,
-            isCheckingAnswer: Bool = false
+            isCheckingAnswer: Bool = false,
+            isMicrophonePaused: Bool = false
         ) {
             self.phase = phase
             self.candidateSegmentLifecycles = candidateSegmentLifecycles
@@ -99,6 +101,7 @@ struct FloorStatePresentation: Equatable {
             self.turnMode = turnMode
             self.isFloorHeld = isFloorHeld
             self.isCheckingAnswer = isCheckingAnswer
+            self.isMicrophonePaused = isMicrophonePaused
         }
     }
 
@@ -117,7 +120,8 @@ struct FloorStatePresentation: Equatable {
             full: fullSurface(for: input),
             compact: Surface(
                 label: compactLabel(for: input),
-                detail: status.detail
+                detail: input.isMicrophonePaused && input.turnMode == .continuousConversation
+                    && input.phase == .candidateFloor ? "Resume to listen" : status.detail
             ),
             systemImage: status.systemImage,
             primaryActionHint: phaseActionHint(for: input.phase)
@@ -210,6 +214,9 @@ struct FloorStatePresentation: Equatable {
         }
 
         if input.turnMode == .continuousConversation, input.phase == .candidateFloor {
+            if input.isMicrophonePaused {
+                return (.candidateFloor, .quiet, "Microphone paused", "mic.slash.fill")
+            }
             if input.isFloorHeld {
                 return (
                     .holdingFloor,
@@ -343,6 +350,9 @@ struct FloorStatePresentation: Equatable {
         switch input.phase {
         case .candidateFloor:
             if input.turnMode == .continuousConversation {
+                if input.isMicrophonePaused {
+                    return Surface(label: "Microphone paused", detail: "Resume when you are ready to speak")
+                }
                 if input.isFloorHeld {
                     return Surface(label: "Holding your floor", detail: candidateDetail(for: input))
                 }
@@ -416,6 +426,7 @@ struct FloorStatePresentation: Equatable {
         switch input.phase {
         case .candidateFloor:
             if input.turnMode == .continuousConversation {
+                if input.isMicrophonePaused { return "Mic paused" }
                 if input.isFloorHeld { return "Holding your floor" }
                 if input.isCheckingAnswer { return "Checking answer" }
                 return "Listening"
@@ -485,7 +496,8 @@ extension SystemDesignRoomModel {
                 turnMode: snapshot?.turnMode ?? .continuousConversation,
                 isFloorHeld: snapshot?.isFloorHeld == true,
                 isCheckingAnswer: snapshot?.endpointEvaluations.last?.lifecycle == .authorized
-                    || snapshot?.endpointGraces.contains(where: { $0.lifecycle == .pending }) == true
+                    || snapshot?.endpointGraces.contains(where: { $0.lifecycle == .pending }) == true,
+                isMicrophonePaused: isMicrophonePaused
             )
         )
     }

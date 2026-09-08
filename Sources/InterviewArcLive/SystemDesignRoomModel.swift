@@ -114,6 +114,8 @@ final class SystemDesignRoomModel: ObservableObject {
     }
     @Published private(set) var statusMessage = "Restoring local session…"
     @Published private(set) var errorMessage: String?
+    @Published private(set) var isMicrophonePaused = true
+    private var lastAcousticErrorMessage: String?
     @Published private(set) var interviewerReadiness: InterviewerReadiness?
     @Published private(set) var isCheckingInterviewer = false
     @Published private(set) var isInterviewerRequestInFlight = false
@@ -186,6 +188,8 @@ final class SystemDesignRoomModel: ObservableObject {
     private let boardRenderer: DeterministicBoardRenderer
     private let hostedController: HostedPracticeController?
     private var hostedSnapshotObservation: AnyCancellable?
+    private var hostedPairSyncTask: Task<Void, Error>?
+    private var hostedPairSyncGeneration = 0
     private var credentialState: CredentialState = .checking
     private var errorWasInterviewerFailure = false
     private var coordinator: SegmentSpeechCoordinator?
@@ -216,6 +220,7 @@ final class SystemDesignRoomModel: ObservableObject {
             try LocalInterviewerSpeechProvider(engine: $0)
         },
         initialCoordinator: SegmentSpeechCoordinator? = nil,
+        initialSpeechCoordinator: InterviewerSpeechCoordinator? = nil,
         boardArtifactStore: PrivateBoardArtifactStore? = nil,
         boardRenderer: DeterministicBoardRenderer = DeterministicBoardRenderer(),
         hostedController: HostedPracticeController? = nil
@@ -239,8 +244,12 @@ final class SystemDesignRoomModel: ObservableObject {
         selectedWorkSurface = SystemDesignWorkSurfacePane(
             rawValue: preferences.string(forKey: Self.workSurfacePreferenceKey) ?? ""
         ) ?? .board
+        if let initialSpeechCoordinator {
+            interviewerSpeechCoordinator = initialSpeechCoordinator
+            bindInterviewerSpeech(initialSpeechCoordinator)
+        }
         if let initialCoordinator {
-            publish(initialCoordinator.snapshot)
+            bindConversation(initialCoordinator)
         }
         if let hostedController {
             hostedSnapshot = hostedController.snapshot
@@ -519,6 +528,14 @@ final class SystemDesignRoomModel: ObservableObject {
         snapshot?.isFloorHeld == true
     }
 
+    var showsAutomaticMicrophoneControl: Bool {
+        turnMode == .continuousConversation && snapshot?.phase == .candidateFloor
+            && hasUsableGroqCredential && isHostedWritable
+    }
+
+    var microphoneActionTitle: String { isMicrophonePaused ? "Resume" : "Pause" }
+    var microphoneActionIcon: String { isMicrophonePaused ? "mic.fill" : "pause.fill" }
+
     var showsHoldFloorControl: Bool {
         snapshot?.turnMode == .continuousConversation
             && snapshot?.phase == .candidateFloor
@@ -552,7 +569,7 @@ final class SystemDesignRoomModel: ObservableObject {
 
     var showsManualCaptureRecovery: Bool {
         guard snapshot?.turnMode == .continuousConversation else { return false }
-        if !hasUsableGroqCredential { return true }
+        if !hasUsableGroqCredential || coordinator?.acousticFailure != nil { return true }
         return draftSegments.contains {
             $0.lifecycle == .failed
                 || ($0.lifecycle == .audioReady && $0.selectedCandidate == nil)
@@ -854,6 +871,13 @@ final class SystemDesignRoomModel: ObservableObject {
             candidateNotesSavePresentation = .error(
                 "The latest Notes text is not durable yet. Quit was cancelled so you can retry."
             )
+            return false
+        }
+        do {
+            try await coordinator.prepareForTermination(commandID: commandID("quit-speech"))
+            publish(coordinator.snapshot)
+        } catch {
+            errorMessage = "The current recording could not be preserved. Quit was cancelled so you can retry."
             return false
         }
         return true
@@ -1300,31 +1324,22 @@ final class SystemDesignRoomModel: ObservableObject {
 
         do {
             let conversationEngine = AVAudioEngine()
+            let acousticInput = VoiceCoreAcousticSegmenter(engine: conversationEngine, sharesEngine: true)
             let opened = try await SegmentSpeechCoordinator.openLocal(
                 sessionID: launchSessionID,
                 activityID: launchActivityID,
                 activityPrompt: launchPrompt,
                 interviewerRuntime: interviewerRuntime,
-                recording: makeBoundSegmentRecorder(),
+                recording: makeBoundSegmentRecorder(acousticInput: acousticInput),
                 transcriber: VoiceCoreSegmentTranscriber(),
                 credentialReader: credentialStore,
                 semanticEndpointClassifier: GroqEndpointClassifier(
                     credentialReader: credentialStore
                 ),
-                acousticSegmenter: VoiceCoreAcousticSegmenter(
-                    engine: conversationEngine,
-                    sharesEngine: true
-                )
+                acousticSegmenter: acousticInput
             )
             coordinator = opened
-            opened.setSnapshotHandler { [weak self, weak opened] nextSnapshot in
-                guard let self,
-                      let opened,
-                      self.coordinator === opened else {
-                    return
-                }
-                self.publish(nextSnapshot)
-            }
+            bindConversation(opened)
 
             var restored = opened.snapshot
             do {
@@ -1337,7 +1352,7 @@ final class SystemDesignRoomModel: ObservableObject {
                 to: opened,
                 conversationEngine: conversationEngine
             )
-            if restored.turnMode == .continuousConversation {
+            if restored.turnMode == .continuousConversation, isHostedWritable {
                 await opened.enableContinuousListening()
             }
             if restored.phase == .ready {
@@ -1356,7 +1371,7 @@ final class SystemDesignRoomModel: ObservableObject {
             }
             publish(restored)
             await recoverBoardArtifacts(in: restored.board)
-            await interviewerSpeechCoordinator?.observeNewlyPersistedSnapshot(restored)
+            await synchronizeCompletedConversation(restored)
         } catch {
             statusMessage = "Local session unavailable"
             errorMessage = safeMessage(for: error)
@@ -1457,11 +1472,25 @@ final class SystemDesignRoomModel: ObservableObject {
         errorMessage = hostedController.errorMessage
         if hostedSnapshot.activity != nil, coordinator == nil {
             await open()
+        } else if let snapshot {
+            await synchronizeCompletedConversation(snapshot)
+            if isHostedWritable, turnMode == .continuousConversation {
+                await coordinator?.enableContinuousListening()
+                await interviewerSpeechCoordinator?.waitUntilIdle()
+                await coordinator?.noteInterviewerPlaybackFinished()
+            }
         }
     }
 
     func prepareHostedForTermination() async -> Bool {
         guard let hostedController else { return true }
+        if let snapshot {
+            do { try await syncHostedPairs(from: snapshot) }
+            catch {
+                errorMessage = "Conversation sync is still pending. Refresh Interview Arc before retrying Quit."
+                return false
+            }
+        }
         let prepared = await hostedController.prepareForTermination()
         hostedSnapshot = hostedController.snapshot
         if !prepared {
@@ -1567,22 +1596,6 @@ final class SystemDesignRoomModel: ObservableObject {
                 commandID: commandID("begin-segment")
             )
             publish(updated)
-            if let hostedController, !hostedTimerIsRunning {
-                do {
-                    try await hostedController.startTimer()
-                    hostedSnapshot = hostedController.snapshot
-                } catch {
-                    // Capture already started and is locally durable. Stop and
-                    // preserve its source bytes rather than leaving a hidden
-                    // microphone or a false hosted timer.
-                    let preserved = try await coordinator.finalizeSegment(
-                        commandID: commandID("hosted-timer-start-failed")
-                    )
-                    publish(preserved)
-                    hostedSnapshot = hostedController.snapshot
-                    errorMessage = "Recording was preserved, but the hosted timer could not start. Refresh Interview Arc before recording again."
-                }
-            }
         } catch {
             publish(coordinator.snapshot)
             errorMessage = safeMessage(for: error)
@@ -1744,6 +1757,24 @@ final class SystemDesignRoomModel: ObservableObject {
         }
     }
 
+    func toggleMicrophone() async {
+        guard let coordinator, !isWorking else { return }
+        guard isMicrophonePaused else { await pauseMicrophone(); return }
+        do { try requireHostedCaptureAuthority(for: coordinator) }
+        catch { return }
+        isWorking = true
+        defer { isWorking = false }
+        await coordinator.enableContinuousListening()
+        if playingUtteranceID != nil || snapshot?.interviewerUtterances.contains(where: {
+            $0.lifecycle == .generating || $0.lifecycle == .speaking
+        }) == true {
+            await coordinator.noteInterviewerPlaybackStarted()
+        } else {
+            await coordinator.noteInterviewerPlaybackFinished()
+        }
+        publish(coordinator.snapshot)
+    }
+
     func pauseMicrophone() async {
         guard let coordinator, !isWorking else { return }
         isWorking = true
@@ -1854,9 +1885,6 @@ final class SystemDesignRoomModel: ObservableObject {
                 return
             }
             publish(updated)
-            try await syncHostedPairs(from: updated)
-            await interviewerSpeechCoordinator?
-                .observeNewlyPersistedSnapshot(updated)
         } catch {
             publish(coordinator.snapshot)
             errorWasInterviewerFailure = applyInterviewerFailure(error)
@@ -1945,9 +1973,10 @@ final class SystemDesignRoomModel: ObservableObject {
         }
 
         do {
+            try await coordinator.prepareForTermination(commandID: commandID("end-speech"))
             await waitForBoardPersistence()
-            if snapshot.phase != .completed {
-                try await syncHostedPairs(from: snapshot)
+            if coordinator.snapshot.phase != .completed {
+                try await syncHostedPairs(from: coordinator.snapshot)
             }
             if let hostedController {
                 if let hostedNextActivityID {
@@ -2019,9 +2048,105 @@ final class SystemDesignRoomModel: ObservableObject {
         }
     }
 
+    private func bindConversation(_ conversation: SegmentSpeechCoordinator) {
+        conversation.setAcousticFailureHandler { [weak self, weak conversation] failure in
+            guard let self, let conversation, self.coordinator === conversation else { return }
+            self.isMicrophonePaused = !conversation.isContinuousListeningEnabled || failure != nil
+            guard let failure else {
+                if self.errorMessage == self.lastAcousticErrorMessage { self.errorMessage = nil }
+                self.lastAcousticErrorMessage = nil
+                return
+            }
+            switch failure {
+            case .microphonePermissionDenied:
+                self.errorMessage = "Allow Interview Arc Live in System Settings → Privacy & Security → Microphone, then resume listening."
+            case .inputUnavailable:
+                self.errorMessage = "Live could not start the microphone. Check the selected input device, then resume listening."
+            case .captureBufferExceeded:
+                self.errorMessage = "Recording setup took too long. Your earlier audio is saved; reconnect Interview Arc and retry this segment."
+            }
+            self.lastAcousticErrorMessage = self.errorMessage
+        }
+        conversation.setCaptureHandlers(
+            validate: { [weak self, weak conversation] in
+                guard let self, let conversation else { throw CancellationError() }
+                try self.requireHostedCaptureAuthority(for: conversation)
+            },
+            prepare: { [weak self, weak conversation] in
+                guard let self, let conversation else { throw CancellationError() }
+                try self.requireHostedCaptureAuthority(for: conversation)
+                guard let hosted = self.hostedController else { return }
+                if !self.hostedTimerIsRunning {
+                    do {
+                        try await hosted.startTimer()
+                        self.hostedSnapshot = hosted.snapshot
+                    } catch {
+                        self.errorMessage = "The website timer could not start. Refresh Interview Arc before recording."
+                        throw error
+                    }
+                }
+                try self.requireHostedCaptureAuthority(for: conversation)
+            }
+        )
+        conversation.setSnapshotHandler { [weak self, weak conversation] next in
+            guard let self, let conversation, self.coordinator === conversation else { return }
+            self.publish(next)
+        }
+        conversation.setInterviewerTurnHandler { [weak self, weak conversation] next in
+            guard let self, let conversation, self.coordinator === conversation else { return }
+            self.publish(next)
+            if let speech = self.interviewerSpeechCoordinator {
+                await speech.observeNewlyPersistedSnapshot(next)
+            } else {
+                await conversation.noteInterviewerPlaybackFinished()
+            }
+            guard self.coordinator === conversation else { return }
+            await self.synchronizeCompletedConversation(next)
+        }
+    }
+
+    private func requireHostedCaptureAuthority(for conversation: SegmentSpeechCoordinator) throws {
+        guard coordinator === conversation else { throw CancellationError() }
+        guard hostedController != nil else { return }
+        guard hostedSnapshot.connection == .writable,
+              hostedSnapshot.activityID == conversation.snapshot.activityID else {
+            errorMessage = "Reconnect Interview Arc before recording. Your local conversation is saved."
+            throw HostedPracticeSessionError.leaseUnavailable
+        }
+    }
+
+    private func synchronizeCompletedConversation(_ snapshot: InterviewRoomSnapshot) async {
+        let syncFailure = "Your conversation is saved on this Mac, but website sync needs attention. Refresh Interview Arc before retrying or ending."
+        do {
+            try await syncHostedPairs(from: snapshot)
+            if errorMessage == syncFailure { errorMessage = nil }
+        } catch {
+            errorMessage = syncFailure
+        }
+    }
+
     private func syncHostedPairs(from snapshot: InterviewRoomSnapshot) async throws {
+        guard hostedController != nil else { return }
+        let previous = hostedPairSyncTask
+        hostedPairSyncGeneration += 1
+        let generation = hostedPairSyncGeneration
+        let task = Task { @MainActor [weak self] in
+            // Join any previous pair upload. A later explicit retry may recover
+            // after its failure; it must not inherit a permanently failed tail.
+            _ = try? await previous?.value
+            guard let self else { return }
+            try await self.persistHostedPairs(from: snapshot)
+        }
+        hostedPairSyncTask = task
+        defer {
+            if hostedPairSyncGeneration == generation { hostedPairSyncTask = nil }
+        }
+        try await task.value
+    }
+
+    private func persistHostedPairs(from snapshot: InterviewRoomSnapshot) async throws {
         guard let hostedController else { return }
-        guard hostedSnapshot.connection == .writable else {
+        guard hostedSnapshot.activityID == snapshot.activityID else {
             throw HostedPracticeSessionError.leaseUnavailable
         }
         let hostedCandidateIDs = Set(
@@ -2038,6 +2163,9 @@ final class SystemDesignRoomModel: ObservableObject {
             defer { index += 2 }
             guard !hostedCandidateIDs.contains(candidate.id.rawValue) else {
                 continue
+            }
+            guard hostedSnapshot.connection == .writable else {
+                throw HostedPracticeSessionError.leaseUnavailable
             }
             let candidateOccurredAt = snapshot.segments
                 .filter { $0.committedTurnID == candidate.id }
@@ -2319,22 +2447,7 @@ final class SystemDesignRoomModel: ObservableObject {
                 initiallyMuted: isSpeechMuted
             )
             interviewerSpeechCoordinator = speech
-            speech.setSnapshotHandler { [weak self, weak speech] next in
-                guard let self,
-                      let speech,
-                      self.interviewerSpeechCoordinator === speech else {
-                    return
-                }
-                self.publish(next)
-            }
-            speech.setReadinessHandler { [weak self, weak speech] next in
-                guard let self,
-                      let speech,
-                      self.interviewerSpeechCoordinator === speech else {
-                    return
-                }
-                self.speechReadiness = next
-            }
+            bindInterviewerSpeech(speech)
             do {
                 publish(try await speech.resumePendingWork())
             } catch {
@@ -2344,6 +2457,25 @@ final class SystemDesignRoomModel: ObservableObject {
         } catch {
             speechReadiness = .unavailable(.storageFailure)
             speechErrorMessage = "Local interviewer voice could not start. The written interview remains fully usable."
+        }
+    }
+
+    private func bindInterviewerSpeech(_ speech: InterviewerSpeechCoordinator) {
+        speech.setSnapshotHandler { [weak self, weak speech] next in
+            guard let self,
+                  let speech,
+                  self.interviewerSpeechCoordinator === speech else {
+                return
+            }
+            self.publish(next)
+        }
+        speech.setReadinessHandler { [weak self, weak speech] next in
+            guard let self,
+                  let speech,
+                  self.interviewerSpeechCoordinator === speech else {
+                return
+            }
+            self.speechReadiness = next
         }
     }
 
@@ -2363,8 +2495,8 @@ final class SystemDesignRoomModel: ObservableObject {
         )
     }
 
-    private func makeBoundSegmentRecorder() -> VoiceCoreSegmentRecorder {
-        let recorder = VoiceCoreSegmentRecorder()
+    private func makeBoundSegmentRecorder(acousticInput: VoiceCoreAcousticSegmenter) -> VoiceCoreSegmentRecorder {
+        let recorder = VoiceCoreSegmentRecorder(acousticSegmenter: acousticInput)
         segmentRecorder = recorder
         recorder.onMetering = { [weak self] sample in
             self?.recordingPowerHistory = sample.powerHistory
@@ -2559,6 +2691,9 @@ final class SystemDesignRoomModel: ObservableObject {
     }
 
     private func publish(_ snapshot: InterviewRoomSnapshot) {
+        if let current = self.snapshot,
+           current.sessionID == snapshot.sessionID,
+           current.revision > snapshot.revision { return }
         if !didLoadInitialBoard {
             boardEditor = BoardEditorState(document: snapshot.board.draft)
             inspectedBoardRevisionID = snapshot.board.selectedRevisionID
@@ -2575,6 +2710,8 @@ final class SystemDesignRoomModel: ObservableObject {
                 .sorted { $0.ordinal < $1.ordinal }
                 .map(CandidateSegmentPresentation.init(segment:))
         }
+        isMicrophonePaused = coordinator?.isContinuousListeningEnabled != true
+            || coordinator?.acousticFailure != nil
         statusMessage = status(for: snapshot)
     }
 

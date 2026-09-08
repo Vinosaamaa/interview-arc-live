@@ -158,6 +158,7 @@ let package = Package(
             dependencies: [
                 "InterviewArcLive",
                 "InterviewArcLiveCore",
+                "InterviewArcLiveHostedClient",
                 "InterviewArcLiveCodexAdapter",
                 "InterviewArcLiveLocalSpeechAdapter",
                 "InterviewArcLiveSpeechOutputAdapter",

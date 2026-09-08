@@ -54,6 +54,18 @@ final class CompactRoomPresentationTests: XCTestCase {
         XCTAssertFalse(handOff.isEnabled)
     }
 
+    func testAutomaticMicrophoneShowsPauseAndResumeInCompactRoom() throws {
+        for paused in [false, true] {
+            let presentation = CompactRoomPresentation.make(input: .init(
+                phase: .candidateFloor, showsAutomaticMicrophoneControl: true,
+                isMicrophonePaused: paused))
+            let control = try XCTUnwrap(presentation.candidateControl)
+            XCTAssertEqual(control.action, .toggleMicrophone)
+            XCTAssertEqual(control.title, paused ? "Resume" : "Pause")
+            XCTAssertTrue(control.isEnabled)
+        }
+    }
+
     func testContinuousConversationExposesHoldFloorWithoutRecordOrHandOff() throws {
         let presentation = CompactRoomPresentation.make(
             input: .init(

@@ -3,6 +3,7 @@ import InterviewArcLiveCore
 enum CompactRoomAction: String, CaseIterable, Hashable {
     case recordSegment
     case stopRecording
+    case toggleMicrophone
     case keepFloor
     case holdFloor
     case primaryPhaseAction
@@ -39,6 +40,8 @@ struct CompactRoomPresentation: Equatable {
         var stopRecordingTitle: String
         var stopRecordingSystemImage: String
         var showsRecordControl: Bool
+        var showsAutomaticMicrophoneControl: Bool
+        var isMicrophonePaused: Bool
         var canRecordSegment: Bool
         var recordTitle: String
         var showsKeepFloor: Bool
@@ -67,6 +70,8 @@ struct CompactRoomPresentation: Equatable {
             stopRecordingTitle: String = "Stop segment",
             stopRecordingSystemImage: String = "stop.fill",
             showsRecordControl: Bool = false,
+            showsAutomaticMicrophoneControl: Bool = false,
+            isMicrophonePaused: Bool = false,
             canRecordSegment: Bool = false,
             recordTitle: String = "Record segment",
             showsKeepFloor: Bool = false,
@@ -94,6 +99,8 @@ struct CompactRoomPresentation: Equatable {
             self.stopRecordingTitle = stopRecordingTitle
             self.stopRecordingSystemImage = stopRecordingSystemImage
             self.showsRecordControl = showsRecordControl
+            self.showsAutomaticMicrophoneControl = showsAutomaticMicrophoneControl
+            self.isMicrophonePaused = isMicrophonePaused
             self.canRecordSegment = canRecordSegment
             self.recordTitle = recordTitle
             self.showsKeepFloor = showsKeepFloor
@@ -121,7 +128,7 @@ struct CompactRoomPresentation: Equatable {
 
     var candidateControl: CompactRoomControl? {
         controls.first {
-            $0.action == .recordSegment || $0.action == .stopRecording
+            $0.action == .recordSegment || $0.action == .stopRecording || $0.action == .toggleMicrophone
         }
     }
 
@@ -166,7 +173,7 @@ struct CompactRoomPresentation: Equatable {
         var controls: [CompactRoomControl] = []
 
         if input.phase == .candidateFloor {
-            if input.canStopRecording {
+            if input.canStopRecording && !input.showsAutomaticMicrophoneControl {
                 controls.append(
                     CompactRoomControl(
                         action: .stopRecording,
@@ -178,6 +185,13 @@ struct CompactRoomPresentation: Equatable {
                         accessibilityValue: nil
                     )
                 )
+            } else if input.showsAutomaticMicrophoneControl {
+                controls.append(.init(action: .toggleMicrophone,
+                    title: input.isMicrophonePaused ? "Resume" : "Pause",
+                    systemImage: input.isMicrophonePaused ? "mic.fill" : "pause.fill",
+                    isEnabled: !input.isWorking,
+                    accessibilityHint: input.isMicrophonePaused ? "Resume microphone" : "Pause microphone",
+                    accessibilityValue: nil))
             } else if input.showsRecordControl {
                 controls.append(
                     CompactRoomControl(
@@ -310,6 +324,8 @@ extension SystemDesignRoomModel {
                 stopRecordingTitle: stopActionTitle,
                 stopRecordingSystemImage: stopActionIcon,
                 showsRecordControl: showsRecordControl,
+                showsAutomaticMicrophoneControl: showsAutomaticMicrophoneControl,
+                isMicrophonePaused: isMicrophonePaused,
                 canRecordSegment: canRecordSegment,
                 recordTitle: recordActionTitle,
                 showsKeepFloor: pendingGrace != nil && snapshot?.turnMode != .continuousConversation,

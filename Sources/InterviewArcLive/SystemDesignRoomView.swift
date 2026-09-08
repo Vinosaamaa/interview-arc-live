@@ -638,7 +638,9 @@ struct SystemDesignRoomView: View {
                                     design: .rounded
                                 )
                             )
-                        Text("Record one or more segments here. Working pauses stay in this Candidate Turn until you choose Hand off.")
+                        Text(model.turnMode == .continuousConversation
+                        ? "Speak naturally. Live keeps pauses inside your answer. Use Hold floor while thinking or drawing."
+                        : "Record one or more segments here. Working pauses stay in this Candidate Turn until you choose Hand off.")
                             .font(.system(.body, design: .rounded))
                             .foregroundStyle(LivePalette.muted)
                             .lineSpacing(3)
@@ -1124,7 +1126,7 @@ struct SystemDesignRoomView: View {
             .help(model.actionTitle)
             }
 
-            if model.canStopRecording {
+            if model.canStopRecording && !model.showsAutomaticMicrophoneControl {
                 headerDivider
                 Button {
                     Task { await model.stopRecording() }
@@ -1143,14 +1145,14 @@ struct SystemDesignRoomView: View {
                 .accessibilityIdentifier(FullRoomAccessibility.recordingAction)
                 .accessibilityLabel("Pause recording")
                 .help("Pause recording")
-            } else if model.showsHoldFloorControl {
+            } else if model.showsAutomaticMicrophoneControl {
                 headerDivider
                 Button {
-                    Task { await model.pauseMicrophone() }
+                    Task { await model.toggleMicrophone() }
                 } label: {
                     floorActionLabel(
-                        "Pause",
-                        systemImage: "pause.fill",
+                        model.microphoneActionTitle,
+                        systemImage: model.microphoneActionIcon,
                         compact: compact,
                         wideMinimumWidth: 86
                     )
@@ -1160,8 +1162,8 @@ struct SystemDesignRoomView: View {
                 .disabled(model.isWorking)
                 .keyboardShortcut(.space, modifiers: [.command])
                 .accessibilityIdentifier(FullRoomAccessibility.recordingAction)
-                .accessibilityLabel("Pause microphone")
-                .help("Pause microphone")
+                .accessibilityLabel("\(model.microphoneActionTitle) microphone")
+                .help("\(model.microphoneActionTitle) microphone")
             } else if model.showsRecordControl {
                 headerDivider
                 Button {
