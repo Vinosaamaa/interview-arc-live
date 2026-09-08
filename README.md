@@ -93,12 +93,16 @@ grace. Local acoustic segmentation starts and finalizes Segments without Record 
 Stop on the Continuous Conversation happy path.
 
 Interviewer speech is optional and never runs for historical turns
-automatically. The app discloses and downloads only the pinned
-`mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-8bit` revision shown in the UI
-(1.838 GiB, Apache-2.0) after explicit authorization and a 4 GiB free-space
-check. The model lives under Live's Application Support model directory; after
-installation, synthesis and WAV playback stay on the Mac. Written transcript
-use does not depend on speech availability.
+without an explicit Play or Generate action. The Mara menu selects Qwen or
+Kokoro independently of the AI provider, and remembers the selection.
+Qwen remains the default: the pinned 0.6B CustomVoice 8-bit package is
+1.838 GiB with a 4 GiB free-space check. Kokoro's 82M bf16 English af_heart
+package and pronunciation files total 321.2 MiB with a 1 GiB free-space check.
+Each engine downloads only after an explicit action, verifies its immutable
+revision and every file hash, and stores its model separately under Live's
+Application Support directory. Synthesis and WAV playback stay on the Mac.
+Switching stops and joins current speech; saved audio remains playable with its
+original provenance. Written transcript use does not depend on speech readiness.
 
 ## Opt-in installed Codex smoke
 

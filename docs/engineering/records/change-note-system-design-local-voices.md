@@ -53,9 +53,15 @@ A compile-time diagnostic build can open an isolated local room for headed verif
 ## Verification matrix
 
 - AI: real authenticated Codex 0.153.4 synthetic response passed; the version gate is absent.
-- Native build: the complete integrated application built successfully in 124.74 seconds; updated Core strict-concurrency compilation and the dual-engine adapter typecheck also passed.
+- Native build: the complete application including board-aware AI built successfully in 152.94 seconds; updated Core strict-concurrency compilation and the dual-engine adapter typecheck also passed.
 - Regression coverage added: persisted engine choice, exact Kokoro allowlist, non-Qwen model receipts, bounded Unicode text, preserved audio and provenance after switching, joined producer cancellation, delayed replay cancellation, opening speech versus restore, and End during synthesis.
-- Pending: hosted XCTest and Metal package; real Qwen/Kokoro synthesis and playback; headed microphone/transcription/board/hold/mute/recovery/End session checks. These remain release blockers, not inferred successes.
+- Real local voices: Qwen and Kokoro each passed synthesis, finite PCM/WAV validation, playback and Stop on an M1 Pro. For the fixed short phrase, Qwen first audio was 4,201 ms and total generation 10,591 ms; Kokoro first audio and total generation were 7,408 ms. These used the existing Metal resource with development binaries, not a release-equivalent package.
+- Real Groq endpoint: the automatic Hand off smoke passed on a diagnostic rerun. One earlier invariant failure had insufficient diagnostics; its cause remains unknown. The helper now emits bounded stage/category diagnostics without payloads or credentials.
+- Board context: found and fixed the missing AI diagram path. Explicitly attached immutable revisions now cross the provider-neutral request, with a 256 KiB limit enforced before answer commit. Unattached drafts and private notes remain excluded.
+- Diagnostic isolation: a compiled probe reproduced macOS normalization of `/private/tmp` to `/tmp`. Both paths now use identical resolution, invalid roots fail closed, and the compiled probe confirms the intended root.
+- Connected software flow: a synthetic recording passed through the production Groq transcriber, floor hold, real board-aware Codex reply, automatic Kokoro speech, Qwen replacement/retry, replay of the prior Kokoro WAV, mute, End during active generation, and file-backed session/notes/board/audio recovery. This did not exercise microphone capture or a hosted activity.
+- Board: packaged WKWebView editor runtime passed at widths 780, 992, and 1280, including native bridge state and canonical document retention; exact assets/offline policy/resource notices/icon checks passed.
+- Pending: hosted XCTest and Metal package; headed microphone and interaction checks. Native UI automation timed out and macOS denied fallback accessibility access. These remain verification blockers, not inferred successes.
 
 ## Execution ledger
 
