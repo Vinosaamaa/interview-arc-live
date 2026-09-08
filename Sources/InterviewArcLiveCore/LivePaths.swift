@@ -2,6 +2,7 @@ import Foundation
 
 public enum LivePathError: Error, Equatable, Sendable {
     case applicationSupportDirectoryUnavailable
+    case invalidDiagnosticStateRoot
 }
 
 /// Live-owned runtime paths, derived at runtime so no personal path enters
@@ -16,11 +17,7 @@ public enum LivePaths {
         if let diagnosticPath = ProcessInfo.processInfo.environment[
             "INTERVIEW_ARC_LIVE_DIAGNOSTIC_STATE_ROOT"
         ], !diagnosticPath.isEmpty {
-            let root = URL(fileURLWithPath: diagnosticPath, isDirectory: true)
-                .standardizedFileURL
-            if root.path == "/private/tmp" || root.path.hasPrefix("/private/tmp/") {
-                return root
-            }
+            return try diagnosticRoot(for: diagnosticPath)
         }
 #endif
 
@@ -35,6 +32,18 @@ public enum LivePaths {
             applicationSupportDirectoryName,
             isDirectory: true
         )
+    }
+
+    // Standardizing a file URL collapses /private/tmp to /tmp on macOS.
+    // Resolve both paths identically, including symlinks, for confinement.
+    static func diagnosticRoot(for path: String) throws -> URL {
+        let root = URL(fileURLWithPath: path, isDirectory: true).resolvingSymlinksInPath()
+        let temporary = URL(fileURLWithPath: "/private/tmp", isDirectory: true)
+            .resolvingSymlinksInPath()
+        guard root.path.hasPrefix(temporary.path + "/") else {
+            throw LivePathError.invalidDiagnosticStateRoot
+        }
+        return root
     }
 
     public static func sessionManifestsDirectory(

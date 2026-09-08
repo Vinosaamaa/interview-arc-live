@@ -1,4 +1,5 @@
 import AppKit
+import InterviewArcLiveCore
 
 @MainActor
 final class InterviewArcLiveTerminationGate {
@@ -46,11 +47,13 @@ final class InterviewArcLiveApp: NSObject, NSApplicationDelegate {
         let roomPreferences: UserDefaults
 #if INTERVIEW_ARC_LIVE_DIAGNOSTIC_STATE_ROOT
         let environment = ProcessInfo.processInfo.environment
-        let diagnosticRoot = URL(fileURLWithPath:
-            environment["INTERVIEW_ARC_LIVE_DIAGNOSTIC_STATE_ROOT"] ?? "/")
-            .standardizedFileURL
-        if environment["INTERVIEW_ARC_LIVE_DIAGNOSTIC_LOCAL_ROOM"] == "1",
-           diagnosticRoot.path.hasPrefix("/private/tmp/interview-arc-live-ui-smoke-") {
+        if environment["INTERVIEW_ARC_LIVE_DIAGNOSTIC_LOCAL_ROOM"] == "1" {
+            guard let diagnosticRoot = try? LivePaths.applicationSupportRoot(),
+                  diagnosticRoot.path.hasPrefix(
+                    URL(fileURLWithPath: "/private/tmp", isDirectory: true)
+                        .resolvingSymlinksInPath().path + "/interview-arc-live-ui-smoke-") else {
+                fatalError("Diagnostic room requires an isolated temporary state root.")
+            }
             hosted = nil
             roomPreferences = UserDefaults(suiteName:
                 "app.interviewarc.live.diagnostic.\(diagnosticRoot.lastPathComponent)") ?? .standard
