@@ -5,15 +5,15 @@ import HuggingFace
 /// the immutable cache snapshot, then explicitly materializes every allowlisted
 /// path. The package's destination copier skips hidden files; using it would
 /// silently omit the pinned `.gitattributes` entry.
-struct HuggingFaceQwenSnapshotDownloader: QwenSnapshotDownloading {
+struct HuggingFaceLocalSpeechSnapshotDownloader: LocalSpeechSnapshotDownloading {
     func downloadSnapshot(
-        manifest: QwenSnapshotManifest,
+        manifest: LocalSpeechSnapshotManifest,
         destination: URL,
         cacheRoot: URL,
-        progress: @escaping @Sendable (QwenModelStoreProgress) -> Void
+        progress: @escaping @Sendable (LocalSpeechModelStoreProgress) -> Void
     ) async throws {
         guard let repository = Repo.ID(rawValue: manifest.repositoryID) else {
-            throw QwenModelStoreFailure.downloadFailed
+            throw LocalSpeechModelStoreFailure.downloadFailed
         }
 
         let client = HubClient(
@@ -33,7 +33,7 @@ struct HuggingFaceQwenSnapshotDownloader: QwenSnapshotDownloading {
                 maxConcurrentDownloads: 2,
                 progressHandler: { observed in
                     progress(
-                        QwenModelStoreProgress(
+                        LocalSpeechModelStoreProgress(
                             stage: .downloading,
                             completedBytes: min(
                                 max(observed.completedUnitCount, 0),
@@ -45,23 +45,23 @@ struct HuggingFaceQwenSnapshotDownloader: QwenSnapshotDownloading {
                 }
             )
             try Task.checkCancellation()
-            try await QwenSnapshotMaterializationExecutor.run(
+            try await LocalSpeechSnapshotMaterializationExecutor.run(
                 manifest: manifest,
                 cachedSnapshot: cachedSnapshot,
                 cacheRoot: cacheRoot,
                 destination: destination
             )
         } catch is CancellationError {
-            throw QwenModelStoreFailure.cancelled
-        } catch let failure as QwenModelStoreFailure {
+            throw LocalSpeechModelStoreFailure.cancelled
+        } catch let failure as LocalSpeechModelStoreFailure {
             throw failure
         } catch {
-            throw QwenModelStoreFailure.downloadFailed
+            throw LocalSpeechModelStoreFailure.downloadFailed
         }
     }
 }
 
-struct QwenSnapshotMaterializer {
+struct LocalSpeechSnapshotMaterializer {
     private let fileManager: FileManager
 
     init(fileManager: FileManager = .default) {
@@ -69,7 +69,7 @@ struct QwenSnapshotMaterializer {
     }
 
     func materialize(
-        manifest: QwenSnapshotManifest,
+        manifest: LocalSpeechSnapshotManifest,
         cachedSnapshot: URL,
         cacheRoot: URL,
         destination: URL,
@@ -84,39 +84,39 @@ struct QwenSnapshotMaterializer {
         let cacheBoundary = cacheRoot.resolvingSymlinksInPath().standardizedFileURL
         let snapshotBoundary = cachedSnapshot.standardizedFileURL
         guard isDescendant(snapshotBoundary, of: cacheRoot.standardizedFileURL) else {
-            throw QwenModelStoreFailure.invalidSnapshotRoot
+            throw LocalSpeechModelStoreFailure.invalidSnapshotRoot
         }
 
         for file in manifest.files {
             try cancellationCheck()
             guard isSafeRelativePath(file.path) else {
-                throw QwenModelStoreFailure.unexpectedSnapshotShape
+                throw LocalSpeechModelStoreFailure.unexpectedSnapshotShape
             }
 
             let source = cachedSnapshot.appendingPathComponent(file.path).standardizedFileURL
             let target = destination.appendingPathComponent(file.path).standardizedFileURL
             guard isDescendant(source, of: snapshotBoundary),
                   isDescendant(target, of: destination.standardizedFileURL) else {
-                throw QwenModelStoreFailure.invalidSnapshotRoot
+                throw LocalSpeechModelStoreFailure.invalidSnapshotRoot
             }
 
             let sourceValues = try source.resourceValues(
                 forKeys: [.isRegularFileKey, .isSymbolicLinkKey]
             )
             guard sourceValues.isRegularFile == true || sourceValues.isSymbolicLink == true else {
-                throw QwenModelStoreFailure.missingFile
+                throw LocalSpeechModelStoreFailure.missingFile
             }
 
             let resolvedSource = source.resolvingSymlinksInPath().standardizedFileURL
             guard isDescendant(resolvedSource, of: cacheBoundary) else {
-                throw QwenModelStoreFailure.symbolicLinkRejected
+                throw LocalSpeechModelStoreFailure.symbolicLinkRejected
             }
             let resolvedValues = try resolvedSource.resourceValues(
                 forKeys: [.isRegularFileKey, .isSymbolicLinkKey]
             )
             guard resolvedValues.isRegularFile == true,
                   resolvedValues.isSymbolicLink != true else {
-                throw QwenModelStoreFailure.symbolicLinkRejected
+                throw LocalSpeechModelStoreFailure.symbolicLinkRejected
             }
 
             try fileManager.createDirectory(
@@ -125,7 +125,7 @@ struct QwenSnapshotMaterializer {
                 attributes: [.posixPermissions: 0o700]
             )
             guard !fileManager.fileExists(atPath: target.path) else {
-                throw QwenModelStoreFailure.unexpectedSnapshotShape
+                throw LocalSpeechModelStoreFailure.unexpectedSnapshotShape
             }
             try fileManager.copyItem(at: resolvedSource, to: target)
             try cancellationCheck()
@@ -135,10 +135,10 @@ struct QwenSnapshotMaterializer {
     private func validateDirectory(_ url: URL, permitsSymlink: Bool) throws {
         let values = try url.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
         guard values.isDirectory == true else {
-            throw QwenModelStoreFailure.invalidSnapshotRoot
+            throw LocalSpeechModelStoreFailure.invalidSnapshotRoot
         }
         if !permitsSymlink, values.isSymbolicLink == true {
-            throw QwenModelStoreFailure.symbolicLinkRejected
+            throw LocalSpeechModelStoreFailure.symbolicLinkRejected
         }
     }
 
@@ -165,14 +165,14 @@ struct QwenSnapshotMaterializer {
 /// Runs blocking multi-gigabyte cache materialization away from Swift's
 /// cooperative executor. Cancellation is checked between allowlisted files;
 /// a single in-flight filesystem copy remains atomic from this layer's view.
-private enum QwenSnapshotMaterializationExecutor {
+private enum LocalSpeechSnapshotMaterializationExecutor {
     private static let queue = DispatchQueue(
         label: "interview-arc-live.qwen-snapshot-materialization",
         qos: .utility
     )
 
     static func run(
-        manifest: QwenSnapshotManifest,
+        manifest: LocalSpeechSnapshotManifest,
         cachedSnapshot: URL,
         cacheRoot: URL,
         destination: URL
@@ -184,7 +184,7 @@ private enum QwenSnapshotMaterializationExecutor {
                 (continuation: CheckedContinuation<Void, Error>) in
                 queue.async {
                     do {
-                        try QwenSnapshotMaterializer().materialize(
+                        try LocalSpeechSnapshotMaterializer().materialize(
                             manifest: manifest,
                             cachedSnapshot: cachedSnapshot,
                             cacheRoot: cacheRoot,

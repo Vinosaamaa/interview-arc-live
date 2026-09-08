@@ -3,7 +3,7 @@ import InterviewArcLiveCore
 import MLXAudioCore
 import MLXAudioTTS
 
-public enum QwenInterviewerSpeechError: String, Error, Sendable, Equatable {
+public enum LocalInterviewerSpeechError: String, Error, Sendable, Equatable {
     case notPrepared
     case invalidRequest
     case profileMismatch
@@ -14,23 +14,23 @@ public enum QwenInterviewerSpeechError: String, Error, Sendable, Equatable {
     case cancelled
 }
 
-protocol QwenSpeechModelLoading: Sendable {
-    func loadModel(from directory: URL) async throws -> any QwenStreamingSpeechModel
+protocol LocalSpeechModelLoading: Sendable {
+    func loadModel(from directory: URL) async throws -> any LocalStreamingSpeechModel
 }
 
-protocol QwenStreamingSpeechModel: Sendable {
+protocol LocalStreamingSpeechModel: Sendable {
     var sampleRate: Int { get }
 
     func startGeneration(
         text: String,
         profile: InterviewerSpeechProfile
-    ) -> any QwenSpeechGeneration
+    ) -> any LocalSpeechGeneration
 }
 
 /// Joinable, single-consumer generation Seam. The production implementation
 /// iterates the upstream Qwen handle directly so cancellation can await the
 /// actual MLX producer instead of an unjoinable proxy stream.
-protocol QwenSpeechGeneration: Sendable {
+protocol LocalSpeechGeneration: Sendable {
     func nextSamples() async throws -> [Float]?
     func cancelAndWait() async
 }
@@ -38,17 +38,12 @@ protocol QwenSpeechGeneration: Sendable {
 /// Production Adapter at the Core interviewer-speech Seam. A model is usable
 /// for synthesis only after this process has completed the store's full hash,
 /// staged-loader, promoted-path reload, and derived-tokenizer gates.
-public actor QwenInterviewerSpeechProvider: InterviewerSpeechProvider {
-    public nonisolated let provenance = InterviewerSpeechProvenance(
-        providerID: Qwen3TTSProvenance.providerID,
-        modelID: Qwen3TTSProvenance.modelID,
-        modelRevision: Qwen3TTSProvenance.modelRevision,
-        profile: .maraV1
-    )
+public actor LocalInterviewerSpeechProvider: InterviewerSpeechProvider {
+    public nonisolated let provenance: InterviewerSpeechProvenance
 
-    private let store: QwenModelStore
-    private let loader: any QwenSpeechModelLoading
-    private var loadedModel: (any QwenStreamingSpeechModel)?
+    private let store: LocalSpeechModelStore
+    private let loader: any LocalSpeechModelLoading
+    private var loadedModel: (any LocalStreamingSpeechModel)?
     private var isPreparing = false
     private var activePreparationID: UUID?
     private var latestPreparationProgress: InterviewerSpeechPreparationProgress?
@@ -59,22 +54,31 @@ public actor QwenInterviewerSpeechProvider: InterviewerSpeechProvider {
 
     /// Derives the Live-owned Application Support model root internally. The
     /// app never supplies or persists a provider-specific filesystem path.
-    public init() throws {
+    public init(engine: LocalSpeechEngine = .qwen) throws {
         let applicationSupportRoot = try LivePaths.applicationSupportRoot()
         let modelRoot = applicationSupportRoot
             .appendingPathComponent("Models", isDirectory: true)
-            .appendingPathComponent("Qwen3TTS", isDirectory: true)
-        store = QwenModelStore(
+            .appendingPathComponent(engine == .qwen ? "Qwen3TTS" : "Kokoro", isDirectory: true)
+        provenance = engine.provenance
+        store = LocalSpeechModelStore(
             modelRoot: modelRoot,
-            privateStorageRoot: applicationSupportRoot
+            privateStorageRoot: applicationSupportRoot,
+            manifest: engine == .qwen ? Qwen3TTSProvenance.publicSnapshot : KokoroProvenance.publicSnapshot,
+            downloader: engine == .qwen
+                ? HuggingFaceLocalSpeechSnapshotDownloader()
+                : KokoroSnapshotDownloader(),
+            minimumFreeBytes: engine.minimumFreeByteCount,
+            derivesTokenizer: engine == .qwen
         )
-        loader = MLXQwenSpeechModelLoader()
+        loader = engine == .qwen ? MLXQwenSpeechModelLoader() : MLXKokoroSpeechModelLoader()
     }
 
     init(
-        store: QwenModelStore,
-        loader: any QwenSpeechModelLoading
+        store: LocalSpeechModelStore,
+        loader: any LocalSpeechModelLoading,
+        provenance: InterviewerSpeechProvenance = LocalSpeechEngine.qwen.provenance
     ) {
+        self.provenance = provenance
         self.store = store
         self.loader = loader
     }
@@ -134,7 +138,7 @@ public actor QwenInterviewerSpeechProvider: InterviewerSpeechProvider {
                 validateStagedLoad: { directory in
                     let model = try await loader.loadModel(from: directory)
                     guard model.sampleRate == Self.requiredSampleRate else {
-                        throw QwenInterviewerSpeechError.incompatibleRuntime
+                        throw LocalInterviewerSpeechError.incompatibleRuntime
                     }
                     // Deliberately discard the staging-loaded object. The store
                     // promotes only after this succeeds and the provider then
@@ -143,7 +147,7 @@ public actor QwenInterviewerSpeechProvider: InterviewerSpeechProvider {
                 loadPromoted: { directory in
                     let model = try await loader.loadModel(from: directory)
                     guard model.sampleRate == Self.requiredSampleRate else {
-                        throw QwenInterviewerSpeechError.incompatibleRuntime
+                        throw LocalInterviewerSpeechError.incompatibleRuntime
                     }
                     return model
                 },
@@ -160,7 +164,7 @@ public actor QwenInterviewerSpeechProvider: InterviewerSpeechProvider {
             )
             loadedModel = prepared.loadedModel
             return .ready
-        } catch let failure as QwenModelStoreFailure {
+        } catch let failure as LocalSpeechModelStoreFailure {
             if failure == .missingFile, policy == .neverDownload {
                 return .notInstalled
             }
@@ -176,20 +180,20 @@ public actor QwenInterviewerSpeechProvider: InterviewerSpeechProvider {
         _ request: InterviewerSpeechSynthesisRequest
     ) async throws -> AsyncThrowingStream<InterviewerSpeechEvent, Error> {
         guard activeGenerationTask == nil, !isCancellingSynthesis else {
-            throw QwenInterviewerSpeechError.generationInProgress
+            throw LocalInterviewerSpeechError.generationInProgress
         }
         guard request.profile == provenance.profile else {
-            throw QwenInterviewerSpeechError.profileMismatch
+            throw LocalInterviewerSpeechError.profileMismatch
         }
         guard !request.spokenText.isEmpty,
               !request.spokenText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            throw QwenInterviewerSpeechError.invalidRequest
+            throw LocalInterviewerSpeechError.invalidRequest
         }
         guard let model = loadedModel else {
-            throw QwenInterviewerSpeechError.notPrepared
+            throw LocalInterviewerSpeechError.notPrepared
         }
         guard model.sampleRate == Self.requiredSampleRate else {
-            throw QwenInterviewerSpeechError.incompatibleRuntime
+            throw LocalInterviewerSpeechError.incompatibleRuntime
         }
 
         let generation = model.startGeneration(
@@ -197,8 +201,8 @@ public actor QwenInterviewerSpeechProvider: InterviewerSpeechProvider {
             profile: request.profile
         )
         let generationID = UUID()
-        let channel = QwenBoundedSpeechEventChannel(capacity: Self.outputBufferCapacity)
-        let cancellationRelay = QwenGenerationCancellationRelay()
+        let channel = LocalBoundedSpeechEventChannel(capacity: Self.outputBufferCapacity)
+        let cancellationRelay = LocalGenerationCancellationRelay()
         let stream = AsyncThrowingStream<InterviewerSpeechEvent, Error>(unfolding: {
             try await withTaskCancellationHandler {
                 try await channel.next()
@@ -228,7 +232,7 @@ public actor QwenInterviewerSpeechProvider: InterviewerSpeechProvider {
                     guard !samples.isEmpty,
                           samples.count <= Self.maximumChunkSampleCount,
                           samples.allSatisfy(\.isFinite) else {
-                        throw QwenInterviewerSpeechError.invalidAudio
+                        throw LocalInterviewerSpeechError.invalidAudio
                     }
                     if firstAudioMilliseconds == nil {
                         firstAudioMilliseconds = Self.elapsedMilliseconds(since: started)
@@ -236,10 +240,10 @@ public actor QwenInterviewerSpeechProvider: InterviewerSpeechProvider {
                     chunkCount += 1
                     let (nextCount, overflow) = sampleCount.addingReportingOverflow(samples.count)
                     guard !overflow else {
-                        throw QwenInterviewerSpeechError.invalidAudio
+                        throw LocalInterviewerSpeechError.invalidAudio
                     }
                     guard nextCount <= Self.maximumGeneratedSampleCount else {
-                        throw QwenInterviewerSpeechError.invalidAudio
+                        throw LocalInterviewerSpeechError.invalidAudio
                     }
                     sampleCount = nextCount
                     try await channel.send(
@@ -254,7 +258,7 @@ public actor QwenInterviewerSpeechProvider: InterviewerSpeechProvider {
                 }
                 try Task.checkCancellation()
                 guard chunkCount > 0, sampleCount > 0 else {
-                    throw QwenInterviewerSpeechError.invalidAudio
+                    throw LocalInterviewerSpeechError.invalidAudio
                 }
                 try await channel.send(
                     .completed(
@@ -280,7 +284,7 @@ public actor QwenInterviewerSpeechProvider: InterviewerSpeechProvider {
                     outputBufferHighWaterMark: highWaterMark
                 )
                 await channel.finish(throwing: .cancelled)
-            } catch let error as QwenInterviewerSpeechError {
+            } catch let error as LocalInterviewerSpeechError {
                 await generation.cancelAndWait()
                 let highWaterMark = await channel.highWaterMark()
                 await self?.generationDidFinish(
@@ -290,7 +294,7 @@ public actor QwenInterviewerSpeechProvider: InterviewerSpeechProvider {
                 await channel.finish(throwing: error)
             } catch {
                 await generation.cancelAndWait()
-                let failure: QwenInterviewerSpeechError = Task.isCancelled
+                let failure: LocalInterviewerSpeechError = Task.isCancelled
                     ? .cancelled
                     : .generationFailed
                 let highWaterMark = await channel.highWaterMark()
@@ -338,7 +342,7 @@ public actor QwenInterviewerSpeechProvider: InterviewerSpeechProvider {
         do {
             try await store.removeInstalledRevision()
             return .notInstalled
-        } catch let failure as QwenModelStoreFailure {
+        } catch let failure as LocalSpeechModelStoreFailure {
             return .unavailable(Self.mapFailure(failure))
         } catch {
             return .unavailable(.storageFailure)
@@ -391,7 +395,7 @@ public actor QwenInterviewerSpeechProvider: InterviewerSpeechProvider {
     }
 
     private static func mapProgress(
-        _ progress: QwenModelStoreProgress
+        _ progress: LocalSpeechModelStoreProgress
     ) -> InterviewerSpeechPreparationProgress {
         let stage: InterviewerSpeechPreparationStage = switch progress.stage {
         case .checkingStorage: .checkingStorage
@@ -407,7 +411,7 @@ public actor QwenInterviewerSpeechProvider: InterviewerSpeechProvider {
     }
 
     private static func mapReadiness(
-        _ readiness: QwenModelStoreReadiness
+        _ readiness: LocalSpeechModelStoreReadiness
     ) -> InterviewerSpeechReadiness {
         switch readiness {
         case .notInstalled:
@@ -422,7 +426,7 @@ public actor QwenInterviewerSpeechProvider: InterviewerSpeechProvider {
     }
 
     private static func mapFailure(
-        _ failure: QwenModelStoreFailure
+        _ failure: LocalSpeechModelStoreFailure
     ) -> InterviewerSpeechReadinessFailure {
         switch failure {
         case .insufficientFreeSpace:
@@ -453,7 +457,7 @@ public actor QwenInterviewerSpeechProvider: InterviewerSpeechProvider {
 /// One-producer bounded channel behind the public AsyncThrowingStream. `send`
 /// suspends at capacity and resumes only after the consumer removes an event,
 /// so valid audio is neither dropped nor retained without a fixed bound.
-private actor QwenBoundedSpeechEventChannel {
+private actor LocalBoundedSpeechEventChannel {
     private struct PendingSend {
         let id: UUID
         let event: InterviewerSpeechEvent
@@ -468,7 +472,7 @@ private actor QwenBoundedSpeechEventChannel {
     private enum TerminalState {
         case open
         case finished
-        case failed(QwenInterviewerSpeechError)
+        case failed(LocalInterviewerSpeechError)
     }
 
     private let capacity: Int
@@ -508,7 +512,7 @@ private actor QwenBoundedSpeechEventChannel {
         }
     }
 
-    func finish(throwing failure: QwenInterviewerSpeechError? = nil) {
+    func finish(throwing failure: LocalInterviewerSpeechError? = nil) {
         guard case .open = terminalState else { return }
         terminalState = failure.map(TerminalState.failed) ?? .finished
 
@@ -530,7 +534,7 @@ private actor QwenBoundedSpeechEventChannel {
     ) {
         switch terminalState {
         case .finished:
-            continuation.resume(throwing: QwenInterviewerSpeechError.generationFailed)
+            continuation.resume(throwing: LocalInterviewerSpeechError.generationFailed)
         case .failed(let failure):
             continuation.resume(throwing: failure)
         case .open:
@@ -614,7 +618,7 @@ private actor QwenBoundedSpeechEventChannel {
 
 /// The unfolding stream has no throwing `onCancel` overload. This relay keeps
 /// cancellation/deinitialization connected to the registered producer Task.
-private final class QwenGenerationCancellationRelay: @unchecked Sendable {
+private final class LocalGenerationCancellationRelay: @unchecked Sendable {
     private let lock = NSLock()
     private var task: Task<Void, Never>?
     private var cancellationRequested = false
@@ -640,17 +644,17 @@ private final class QwenGenerationCancellationRelay: @unchecked Sendable {
     }
 }
 
-struct MLXQwenSpeechModelLoader: QwenSpeechModelLoading {
-    func loadModel(from directory: URL) async throws -> any QwenStreamingSpeechModel {
+struct MLXQwenSpeechModelLoader: LocalSpeechModelLoading {
+    func loadModel(from directory: URL) async throws -> any LocalStreamingSpeechModel {
         let model = try await Qwen3TTSModel.fromModelDirectory(directory)
         guard model.sampleRate == 24_000 else {
-            throw QwenInterviewerSpeechError.incompatibleRuntime
+            throw LocalInterviewerSpeechError.incompatibleRuntime
         }
-        return MLXQwenStreamingSpeechModel(model: model)
+        return MLXLocalStreamingSpeechModel(model: model)
     }
 }
 
-final class MLXQwenStreamingSpeechModel: QwenStreamingSpeechModel, @unchecked Sendable {
+final class MLXLocalStreamingSpeechModel: LocalStreamingSpeechModel, @unchecked Sendable {
     let sampleRate: Int
     private let model: Qwen3TTSModel
 
@@ -662,7 +666,7 @@ final class MLXQwenStreamingSpeechModel: QwenStreamingSpeechModel, @unchecked Se
     func startGeneration(
         text: String,
         profile: InterviewerSpeechProfile
-    ) -> any QwenSpeechGeneration {
+    ) -> any LocalSpeechGeneration {
         let resolved = QwenResolvedGenerationOptions(profile: profile)
         var parameters = model.defaultGenerationParameters
         parameters.maxTokens = resolved.maxTokens
@@ -682,14 +686,14 @@ final class MLXQwenStreamingSpeechModel: QwenStreamingSpeechModel, @unchecked Se
             generationParameters: parameters,
             streamingInterval: resolved.streamingInterval
         )
-        return MLXQwenSpeechGeneration(handle: handle)
+        return MLXLocalSpeechGeneration(handle: handle)
     }
 }
 
 /// The handle is consumed by exactly one provider Task. Keeping the upstream
 /// iterator here avoids the library's `generateSamplesStream` proxy and retains
 /// the true producer handle needed for cancellation joins.
-private final class MLXQwenSpeechGeneration: QwenSpeechGeneration, @unchecked Sendable {
+private final class MLXLocalSpeechGeneration: LocalSpeechGeneration, @unchecked Sendable {
     private let handle: Qwen3TTSGenerationHandle
     private var iterator: AsyncThrowingStream<AudioGeneration, Error>.Iterator
 

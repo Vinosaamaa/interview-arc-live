@@ -25,7 +25,7 @@ public enum Qwen3TTSProvenance {
     public static let minimumFreeByteCount: Int64 = 4 * 1_024 * 1_024 * 1_024
     public static let destinationClass = "Live-specific Application Support model storage"
 
-    static let publicSnapshot = QwenSnapshotManifest(
+    static let publicSnapshot = LocalSpeechSnapshotManifest(
         repositoryID: modelID,
         revision: modelRevision,
         files: [
@@ -103,16 +103,16 @@ public enum Qwen3TTSProvenance {
     )
 }
 
-struct QwenSnapshotFile: Codable, Equatable, Sendable {
+struct LocalSpeechSnapshotFile: Codable, Equatable, Sendable {
     let path: String
     let byteCount: Int64
     let sha256: String
 }
 
-struct QwenSnapshotManifest: Equatable, Sendable {
+struct LocalSpeechSnapshotManifest: Equatable, Sendable {
     let repositoryID: String
     let revision: String
-    let files: [QwenSnapshotFile]
+    let files: [LocalSpeechSnapshotFile]
 
     var byteCount: Int64 {
         var total: Int64 = 0
@@ -130,6 +130,6 @@ struct QwenSnapshotManifest: Equatable, Sendable {
             .sorted { $0.path < $1.path }
             .map { "\($0.path)\u{0}\($0.byteCount)\u{0}\($0.sha256)" }
             .joined(separator: "\n")
-        return QwenSHA256.string(Data(canonical.utf8))
+        return LocalSpeechSHA256.string(Data(canonical.utf8))
     }
 }

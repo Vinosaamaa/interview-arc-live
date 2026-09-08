@@ -23,7 +23,7 @@
     <key>LSMinimumSystemVersion</key>
     <string>14.0</string>
     <key>NSMicrophoneUsageDescription</key>
-    <string>Interview Arc Live preserves your mock-interview audio locally and sends it to Groq for transcription only after you choose Stop or Transcribe.</string>
+    <string>Interview Arc Live records your mock interview locally. In Automatic mode, saved speech segments are sent to Groq for transcription when you pause speaking. You can pause the microphone at any time or use manual recording controls.</string>
     <key>NSPrincipalClass</key>
     <string>NSApplication</string>
 </dict>

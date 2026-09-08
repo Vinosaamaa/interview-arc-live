@@ -1,6 +1,7 @@
 import AppKit
 import Foundation
 import InterviewArcLiveCore
+import InterviewArcLiveLocalSpeechAdapter
 import InterviewArcLiveHostedClient
 import SwiftUI
 
@@ -93,7 +94,7 @@ struct SystemDesignRoomView: View {
             )
         }
         .confirmationDialog(
-            "Remove Mara’s local model?",
+            "Remove \(model.selectedSpeechEngine.displayName)’s local model?",
             isPresented: $isModelRemovalConfirmationPresented,
             titleVisibility: .visible
         ) {
@@ -112,7 +113,7 @@ struct SystemDesignRoomView: View {
                 windowWidth: geometry.size.width,
                 hasSpeechAttention: !model.isSpeechReady,
                 hasRoomAttention: model.errorMessage != nil
-                    || model.codexAttentionMessage != nil
+                    || model.interviewerAttentionMessage != nil
             )
             let statusPresentation = FullRoomHeaderStatusLayout.presentation(
                 headerPresentation: state.presentation,
@@ -225,7 +226,7 @@ struct SystemDesignRoomView: View {
             if model.needsGroqCredential {
                 Button("Add Groq key") { model.presentCredentialSetup() }
             }
-            Button("Check Codex") { Task { await model.checkCodex() } }
+            Button("Check \(model.interviewerProviderName)") { Task { await model.checkInterviewer() } }
         } label: {
             switch presentation.style {
             case .compact:
@@ -265,13 +266,24 @@ struct SystemDesignRoomView: View {
     private func personaMenu(isCompact: Bool) -> some View {
         Menu {
             Text("Mara · Staff Engineer")
+            Picker("Voice engine", selection: Binding(
+                get: { model.selectedSpeechEngine },
+                set: { engine in Task { await model.selectSpeechEngine(engine) } }
+            )) {
+                ForEach(LocalSpeechEngine.allCases, id: \.self) { engine in
+                    Text(engine.displayName).tag(engine)
+                }
+            }
+            .disabled(model.isSwitchingSpeechEngine || model.isWorking || model.isFinishingInterview)
+            if model.isSwitchingSpeechEngine { Text("Switching voice…") }
             Divider()
             Text(model.speechReadinessPresentation.title)
             Text(model.speechReadinessPresentation.detail)
             if model.speechReadinessPresentation.canDownload {
-                Button("Download local voice model") {
+                Button("Download \(model.selectedSpeechEngine.displayName) · \(model.selectedSpeechEngine.downloadSizeLabel)") {
                     model.startSpeechModelDownload()
                 }
+                .disabled(!model.canStartSpeechModelDownload || model.isSwitchingSpeechEngine)
             }
             if model.speechReadinessPresentation.canCancel {
                 Button("Cancel model download") {
@@ -284,9 +296,10 @@ struct SystemDesignRoomView: View {
                 }
             }
             if model.speechReadinessPresentation.canRemove {
-                Button("Remove local voice model", role: .destructive) {
+                Button("Remove \(model.selectedSpeechEngine.displayName) model", role: .destructive) {
                     isModelRemovalConfirmationPresented = true
                 }
+                .disabled(model.isSwitchingSpeechEngine || model.isSpeechModelActionInFlight)
             }
         } label: {
             HStack(spacing: 7) {
@@ -304,7 +317,7 @@ struct SystemDesignRoomView: View {
         }
         .menuStyle(.borderlessButton)
         .accessibilityLabel(FullRoomHeaderAccessibility.personaLabel)
-        .accessibilityValue(model.speechReadinessPresentation.title)
+        .accessibilityValue("\(model.selectedSpeechEngine.displayName) · \(model.speechReadinessPresentation.title)")
     }
 
     private func privacyStatus(isCompact: Bool) -> some View {
@@ -351,7 +364,7 @@ struct SystemDesignRoomView: View {
     }
 
     private var headerRoomStatusColor: Color {
-        model.errorMessage == nil && model.codexAttentionMessage == nil
+        model.errorMessage == nil && model.interviewerAttentionMessage == nil
             ? LivePalette.interviewer
             : LivePalette.warning
     }
@@ -393,8 +406,8 @@ struct SystemDesignRoomView: View {
             if let errorMessage = model.errorMessage {
                 recoveryBanner(errorMessage)
             }
-            if let codexMessage = model.codexAttentionMessage {
-                codexReadinessBanner(codexMessage)
+            if let interviewerMessage = model.interviewerAttentionMessage {
+                interviewerReadinessBanner(interviewerMessage)
             }
             transcript
         }
@@ -625,7 +638,9 @@ struct SystemDesignRoomView: View {
                                     design: .rounded
                                 )
                             )
-                        Text("Record one or more segments here. Working pauses stay in this Candidate Turn until you choose Hand off.")
+                        Text(model.turnMode == .continuousConversation
+                        ? "Speak naturally. Live keeps pauses inside your answer. Use Hold floor while thinking or drawing."
+                        : "Record one or more segments here. Working pauses stay in this Candidate Turn until you choose Hand off.")
                             .font(.system(.body, design: .rounded))
                             .foregroundStyle(LivePalette.muted)
                             .lineSpacing(3)
@@ -1111,7 +1126,7 @@ struct SystemDesignRoomView: View {
             .help(model.actionTitle)
             }
 
-            if model.canStopRecording {
+            if model.canStopRecording && !model.showsAutomaticMicrophoneControl {
                 headerDivider
                 Button {
                     Task { await model.stopRecording() }
@@ -1130,14 +1145,14 @@ struct SystemDesignRoomView: View {
                 .accessibilityIdentifier(FullRoomAccessibility.recordingAction)
                 .accessibilityLabel("Pause recording")
                 .help("Pause recording")
-            } else if model.showsHoldFloorControl {
+            } else if model.showsAutomaticMicrophoneControl {
                 headerDivider
                 Button {
-                    Task { await model.pauseMicrophone() }
+                    Task { await model.toggleMicrophone() }
                 } label: {
                     floorActionLabel(
-                        "Pause",
-                        systemImage: "pause.fill",
+                        model.microphoneActionTitle,
+                        systemImage: model.microphoneActionIcon,
                         compact: compact,
                         wideMinimumWidth: 86
                     )
@@ -1147,8 +1162,8 @@ struct SystemDesignRoomView: View {
                 .disabled(model.isWorking)
                 .keyboardShortcut(.space, modifiers: [.command])
                 .accessibilityIdentifier(FullRoomAccessibility.recordingAction)
-                .accessibilityLabel("Pause microphone")
-                .help("Pause microphone")
+                .accessibilityLabel("\(model.microphoneActionTitle) microphone")
+                .help("\(model.microphoneActionTitle) microphone")
             } else if model.showsRecordControl {
                 headerDivider
                 Button {
@@ -1305,10 +1320,10 @@ struct SystemDesignRoomView: View {
         }
     }
 
-    private func codexReadinessBanner(_ message: String) -> some View {
+    private func interviewerReadinessBanner(_ message: String) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             VStack(alignment: .leading, spacing: 2) {
-                Label(model.codexStatusTitle, systemImage: model.codexStatusIcon)
+                Label(model.interviewerStatusTitle, systemImage: model.interviewerStatusIcon)
                     .font(.system(.callout, design: .rounded, weight: .semibold))
                     .foregroundStyle(LivePalette.warning)
                 Text(message)
@@ -1316,12 +1331,12 @@ struct SystemDesignRoomView: View {
                     .foregroundStyle(LivePalette.muted)
                     .fixedSize(horizontal: false, vertical: true)
             }
-            Button("Check Codex") {
-                Task { await model.checkCodex() }
+            Button("Check \(model.interviewerProviderName)") {
+                Task { await model.checkInterviewer() }
             }
             .buttonStyle(.bordered)
             .controlSize(.small)
-            .disabled(model.isCheckingCodex)
+            .disabled(model.isCheckingInterviewer)
             .accessibilityHint("Runs a private local compatibility and sign-in check")
         }
         .padding(.horizontal, 16)

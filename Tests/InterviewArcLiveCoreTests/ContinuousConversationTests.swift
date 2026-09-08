@@ -205,6 +205,92 @@ final class ContinuousConversationTests: XCTestCase {
         )
     }
 
+    func testSelectingAutomaticAfterManualRearmsListening() async throws {
+        let segmenter = DeterministicAcousticSegmenter()
+        let coordinator = try await makeCaptureCoordinator(segmenter: segmenter)
+        _ = try await coordinator.giveCandidateFloor(commandID: CommandID("mode-floor"))
+        _ = try await coordinator.setTurnMode(.manual, commandID: CommandID("manual"))
+        XCTAssertEqual(segmenter.mode, .disarmed)
+        _ = try await coordinator.setTurnMode(.continuousConversation, commandID: CommandID("automatic"))
+        XCTAssertEqual(segmenter.mode, .candidateListening)
+    }
+
+    func testCapturePreparationIsDurablyAuthorizedAndNotRepeatedOnReplay() async throws {
+        let store = InMemorySessionManifestStore()
+        let recorder = CountingSegmentRecorder(capture: try capturedAudio(fileName: "capture-gate.m4a"))
+        let coordinator = try await makeCaptureCoordinator(store: store, recorder: recorder)
+        let observations = CapturePreparationObservations()
+        _ = try await coordinator.giveCandidateFloor(commandID: CommandID("gate-floor"))
+        coordinator.setCaptureHandlers(validate: {}, prepare: {
+            observations.preparations += 1
+            let manifest = try await store.load(sessionID: coordinator.snapshot.sessionID)
+            XCTAssertEqual(manifest?.segments.last?.lifecycle, .captureAuthorized)
+            XCTAssertEqual(recorder.beginCount, 0)
+        })
+        _ = try await coordinator.beginSegment(commandID: CommandID("gate-capture"))
+        _ = try await coordinator.beginSegment(commandID: CommandID("gate-capture"))
+        XCTAssertEqual(observations.preparations, 1)
+        XCTAssertEqual(recorder.beginCount, 1)
+    }
+
+    private func makeCaptureCoordinator(
+        segmenter: DeterministicAcousticSegmenter = DeterministicAcousticSegmenter(),
+        store: InMemorySessionManifestStore = InMemorySessionManifestStore(),
+        recorder: CountingSegmentRecorder? = nil
+    ) async throws -> SegmentSpeechCoordinator {
+        try await SegmentSpeechCoordinator.open(
+            sessionID: SessionID("capture-gate"), activityID: "capture-gate",
+            activityPrompt: fixturePrompt(), manifestStore: store,
+            interviewerRuntime: SilentInterviewerRuntime(),
+            recording: recorder ?? CountingSegmentRecorder(capture: capturedAudio(fileName: "capture.m4a")),
+            transcriber: OneShotTranscriber(body: "A complete answer."),
+            credentialReader: FixedCredentialReader(value: "synthetic-key"),
+            acousticSegmenter: segmenter)
+    }
+
+    func testAutomaticSpeechBoundaryDeliversReplyAndRearmsWithoutButtons() async throws {
+        let segmenter = DeterministicAcousticSegmenter()
+        let deliveries = DeliveredTurnFixture()
+        let coordinator = try await SegmentSpeechCoordinator.open(
+            sessionID: SessionID("automatic-delivery"),
+            activityID: "automatic-delivery",
+            activityPrompt: try fixturePrompt(),
+            manifestStore: InMemorySessionManifestStore(),
+            interviewerRuntime: SilentInterviewerRuntime(),
+            recording: CountingSegmentRecorder(capture: try capturedAudio(fileName: "automatic.m4a")),
+            transcriber: OneShotTranscriber(body: "The queue provides durable retries."),
+            credentialReader: FixedCredentialReader(value: "synthetic-key"),
+            semanticEndpointClassifier: FixedEndpointClassifier(proposal: .init(
+                decision: .likelyEnd, reasonCode: .answerResolvesQuestion)),
+            endpointGraceScheduler: ImmediateGraceFixture(),
+            acousticSegmenter: segmenter
+        )
+        coordinator.setInterviewerTurnHandler { [weak coordinator] next in
+            deliveries.snapshots.append(next)
+            await coordinator?.noteInterviewerPlaybackFinished()
+        }
+        await coordinator.enableContinuousListening()
+        _ = try await coordinator.requestOpeningInterviewerTurn(commandID: CommandID("opening"))
+        XCTAssertEqual(deliveries.snapshots.count, 1)
+        XCTAssertEqual(segmenter.mode, .candidateListening)
+
+        segmenter.emit(.speechStarted)
+        try await waitUntil {
+            coordinator.snapshot.segments.contains { $0.lifecycle == .recording }
+        }
+        segmenter.emit(.speechEnded)
+        try await waitUntil {
+            deliveries.snapshots.count == 2 && coordinator.snapshot.phase == .candidateFloor
+        }
+        XCTAssertEqual(deliveries.snapshots.last?.turns.count, 3)
+        XCTAssertEqual(segmenter.mode, .candidateListening)
+        _ = try await coordinator.requestOpeningInterviewerTurn(commandID: CommandID("opening"))
+        XCTAssertEqual(deliveries.snapshots.count, 2, "A replay cannot deliver old speech twice")
+        coordinator.setInterviewerTurnHandler { next in deliveries.snapshots.append(next) }
+        _ = try await coordinator.resumePendingWork()
+        XCTAssertEqual(deliveries.snapshots.count, 2, "Binding and recovery cannot replay history")
+    }
+
     func testResumePendingWorkDoesNotAutoStartTheMicrophone() async throws {
         let store = InMemorySessionManifestStore()
         let sessionID = SessionID("cc-resume")
@@ -361,7 +447,8 @@ final class ContinuousConversationTests: XCTestCase {
             acousticSegmenter: segmenter,
             boundaryTracer: tracer
         )
-        coordinator.setInterviewerPlaybackStopper { commandID in
+        coordinator.setInterviewerPlaybackStopper { commandID, reason in
+            XCTAssertEqual(reason, .bargeIn)
             await stopper.stop(commandID: commandID)
         }
         return BargeInFixture(
@@ -653,4 +740,18 @@ private actor FixedEndpointClassifier: SemanticEndpointClassifying {
     ) async throws -> SemanticEndpointProposal {
         proposal
     }
+}
+
+@MainActor
+private final class DeliveredTurnFixture {
+    var snapshots: [InterviewRoomSnapshot] = []
+}
+
+private struct ImmediateGraceFixture: EndpointGraceScheduling {
+    func waitForGrace() async throws {}
+}
+
+@MainActor
+private final class CapturePreparationObservations {
+    var preparations = 0
 }

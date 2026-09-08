@@ -3,17 +3,10 @@ import Combine
 import CryptoKit
 import Foundation
 import InterviewArcLiveCore
-import InterviewArcLiveCodexAdapter
 import InterviewArcLiveHostedClient
-import InterviewArcLiveQwenAdapter
+import InterviewArcLiveLocalSpeechAdapter
 import InterviewArcLiveSpeechOutputAdapter
 import InterviewArcLiveVoiceAdapter
-
-protocol LiveCodexInterviewerRuntime: InterviewerRuntime {
-    func preflight() async -> CodexAppServerReadiness
-}
-
-extension CodexAppServerInterviewerRuntime: LiveCodexInterviewerRuntime {}
 
 @MainActor
 protocol LiveInterviewerSpeechMuteControlling: AnyObject {
@@ -121,11 +114,15 @@ final class SystemDesignRoomModel: ObservableObject {
     }
     @Published private(set) var statusMessage = "Restoring local session…"
     @Published private(set) var errorMessage: String?
-    @Published private(set) var codexReadiness: CodexAppServerReadiness?
-    @Published private(set) var isCheckingCodex = false
+    @Published private(set) var isMicrophonePaused = true
+    private var lastAcousticErrorMessage: String?
+    @Published private(set) var interviewerReadiness: InterviewerReadiness?
+    @Published private(set) var isCheckingInterviewer = false
     @Published private(set) var isInterviewerRequestInFlight = false
     @Published private(set) var speechReadiness: InterviewerSpeechReadiness = .notInstalled
     @Published private(set) var isSpeechMuted: Bool
+    @Published private(set) var selectedSpeechEngine: LocalSpeechEngine
+    @Published private(set) var isSwitchingSpeechEngine = false
     @Published private(set) var isSpeechModelActionInFlight = false
     @Published private(set) var isSpeechControlActionInFlight = false
     @Published private(set) var playingUtteranceID: InterviewerUtteranceID?
@@ -182,15 +179,19 @@ final class SystemDesignRoomModel: ObservableObject {
     private static let fallbackSessionID = SessionID("local-system-design-tracer-v2")
     private let activityPrompt: ActivityPrompt
     private let credentialStore: LiveGroqCredentialStore
-    private let codexRuntime: any LiveCodexInterviewerRuntime
+    private let interviewerRuntime: any InterviewerProvider
     private let speechDependencies: LiveInterviewerSpeechDependencies?
     private let preferences: UserDefaults
+    private let speechProviderFactory: (LocalSpeechEngine) throws -> any InterviewerSpeechProvider
+    private static let speechEnginePreferenceKey = "live.interviewer-speech.engine"
     private var boardArtifactStore: PrivateBoardArtifactStore?
     private let boardRenderer: DeterministicBoardRenderer
     private let hostedController: HostedPracticeController?
     private var hostedSnapshotObservation: AnyCancellable?
+    private var hostedPairSyncTask: Task<Void, Error>?
+    private var hostedPairSyncGeneration = 0
     private var credentialState: CredentialState = .checking
-    private var errorWasCodexFailure = false
+    private var errorWasInterviewerFailure = false
     private var coordinator: SegmentSpeechCoordinator?
     private var segmentRecorder: VoiceCoreSegmentRecorder?
     private var interviewerSpeechCoordinator: InterviewerSpeechCoordinator?
@@ -211,20 +212,28 @@ final class SystemDesignRoomModel: ObservableObject {
 
     init(
         credentialStore: LiveGroqCredentialStore = LiveGroqCredentialStore(),
-        codexRuntime: (any LiveCodexInterviewerRuntime)? = nil,
+        interviewerRuntime: (any InterviewerProvider)? = nil,
         activityPrompt: ActivityPrompt? = nil,
         speechDependencies: LiveInterviewerSpeechDependencies? = nil,
         preferences: UserDefaults = .standard,
+        speechProviderFactory: @escaping (LocalSpeechEngine) throws -> any InterviewerSpeechProvider = {
+            try LocalInterviewerSpeechProvider(engine: $0)
+        },
         initialCoordinator: SegmentSpeechCoordinator? = nil,
+        initialSpeechCoordinator: InterviewerSpeechCoordinator? = nil,
         boardArtifactStore: PrivateBoardArtifactStore? = nil,
         boardRenderer: DeterministicBoardRenderer = DeterministicBoardRenderer(),
         hostedController: HostedPracticeController? = nil
     ) {
         self.credentialStore = credentialStore
-        self.codexRuntime = codexRuntime ?? Self.makeDefaultCodexRuntime()
+        self.interviewerRuntime = interviewerRuntime ?? LiveInterviewerProviders.makeDefault()
         self.activityPrompt = activityPrompt ?? Self.tracerActivityPrompt
         self.speechDependencies = speechDependencies
         self.preferences = preferences
+        self.speechProviderFactory = speechProviderFactory
+        selectedSpeechEngine = LocalSpeechEngine(
+            rawValue: preferences.string(forKey: Self.speechEnginePreferenceKey) ?? ""
+        ) ?? .qwen
         self.boardArtifactStore = boardArtifactStore
         self.boardRenderer = boardRenderer
         self.hostedController = hostedController
@@ -235,8 +244,12 @@ final class SystemDesignRoomModel: ObservableObject {
         selectedWorkSurface = SystemDesignWorkSurfacePane(
             rawValue: preferences.string(forKey: Self.workSurfacePreferenceKey) ?? ""
         ) ?? .board
+        if let initialSpeechCoordinator {
+            interviewerSpeechCoordinator = initialSpeechCoordinator
+            bindInterviewerSpeech(initialSpeechCoordinator)
+        }
         if let initialCoordinator {
-            publish(initialCoordinator.snapshot)
+            bindConversation(initialCoordinator)
         }
         if let hostedController {
             hostedSnapshot = hostedController.snapshot
@@ -380,32 +393,32 @@ final class SystemDesignRoomModel: ObservableObject {
         await waitForLocalPersistence()
     }
 
-    var isCodexReady: Bool {
-        codexReadiness == .ready
+    var interviewerProviderName: String { interviewerRuntime.providerName }
+
+    var isInterviewerReady: Bool {
+        interviewerReadiness == .ready
     }
 
-    var codexStatusTitle: String {
-        if isCheckingCodex || codexReadiness == nil {
-            return "Checking Codex"
+    var interviewerStatusTitle: String {
+        if isCheckingInterviewer || interviewerReadiness == nil {
+            return "Checking \(interviewerProviderName)"
         }
-        switch codexReadiness {
-        case .ready: return "Codex ready"
-        case .missing: return "Codex not found"
-        case .incompatible: return "Codex update required"
-        case .unauthenticated: return "Codex sign-in required"
-        case .transportFailure: return "Codex unavailable"
-        case nil: return "Checking Codex"
+        switch interviewerReadiness {
+        case .ready: return "\(interviewerProviderName) ready"
+        case .missing: return "\(interviewerProviderName) not found"
+        case .unauthenticated: return "\(interviewerProviderName) sign-in required"
+        case .transportFailure: return "\(interviewerProviderName) unavailable"
+        case nil: return "Checking \(interviewerProviderName)"
         }
     }
 
-    var codexStatusIcon: String {
-        if isCheckingCodex || codexReadiness == nil {
+    var interviewerStatusIcon: String {
+        if isCheckingInterviewer || interviewerReadiness == nil {
             return "hourglass"
         }
-        switch codexReadiness {
+        switch interviewerReadiness {
         case .ready: return "checkmark.circle.fill"
         case .missing: return "questionmark.circle.fill"
-        case .incompatible: return "arrow.down.circle.fill"
         case .unauthenticated:
             return "person.crop.circle.badge.exclamationmark"
         case .transportFailure: return "exclamationmark.triangle.fill"
@@ -413,19 +426,17 @@ final class SystemDesignRoomModel: ObservableObject {
         }
     }
 
-    var codexAttentionMessage: String? {
-        guard !isCheckingCodex else { return nil }
-        switch codexReadiness {
+    var interviewerAttentionMessage: String? {
+        guard !isCheckingInterviewer else { return nil }
+        switch interviewerReadiness {
         case .ready, nil:
             return nil
         case .missing:
-            return "Install or update ChatGPT or Codex, then check again. Your recorded segments remain saved."
-        case .incompatible(_, let requiredVersion):
-            return "This build requires \(requiredVersion). Update ChatGPT or Codex, then check again."
+            return "Install or configure \(interviewerProviderName), then check again. Your recorded segments remain saved."
         case .unauthenticated:
-            return "Open ChatGPT or Codex and sign in, then check again. Your recorded segments remain saved."
+            return "Open \(interviewerProviderName) and sign in, then check again. Your recorded segments remain saved."
         case .transportFailure:
-            return "Codex could not complete its local readiness check. Check again; your interview draft is unchanged."
+            return "\(interviewerProviderName) could not complete its readiness check. Check again; your interview draft is unchanged."
         }
     }
 
@@ -435,7 +446,10 @@ final class SystemDesignRoomModel: ObservableObject {
 
     var speechReadinessPresentation: InterviewerSpeechReadinessPresentation {
         InterviewerSpeechReadinessPresentation.make(
-            readiness: speechReadiness
+            readiness: speechReadiness,
+            engineName: selectedSpeechEngine.displayName,
+            downloadSize: selectedSpeechEngine.downloadSizeLabel,
+            minimumFreeSpace: selectedSpeechEngine.minimumFreeSpaceLabel
         )
     }
 
@@ -514,6 +528,14 @@ final class SystemDesignRoomModel: ObservableObject {
         snapshot?.isFloorHeld == true
     }
 
+    var showsAutomaticMicrophoneControl: Bool {
+        turnMode == .continuousConversation && snapshot?.phase == .candidateFloor
+            && hasUsableGroqCredential && isHostedWritable
+    }
+
+    var microphoneActionTitle: String { isMicrophonePaused ? "Resume" : "Pause" }
+    var microphoneActionIcon: String { isMicrophonePaused ? "mic.fill" : "pause.fill" }
+
     var showsHoldFloorControl: Bool {
         snapshot?.turnMode == .continuousConversation
             && snapshot?.phase == .candidateFloor
@@ -547,7 +569,7 @@ final class SystemDesignRoomModel: ObservableObject {
 
     var showsManualCaptureRecovery: Bool {
         guard snapshot?.turnMode == .continuousConversation else { return false }
-        if !hasUsableGroqCredential { return true }
+        if !hasUsableGroqCredential || coordinator?.acousticFailure != nil { return true }
         return draftSegments.contains {
             $0.lifecycle == .failed
                 || ($0.lifecycle == .audioReady && $0.selectedCandidate == nil)
@@ -849,6 +871,13 @@ final class SystemDesignRoomModel: ObservableObject {
             candidateNotesSavePresentation = .error(
                 "The latest Notes text is not durable yet. Quit was cancelled so you can retry."
             )
+            return false
+        }
+        do {
+            try await coordinator.prepareForTermination(commandID: commandID("quit-speech"))
+            publish(coordinator.snapshot)
+        } catch {
+            errorMessage = "The current recording could not be preserved. Quit was cancelled so you can retry."
             return false
         }
         return true
@@ -1183,9 +1212,9 @@ final class SystemDesignRoomModel: ObservableObject {
             let hasSelected = draftSegments.contains {
                 $0.lifecycle != .excluded && $0.selectedCandidate != nil
             }
-            return isCodexReady && hasSelected && !unresolved
+            return isInterviewerReady && hasSelected && !unresolved
         case .interviewerProcessing:
-            return isCodexReady
+            return isInterviewerReady
         case .interviewerTurn:
             return true
         case .ready, .completed:
@@ -1213,9 +1242,9 @@ final class SystemDesignRoomModel: ObservableObject {
     func open() async {
         guard coordinator == nil, !isWorking else { return }
         isWorking = true
-        isCheckingCodex = true
+        isCheckingInterviewer = true
         errorMessage = nil
-        errorWasCodexFailure = false
+        errorWasInterviewerFailure = false
         defer {
             isWorking = false
             LiveDebugTrace.event(
@@ -1224,7 +1253,7 @@ final class SystemDesignRoomModel: ObservableObject {
             )
         }
 
-        async let codexCheck = codexRuntime.preflight()
+        async let interviewerCheck = interviewerRuntime.preflight()
 
         var launchPrompt = activityPrompt
         var launchSessionID = Self.fallbackSessionID
@@ -1239,22 +1268,22 @@ final class SystemDesignRoomModel: ObservableObject {
             case .signedOut:
                 isLiveIntegrationSetupPresented = true
                 statusMessage = "Connect Interview Arc to open Today’s System Design activity"
-                isCheckingCodex = false
-                _ = await codexCheck
+                isCheckingInterviewer = false
+                _ = await interviewerCheck
                 return
             case .noOpenSystemDesignActivity:
                 statusMessage = "No System Design activity is open in Interview Arc Today"
                 errorMessage = "Add a System Design activity to Today, then reopen this room."
-                isCheckingCodex = false
-                _ = await codexCheck
+                isCheckingInterviewer = false
+                _ = await interviewerCheck
                 return
             case .offline, .recoveryRequired:
                 statusMessage = hostedController.errorMessage
                     ?? "Hosted recovery needs attention"
                 errorMessage = hostedController.errorMessage
                 if hostedSnapshot.activity == nil {
-                    isCheckingCodex = false
-                    _ = await codexCheck
+                    isCheckingInterviewer = false
+                    _ = await interviewerCheck
                     return
                 }
             case .loading:
@@ -1278,8 +1307,8 @@ final class SystemDesignRoomModel: ObservableObject {
                 } catch {
                     statusMessage = "Hosted activity is incompatible"
                     errorMessage = "The selected System Design activity has an invalid prompt. Fix it in Interview Arc."
-                    isCheckingCodex = false
-                    _ = await codexCheck
+                    isCheckingInterviewer = false
+                    _ = await interviewerCheck
                     return
                 }
             }
@@ -1295,31 +1324,22 @@ final class SystemDesignRoomModel: ObservableObject {
 
         do {
             let conversationEngine = AVAudioEngine()
+            let acousticInput = VoiceCoreAcousticSegmenter(engine: conversationEngine, sharesEngine: true)
             let opened = try await SegmentSpeechCoordinator.openLocal(
                 sessionID: launchSessionID,
                 activityID: launchActivityID,
                 activityPrompt: launchPrompt,
-                interviewerRuntime: codexRuntime,
-                recording: makeBoundSegmentRecorder(),
+                interviewerRuntime: interviewerRuntime,
+                recording: makeBoundSegmentRecorder(acousticInput: acousticInput),
                 transcriber: VoiceCoreSegmentTranscriber(),
                 credentialReader: credentialStore,
                 semanticEndpointClassifier: GroqEndpointClassifier(
                     credentialReader: credentialStore
                 ),
-                acousticSegmenter: VoiceCoreAcousticSegmenter(
-                    engine: conversationEngine,
-                    sharesEngine: true
-                )
+                acousticSegmenter: acousticInput
             )
             coordinator = opened
-            opened.setSnapshotHandler { [weak self, weak opened] nextSnapshot in
-                guard let self,
-                      let opened,
-                      self.coordinator === opened else {
-                    return
-                }
-                self.publish(nextSnapshot)
-            }
+            bindConversation(opened)
 
             var restored = opened.snapshot
             do {
@@ -1328,7 +1348,11 @@ final class SystemDesignRoomModel: ObservableObject {
                 restored = opened.snapshot
                 errorMessage = "A recording recovery needs attention. Preserved evidence remains visible below."
             }
-            if restored.turnMode == .continuousConversation {
+            await attachInterviewerSpeech(
+                to: opened,
+                conversationEngine: conversationEngine
+            )
+            if restored.turnMode == .continuousConversation, isHostedWritable {
                 await opened.enableContinuousListening()
             }
             if restored.phase == .ready {
@@ -1340,24 +1364,21 @@ final class SystemDesignRoomModel: ObservableObject {
                     )
                 } catch {
                     restored = opened.snapshot
-                    errorWasCodexFailure = applyCodexFailure(error)
+                    errorWasInterviewerFailure = applyInterviewerFailure(error)
                     errorMessage = safeMessage(for: error)
                 }
                 isInterviewerRequestInFlight = false
             }
             publish(restored)
             await recoverBoardArtifacts(in: restored.board)
-            await attachInterviewerSpeech(
-                to: opened,
-                conversationEngine: conversationEngine
-            )
+            await synchronizeCompletedConversation(restored)
         } catch {
             statusMessage = "Local session unavailable"
             errorMessage = safeMessage(for: error)
         }
 
-        applyCodexReadiness(await codexCheck)
-        isCheckingCodex = false
+        applyInterviewerReadiness(await interviewerCheck)
+        isCheckingInterviewer = false
     }
 
     /// Audits persisted export bundles during app restore. Recovery is
@@ -1414,15 +1435,15 @@ final class SystemDesignRoomModel: ObservableObject {
         }
     }
 
-    func checkCodex() async {
-        guard !isCheckingCodex else { return }
-        isCheckingCodex = true
-        defer { isCheckingCodex = false }
+    func checkInterviewer() async {
+        guard !isCheckingInterviewer else { return }
+        isCheckingInterviewer = true
+        defer { isCheckingInterviewer = false }
 
-        applyCodexReadiness(await codexRuntime.preflight())
+        applyInterviewerReadiness(await interviewerRuntime.preflight())
         LiveDebugTrace.event(
-            "codex.preflight",
-            ["ok": isCodexReady ? "true" : "false"]
+            "interviewer.preflight",
+            ["ok": isInterviewerReady ? "true" : "false"]
         )
     }
 
@@ -1451,11 +1472,25 @@ final class SystemDesignRoomModel: ObservableObject {
         errorMessage = hostedController.errorMessage
         if hostedSnapshot.activity != nil, coordinator == nil {
             await open()
+        } else if let snapshot {
+            await synchronizeCompletedConversation(snapshot)
+            if isHostedWritable, turnMode == .continuousConversation {
+                await coordinator?.enableContinuousListening()
+                await interviewerSpeechCoordinator?.waitUntilIdle()
+                await coordinator?.noteInterviewerPlaybackFinished()
+            }
         }
     }
 
     func prepareHostedForTermination() async -> Bool {
         guard let hostedController else { return true }
+        if let snapshot {
+            do { try await syncHostedPairs(from: snapshot) }
+            catch {
+                errorMessage = "Conversation sync is still pending. Refresh Interview Arc before retrying Quit."
+                return false
+            }
+        }
         let prepared = await hostedController.prepareForTermination()
         hostedSnapshot = hostedController.snapshot
         if !prepared {
@@ -1561,22 +1596,6 @@ final class SystemDesignRoomModel: ObservableObject {
                 commandID: commandID("begin-segment")
             )
             publish(updated)
-            if let hostedController, !hostedTimerIsRunning {
-                do {
-                    try await hostedController.startTimer()
-                    hostedSnapshot = hostedController.snapshot
-                } catch {
-                    // Capture already started and is locally durable. Stop and
-                    // preserve its source bytes rather than leaving a hidden
-                    // microphone or a false hosted timer.
-                    let preserved = try await coordinator.finalizeSegment(
-                        commandID: commandID("hosted-timer-start-failed")
-                    )
-                    publish(preserved)
-                    hostedSnapshot = hostedController.snapshot
-                    errorMessage = "Recording was preserved, but the hosted timer could not start. Refresh Interview Arc before recording again."
-                }
-            }
         } catch {
             publish(coordinator.snapshot)
             errorMessage = safeMessage(for: error)
@@ -1738,6 +1757,24 @@ final class SystemDesignRoomModel: ObservableObject {
         }
     }
 
+    func toggleMicrophone() async {
+        guard let coordinator, !isWorking else { return }
+        guard isMicrophonePaused else { await pauseMicrophone(); return }
+        do { try requireHostedCaptureAuthority(for: coordinator) }
+        catch { return }
+        isWorking = true
+        defer { isWorking = false }
+        await coordinator.enableContinuousListening()
+        if playingUtteranceID != nil || snapshot?.interviewerUtterances.contains(where: {
+            $0.lifecycle == .generating || $0.lifecycle == .speaking
+        }) == true {
+            await coordinator.noteInterviewerPlaybackStarted()
+        } else {
+            await coordinator.noteInterviewerPlaybackFinished()
+        }
+        publish(coordinator.snapshot)
+    }
+
     func pauseMicrophone() async {
         guard let coordinator, !isWorking else { return }
         isWorking = true
@@ -1805,7 +1842,7 @@ final class SystemDesignRoomModel: ObservableObject {
 
         isWorking = true
         errorMessage = nil
-        errorWasCodexFailure = false
+        errorWasInterviewerFailure = false
         defer {
             isInterviewerRequestInFlight = false
             isWorking = false
@@ -1848,12 +1885,9 @@ final class SystemDesignRoomModel: ObservableObject {
                 return
             }
             publish(updated)
-            try await syncHostedPairs(from: updated)
-            await interviewerSpeechCoordinator?
-                .observeNewlyPersistedSnapshot(updated)
         } catch {
             publish(coordinator.snapshot)
-            errorWasCodexFailure = applyCodexFailure(error)
+            errorWasInterviewerFailure = applyInterviewerFailure(error)
             errorMessage = safeMessage(for: error)
         }
     }
@@ -1939,9 +1973,10 @@ final class SystemDesignRoomModel: ObservableObject {
         }
 
         do {
+            try await coordinator.prepareForTermination(commandID: commandID("end-speech"))
             await waitForBoardPersistence()
-            if snapshot.phase != .completed {
-                try await syncHostedPairs(from: snapshot)
+            if coordinator.snapshot.phase != .completed {
+                try await syncHostedPairs(from: coordinator.snapshot)
             }
             if let hostedController {
                 if let hostedNextActivityID {
@@ -2013,9 +2048,107 @@ final class SystemDesignRoomModel: ObservableObject {
         }
     }
 
+    private func bindConversation(_ conversation: SegmentSpeechCoordinator) {
+        conversation.setAcousticFailureHandler { [weak self, weak conversation] failure in
+            guard let self, let conversation, self.coordinator === conversation else { return }
+            self.isMicrophonePaused = !conversation.isContinuousListeningEnabled || failure != nil
+            guard let failure else {
+                if self.errorMessage == self.lastAcousticErrorMessage { self.errorMessage = nil }
+                self.lastAcousticErrorMessage = nil
+                return
+            }
+            switch failure {
+            case .microphonePermissionDenied:
+                self.errorMessage = "Allow Interview Arc Live in System Settings → Privacy & Security → Microphone, then resume listening."
+            case .echoCancellationUnavailable:
+                self.errorMessage = "This input cannot cancel speaker echo. Use Stop speech to interrupt Mara; listening resumes after playback."
+            case .inputUnavailable:
+                self.errorMessage = "Live could not start the microphone. Check the selected input device, then resume listening."
+            case .captureBufferExceeded:
+                self.errorMessage = "Recording setup took too long. Your earlier audio is saved; reconnect Interview Arc and retry this segment."
+            }
+            self.lastAcousticErrorMessage = self.errorMessage
+        }
+        conversation.setCaptureHandlers(
+            validate: { [weak self, weak conversation] in
+                guard let self, let conversation else { throw CancellationError() }
+                try self.requireHostedCaptureAuthority(for: conversation)
+            },
+            prepare: { [weak self, weak conversation] in
+                guard let self, let conversation else { throw CancellationError() }
+                try self.requireHostedCaptureAuthority(for: conversation)
+                guard let hosted = self.hostedController else { return }
+                if !self.hostedTimerIsRunning {
+                    do {
+                        try await hosted.startTimer()
+                        self.hostedSnapshot = hosted.snapshot
+                    } catch {
+                        self.errorMessage = "The website timer could not start. Refresh Interview Arc before recording."
+                        throw error
+                    }
+                }
+                try self.requireHostedCaptureAuthority(for: conversation)
+            }
+        )
+        conversation.setSnapshotHandler { [weak self, weak conversation] next in
+            guard let self, let conversation, self.coordinator === conversation else { return }
+            self.publish(next)
+        }
+        conversation.setInterviewerTurnHandler { [weak self, weak conversation] next in
+            guard let self, let conversation, self.coordinator === conversation else { return }
+            self.publish(next)
+            if let speech = self.interviewerSpeechCoordinator {
+                await speech.observeNewlyPersistedSnapshot(next)
+            } else {
+                await conversation.noteInterviewerPlaybackFinished()
+            }
+            guard self.coordinator === conversation else { return }
+            await self.synchronizeCompletedConversation(next)
+        }
+    }
+
+    private func requireHostedCaptureAuthority(for conversation: SegmentSpeechCoordinator) throws {
+        guard coordinator === conversation else { throw CancellationError() }
+        guard hostedController != nil else { return }
+        guard hostedSnapshot.connection == .writable,
+              hostedSnapshot.activityID == conversation.snapshot.activityID else {
+            errorMessage = "Reconnect Interview Arc before recording. Your local conversation is saved."
+            throw HostedPracticeSessionError.leaseUnavailable
+        }
+    }
+
+    private func synchronizeCompletedConversation(_ snapshot: InterviewRoomSnapshot) async {
+        let syncFailure = "Your conversation is saved on this Mac, but website sync needs attention. Refresh Interview Arc before retrying or ending."
+        do {
+            try await syncHostedPairs(from: snapshot)
+            if errorMessage == syncFailure { errorMessage = nil }
+        } catch {
+            errorMessage = syncFailure
+        }
+    }
+
     private func syncHostedPairs(from snapshot: InterviewRoomSnapshot) async throws {
+        guard hostedController != nil else { return }
+        let previous = hostedPairSyncTask
+        hostedPairSyncGeneration += 1
+        let generation = hostedPairSyncGeneration
+        let task = Task { @MainActor [weak self] in
+            // Join any previous pair upload. A later explicit retry may recover
+            // after its failure; it must not inherit a permanently failed tail.
+            _ = try? await previous?.value
+            guard let self else { return }
+            try await self.persistHostedPairs(from: snapshot)
+        }
+        hostedPairSyncTask = task
+        defer {
+            if hostedPairSyncGeneration == generation { hostedPairSyncTask = nil }
+        }
+        try await task.value
+    }
+
+    private func persistHostedPairs(from snapshot: InterviewRoomSnapshot) async throws {
         guard let hostedController else { return }
-        guard hostedSnapshot.connection == .writable else {
+        guard hostedSnapshot.activityID == snapshot.activityID else {
             throw HostedPracticeSessionError.leaseUnavailable
         }
         let hostedCandidateIDs = Set(
@@ -2032,6 +2165,9 @@ final class SystemDesignRoomModel: ObservableObject {
             defer { index += 2 }
             guard !hostedCandidateIDs.contains(candidate.id.rawValue) else {
                 continue
+            }
+            guard hostedSnapshot.connection == .writable else {
+                throw HostedPracticeSessionError.leaseUnavailable
             }
             let candidateOccurredAt = snapshot.segments
                 .filter { $0.committedTurnID == candidate.id }
@@ -2073,8 +2209,38 @@ final class SystemDesignRoomModel: ObservableObject {
         return "pair-\(digest)"
     }
 
+    func selectSpeechEngine(_ engine: LocalSpeechEngine) async {
+        guard engine != selectedSpeechEngine, !isSwitchingSpeechEngine,
+              !isWorking, !isFinishingInterview else { return }
+        isSwitchingSpeechEngine = true
+        defer { isSwitchingSpeechEngine = false }
+        speechErrorMessage = nil
+        // Preparation cancellation must finish before swapping or releasing its model.
+        if let preparation = speechPreparationTask {
+            preparation.cancel()
+            await preparation.value
+        }
+        guard !isSpeechModelActionInFlight else { return }
+        do {
+            if let interviewerSpeechCoordinator {
+                let provider = try speechProviderFactory(engine)
+                _ = try await interviewerSpeechCoordinator.replaceProvider(
+                    with: provider, commandID: commandID("switch-speech-engine"))
+                publish(interviewerSpeechCoordinator.snapshot)
+            } else {
+                speechReadiness = .notInstalled
+            }
+            selectedSpeechEngine = engine
+            preferences.set(engine.rawValue, forKey: Self.speechEnginePreferenceKey)
+            playingUtteranceID = nil
+        } catch {
+            speechErrorMessage = safeSpeechMessage(for: error)
+        }
+    }
+
     func startSpeechModelDownload() {
-        guard speechPreparationTask == nil,
+        guard !isSwitchingSpeechEngine, !isSpeechModelActionInFlight,
+              speechPreparationTask == nil,
               let interviewerSpeechCoordinator else {
             return
         }
@@ -2104,7 +2270,7 @@ final class SystemDesignRoomModel: ObservableObject {
     }
 
     func removeSpeechModel() async {
-        guard speechPreparationTask == nil,
+        guard !isSwitchingSpeechEngine, speechPreparationTask == nil,
               !isSpeechModelActionInFlight,
               let interviewerSpeechCoordinator else {
             return
@@ -2270,7 +2436,8 @@ final class SystemDesignRoomModel: ObservableObject {
                 dependencies = speechDependencies
             } else {
                 dependencies = try Self.makeLiveSpeechDependencies(
-                    engine: conversationEngine
+                    engine: conversationEngine,
+                    provider: speechProviderFactory(selectedSpeechEngine)
                 )
             }
 
@@ -2282,22 +2449,7 @@ final class SystemDesignRoomModel: ObservableObject {
                 initiallyMuted: isSpeechMuted
             )
             interviewerSpeechCoordinator = speech
-            speech.setSnapshotHandler { [weak self, weak speech] next in
-                guard let self,
-                      let speech,
-                      self.interviewerSpeechCoordinator === speech else {
-                    return
-                }
-                self.publish(next)
-            }
-            speech.setReadinessHandler { [weak self, weak speech] next in
-                guard let self,
-                      let speech,
-                      self.interviewerSpeechCoordinator === speech else {
-                    return
-                }
-                self.speechReadiness = next
-            }
+            bindInterviewerSpeech(speech)
             do {
                 publish(try await speech.resumePendingWork())
             } catch {
@@ -2310,12 +2462,32 @@ final class SystemDesignRoomModel: ObservableObject {
         }
     }
 
+    private func bindInterviewerSpeech(_ speech: InterviewerSpeechCoordinator) {
+        speech.setSnapshotHandler { [weak self, weak speech] next in
+            guard let self,
+                  let speech,
+                  self.interviewerSpeechCoordinator === speech else {
+                return
+            }
+            self.publish(next)
+        }
+        speech.setReadinessHandler { [weak self, weak speech] next in
+            guard let self,
+                  let speech,
+                  self.interviewerSpeechCoordinator === speech else {
+                return
+            }
+            self.speechReadiness = next
+        }
+    }
+
     private static func makeLiveSpeechDependencies(
-        engine: AVAudioEngine
+        engine: AVAudioEngine,
+        provider: any InterviewerSpeechProvider
     ) throws -> LiveInterviewerSpeechDependencies {
         let audioStore = LiveInterviewerSpeechAudioStore()
         return LiveInterviewerSpeechDependencies(
-            provider: try QwenInterviewerSpeechProvider(),
+            provider: provider,
             player: AVAudioEngineInterviewerSpeechPlayer(
                 audioStore: audioStore,
                 engine: engine,
@@ -2325,43 +2497,14 @@ final class SystemDesignRoomModel: ObservableObject {
         )
     }
 
-    private func makeBoundSegmentRecorder() -> VoiceCoreSegmentRecorder {
-        let recorder = VoiceCoreSegmentRecorder()
+    private func makeBoundSegmentRecorder(acousticInput: VoiceCoreAcousticSegmenter) -> VoiceCoreSegmentRecorder {
+        let recorder = VoiceCoreSegmentRecorder(acousticSegmenter: acousticInput)
         segmentRecorder = recorder
         recorder.onMetering = { [weak self] sample in
             self?.recordingPowerHistory = sample.powerHistory
             self?.recordingElapsedSeconds = sample.elapsedSeconds
         }
         return recorder
-    }
-
-    private static func makeDefaultCodexRuntime(
-        fileManager: FileManager = .default
-    ) -> any LiveCodexInterviewerRuntime {
-        do {
-            let root = try LivePaths.applicationSupportRoot(fileManager: fileManager)
-            let workingDirectory = root.appendingPathComponent(
-                "CodexRuntime",
-                isDirectory: true
-            )
-            for directory in [root, workingDirectory] {
-                try fileManager.createDirectory(
-                    at: directory,
-                    withIntermediateDirectories: true,
-                    attributes: [.posixPermissions: 0o700]
-                )
-                try fileManager.setAttributes(
-                    [.posixPermissions: 0o700],
-                    ofItemAtPath: directory.path
-                )
-            }
-            return CodexAppServerInterviewerRuntime(
-                workingDirectoryURL: workingDirectory,
-                model: CodexAppServerInterviewerRuntime.defaultInterviewerModel
-            )
-        } catch {
-            return UnavailableLiveCodexRuntime()
-        }
     }
 
     private static func makeDefaultBoardArtifactStore(
@@ -2419,57 +2562,51 @@ final class SystemDesignRoomModel: ObservableObject {
         return "Local interviewer speech did not complete. The written interview remains fully usable."
     }
 
-    private func applyCodexReadiness(_ readiness: CodexAppServerReadiness) {
-        codexReadiness = readiness
-        if readiness == .ready, errorWasCodexFailure {
+    private func applyInterviewerReadiness(_ readiness: InterviewerReadiness) {
+        interviewerReadiness = readiness
+        if readiness == .ready, errorWasInterviewerFailure {
             errorMessage = nil
-            errorWasCodexFailure = false
+            errorWasInterviewerFailure = false
         }
         if snapshot != nil {
             statusMessage = status(for: snapshot)
         }
     }
 
-    static func safeCodexFailureMessage(
-        for error: CodexAppServerRuntimeError
+    static func safeInterviewerFailureMessage(
+        for error: InterviewerRuntimeError,
+        providerName: String = "Interviewer"
     ) -> String {
         switch error {
         case .missing:
-            "Your answer is saved. Install or update ChatGPT or Codex, check readiness, then retry the interviewer."
-        case .incompatible(_, let requiredVersion):
-            "Your answer is saved. This build requires \(requiredVersion); update Codex, check readiness, then retry."
+            "Your answer is saved. Install or configure \(providerName), check readiness, then retry the interviewer."
         case .unauthenticated:
-            "Your answer is saved. Sign in through ChatGPT or Codex, check readiness, then retry the interviewer."
+            "Your answer is saved. Sign in through \(providerName), check readiness, then retry the interviewer."
         case .transportFailure:
-            "Your answer is saved. Codex could not complete the local request; check readiness, then retry explicitly."
+            "Your answer is saved. \(providerName) could not complete the local request; check readiness, then retry explicitly."
         case .protocolFailure:
-            "Your answer is saved. The local Codex protocol failed; check readiness before an explicit retry."
+            "Your answer is saved. The local \(providerName) protocol failed; check readiness before an explicit retry."
         case .serverFailure:
-            "Your answer is saved. Codex could not complete this interviewer turn; retry only when you choose."
+            "Your answer is saved. \(providerName) could not complete this interviewer turn; retry only when you choose."
         case .malformedFinalResponse:
-            "Your answer is saved. Codex returned no usable interviewer response; nothing was added to the transcript."
+            "Your answer is saved. \(providerName) returned no usable interviewer response; nothing was added to the transcript."
         case .cancelled:
-            "Your answer is saved. The Codex request was cancelled; retry only when you choose."
+            "Your answer is saved. The \(providerName) request was cancelled; retry only when you choose."
         }
     }
 
     @discardableResult
-    private func applyCodexFailure(_ error: Error) -> Bool {
-        guard let runtimeError = error as? CodexAppServerRuntimeError else {
+    private func applyInterviewerFailure(_ error: Error) -> Bool {
+        guard let runtimeError = error as? InterviewerRuntimeError else {
             return false
         }
         switch runtimeError {
         case .missing:
-            codexReadiness = .missing
-        case .incompatible(let actualVersion, let requiredVersion):
-            codexReadiness = .incompatible(
-                actualVersion: actualVersion,
-                requiredVersion: requiredVersion
-            )
+            interviewerReadiness = .missing
         case .unauthenticated:
-            codexReadiness = .unauthenticated
+            interviewerReadiness = .unauthenticated
         case .transportFailure:
-            codexReadiness = .transportFailure
+            interviewerReadiness = .transportFailure
         case .protocolFailure,
              .serverFailure,
              .malformedFinalResponse,
@@ -2556,6 +2693,9 @@ final class SystemDesignRoomModel: ObservableObject {
     }
 
     private func publish(_ snapshot: InterviewRoomSnapshot) {
+        if let current = self.snapshot,
+           current.sessionID == snapshot.sessionID,
+           current.revision > snapshot.revision { return }
         if !didLoadInitialBoard {
             boardEditor = BoardEditorState(document: snapshot.board.draft)
             inspectedBoardRevisionID = snapshot.board.selectedRevisionID
@@ -2572,6 +2712,8 @@ final class SystemDesignRoomModel: ObservableObject {
                 .sorted { $0.ordinal < $1.ordinal }
                 .map(CandidateSegmentPresentation.init(segment:))
         }
+        isMicrophonePaused = coordinator?.isContinuousListeningEnabled != true
+            || coordinator?.acousticFailure != nil
         statusMessage = status(for: snapshot)
     }
 
@@ -2659,16 +2801,16 @@ final class SystemDesignRoomModel: ObservableObject {
                 if isInterviewerRequestInFlight {
                     return "Mara is opening the interview…"
                 }
-                return isCodexReady
+                return isInterviewerReady
                     ? "Opening greeting needs retry"
-                    : "Opening greeting needs Codex to retry"
+                    : "Opening greeting needs the interviewer to retry"
             }
             if isInterviewerRequestInFlight {
-                return "Answer saved · Codex is preparing the next question"
+                return "Answer saved · interviewer is preparing the next question"
             }
-            return isCodexReady
+            return isInterviewerReady
                 ? "Answer saved · interviewer retry available"
-                : "Answer saved · check Codex to retry"
+                : "Answer saved · check the interviewer to retry"
         case .interviewerTurn:
             return "Interviewer response saved"
         case .completed:
@@ -2719,8 +2861,13 @@ final class SystemDesignRoomModel: ObservableObject {
     }
 
     private func safeMessage(for error: Error) -> String {
-        if let runtimeError = error as? CodexAppServerRuntimeError {
-            return Self.safeCodexFailureMessage(for: runtimeError)
+        if error is InterviewerBoardContextError {
+            return "The attached board is too large for the interviewer (256 KiB). Save a smaller revision or hand off without the board. Your diagram and answer remain saved."
+        }
+        if let runtimeError = error as? InterviewerRuntimeError {
+            return Self.safeInterviewerFailureMessage(
+                for: runtimeError, providerName: interviewerProviderName
+            )
         }
 
         if let coordinatorError = error as? SegmentSpeechCoordinatorError {
@@ -2781,17 +2928,5 @@ final class SystemDesignRoomModel: ObservableObject {
         }
 
         return "The operation did not complete. The latest durable state is still shown."
-    }
-}
-
-private actor UnavailableLiveCodexRuntime: LiveCodexInterviewerRuntime {
-    func preflight() async -> CodexAppServerReadiness {
-        .transportFailure
-    }
-
-    func respond(
-        to request: InterviewerRequest
-    ) async throws -> CanonicalInterviewerResponse {
-        throw CodexAppServerRuntimeError.transportFailure
     }
 }

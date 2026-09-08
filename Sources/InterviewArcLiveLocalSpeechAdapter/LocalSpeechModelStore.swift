@@ -1,14 +1,14 @@
 import CryptoKit
 import Foundation
 
-enum QwenModelStoreReadiness: Equatable, Sendable {
+enum LocalSpeechModelStoreReadiness: Equatable, Sendable {
     case notInstalled
-    case preparing(QwenModelStoreProgress)
+    case preparing(LocalSpeechModelStoreProgress)
     case ready(modelDirectory: URL)
-    case unavailable(QwenModelStoreFailure)
+    case unavailable(LocalSpeechModelStoreFailure)
 }
 
-enum QwenModelStoreFailure: String, Error, Equatable, Sendable {
+enum LocalSpeechModelStoreFailure: String, Error, Equatable, Sendable {
     case invalidStorageRoot
     case insufficientFreeSpace
     case preparationInProgress
@@ -26,7 +26,7 @@ enum QwenModelStoreFailure: String, Error, Equatable, Sendable {
     case storageFailure
 }
 
-struct QwenModelStoreProgress: Equatable, Sendable {
+struct LocalSpeechModelStoreProgress: Equatable, Sendable {
     enum Stage: Equatable, Sendable {
         case checkingStorage
         case downloading
@@ -39,27 +39,27 @@ struct QwenModelStoreProgress: Equatable, Sendable {
     let totalBytes: Int64
 }
 
-protocol QwenSnapshotDownloading: Sendable {
+protocol LocalSpeechSnapshotDownloading: Sendable {
     func downloadSnapshot(
-        manifest: QwenSnapshotManifest,
+        manifest: LocalSpeechSnapshotManifest,
         destination: URL,
         cacheRoot: URL,
-        progress: @escaping @Sendable (QwenModelStoreProgress) -> Void
+        progress: @escaping @Sendable (LocalSpeechModelStoreProgress) -> Void
     ) async throws
 }
 
-protocol QwenFreeSpaceReading: Sendable {
+protocol LocalSpeechFreeSpaceReading: Sendable {
     func availableBytes(for location: URL) throws -> Int64
 }
 
-struct FoundationQwenFreeSpaceReader: QwenFreeSpaceReading {
+struct FoundationLocalSpeechFreeSpaceReader: LocalSpeechFreeSpaceReading {
     func availableBytes(for location: URL) throws -> Int64 {
         let fileManager = FileManager.default
         var existing = location.standardizedFileURL
         while !fileManager.fileExists(atPath: existing.path) {
             let parent = existing.deletingLastPathComponent()
             guard parent.path != existing.path else {
-                throw QwenModelStoreFailure.invalidStorageRoot
+                throw LocalSpeechModelStoreFailure.invalidStorageRoot
             }
             existing = parent
         }
@@ -72,7 +72,7 @@ struct FoundationQwenFreeSpaceReader: QwenFreeSpaceReading {
         }
         let attributes = try fileManager.attributesOfFileSystem(forPath: existing.path)
         guard let number = attributes[.systemFreeSize] as? NSNumber else {
-            throw QwenModelStoreFailure.storageFailure
+            throw LocalSpeechModelStoreFailure.storageFailure
         }
         return number.int64Value
     }
@@ -81,7 +81,7 @@ struct FoundationQwenFreeSpaceReader: QwenFreeSpaceReading {
 /// Deep Module for the exact public model revision. Network/cache layout,
 /// staged loader validation, receipts, atomic promotion, and scoped deletion
 /// stay behind this small Interface.
-actor QwenModelStore {
+actor LocalSpeechModelStore {
     static let verificationReceiptName = ".interview-arc-live-verification.json"
     static let derivedReceiptName = ".interview-arc-live-derived-runtime.json"
     static let derivedTokenizerName = "tokenizer.json"
@@ -93,25 +93,27 @@ actor QwenModelStore {
 
     private let modelRoot: URL
     private let privateStorageRoot: URL
-    private let manifest: QwenSnapshotManifest
-    private let downloader: any QwenSnapshotDownloading
-    private let freeSpaceReader: any QwenFreeSpaceReading
+    private let manifest: LocalSpeechSnapshotManifest
+    private let downloader: any LocalSpeechSnapshotDownloading
+    private let freeSpaceReader: any LocalSpeechFreeSpaceReading
     private let fileManager: FileManager
     private let minimumFreeBytes: Int64
+    private let derivesTokenizer: Bool
     private let postReplacementValidation: @Sendable (URL, URL) throws -> Void
 
     private var activePreparationID: UUID?
-    private var latestProgress: QwenModelStoreProgress?
+    private var latestProgress: LocalSpeechModelStoreProgress?
     private var cachedReadySignature: String?
 
     init(
         modelRoot: URL,
         privateStorageRoot: URL? = nil,
-        manifest: QwenSnapshotManifest = Qwen3TTSProvenance.publicSnapshot,
-        downloader: any QwenSnapshotDownloading = HuggingFaceQwenSnapshotDownloader(),
-        freeSpaceReader: any QwenFreeSpaceReading = FoundationQwenFreeSpaceReader(),
+        manifest: LocalSpeechSnapshotManifest = Qwen3TTSProvenance.publicSnapshot,
+        downloader: any LocalSpeechSnapshotDownloading = HuggingFaceLocalSpeechSnapshotDownloader(),
+        freeSpaceReader: any LocalSpeechFreeSpaceReading = FoundationLocalSpeechFreeSpaceReader(),
         fileManager: FileManager = .default,
         minimumFreeBytes: Int64 = Qwen3TTSProvenance.minimumFreeByteCount,
+        derivesTokenizer: Bool = true,
         postReplacementValidation: @escaping @Sendable (URL, URL) throws -> Void = { _, _ in }
     ) {
         self.modelRoot = modelRoot.standardizedFileURL
@@ -122,13 +124,14 @@ actor QwenModelStore {
         self.freeSpaceReader = freeSpaceReader
         self.fileManager = fileManager
         self.minimumFreeBytes = minimumFreeBytes
+        self.derivesTokenizer = derivesTokenizer
         self.postReplacementValidation = postReplacementValidation
     }
 
     /// Read-only inspection. A process-local metadata signature avoids hashing
     /// the 1.838-GiB snapshot on every Turn, while `prepare` always performs a
     /// full load-time hash gate.
-    func readiness() -> QwenModelStoreReadiness {
+    func readiness() -> LocalSpeechModelStoreReadiness {
         if let latestProgress, activePreparationID != nil {
             return .preparing(latestProgress)
         }
@@ -144,7 +147,7 @@ actor QwenModelStore {
                 cachedReadySignature = quickSignature
             }
             return .ready(modelDirectory: snapshotDirectory)
-        } catch let failure as QwenModelStoreFailure {
+        } catch let failure as LocalSpeechModelStoreFailure {
             return .unavailable(failure)
         } catch {
             return .unavailable(.storageFailure)
@@ -158,7 +161,7 @@ actor QwenModelStore {
         allowDownload: Bool,
         validateStagedLoad: @escaping @Sendable (URL) async throws -> Void,
         loadPromoted: @escaping @Sendable (URL) async throws -> LoadedModel,
-        progress: @escaping @Sendable (QwenModelStoreProgress) -> Void
+        progress: @escaping @Sendable (LocalSpeechModelStoreProgress) -> Void
     ) async throws -> (modelDirectory: URL, loadedModel: LoadedModel) {
         switch readiness() {
         case .ready(let modelDirectory):
@@ -172,10 +175,10 @@ actor QwenModelStore {
             cachedReadySignature = try snapshotMetadataSignature(at: modelDirectory)
             return (modelDirectory, loadedModel)
         case .preparing:
-            throw QwenModelStoreFailure.preparationInProgress
+            throw LocalSpeechModelStoreFailure.preparationInProgress
         case .notInstalled:
             guard allowDownload else {
-                throw QwenModelStoreFailure.missingFile
+                throw LocalSpeechModelStoreFailure.missingFile
             }
         case .unavailable(let failure):
             // Readiness may detect a corrupt installed snapshot before the
@@ -189,7 +192,7 @@ actor QwenModelStore {
         try validateConfiguredRoots()
         let availableBytes = try freeSpaceReader.availableBytes(for: revisionRoot)
         guard availableBytes >= minimumFreeBytes else {
-            throw QwenModelStoreFailure.insufficientFreeSpace
+            throw LocalSpeechModelStoreFailure.insufficientFreeSpace
         }
 
         let preparationID = UUID()
@@ -207,7 +210,7 @@ actor QwenModelStore {
             try createPrivateDirectory(staging)
             publishProgress(.downloading, completedBytes: 0, to: progress)
 
-            let relay: @Sendable (QwenModelStoreProgress) -> Void = { [weak self] update in
+            let relay: @Sendable (LocalSpeechModelStoreProgress) -> Void = { [weak self] update in
                 Task { await self?.recordDownloadProgress(update, preparationID: preparationID) }
                 progress(update)
             }
@@ -269,7 +272,7 @@ actor QwenModelStore {
             } catch {
                 cachedReadySignature = nil
                 clearPreparation()
-                throw QwenModelStoreFailure.storageFailure
+                throw LocalSpeechModelStoreFailure.storageFailure
             }
             cachedReadySignature = nil
             clearPreparation()
@@ -279,7 +282,7 @@ actor QwenModelStore {
 
     func removeInstalledRevision() throws {
         guard activePreparationID == nil else {
-            throw QwenModelStoreFailure.preparationInProgress
+            throw LocalSpeechModelStoreFailure.preparationInProgress
         }
         try validateConfiguredRoots()
         if fileManager.fileExists(atPath: revisionRoot.path) {
@@ -321,20 +324,20 @@ actor QwenModelStore {
         do {
             return try await loader(directory)
         } catch is CancellationError {
-            throw QwenModelStoreFailure.cancelled
-        } catch let failure as QwenModelStoreFailure {
+            throw LocalSpeechModelStoreFailure.cancelled
+        } catch let failure as LocalSpeechModelStoreFailure {
             throw failure
         } catch {
-            throw QwenModelStoreFailure.loaderValidationFailed
+            throw LocalSpeechModelStoreFailure.loaderValidationFailed
         }
     }
 
     private func publishProgress(
-        _ stage: QwenModelStoreProgress.Stage,
+        _ stage: LocalSpeechModelStoreProgress.Stage,
         completedBytes: Int64,
-        to callback: @escaping @Sendable (QwenModelStoreProgress) -> Void
+        to callback: @escaping @Sendable (LocalSpeechModelStoreProgress) -> Void
     ) {
-        let value = QwenModelStoreProgress(
+        let value = LocalSpeechModelStoreProgress(
             stage: stage,
             completedBytes: min(max(completedBytes, 0), manifest.byteCount),
             totalBytes: manifest.byteCount
@@ -344,11 +347,11 @@ actor QwenModelStore {
     }
 
     private func recordDownloadProgress(
-        _ update: QwenModelStoreProgress,
+        _ update: LocalSpeechModelStoreProgress,
         preparationID: UUID
     ) {
         guard activePreparationID == preparationID else { return }
-        latestProgress = QwenModelStoreProgress(
+        latestProgress = LocalSpeechModelStoreProgress(
             stage: .downloading,
             completedBytes: min(max(update.completedBytes, 0), manifest.byteCount),
             totalBytes: manifest.byteCount
@@ -374,7 +377,7 @@ actor QwenModelStore {
                       && file.sha256.allSatisfy(\.isHexDigit)
               }),
               manifest.byteCount > 0 else {
-            throw QwenModelStoreFailure.invalidStorageRoot
+            throw LocalSpeechModelStoreFailure.invalidStorageRoot
         }
 
         guard modelRoot.isFileURL,
@@ -388,7 +391,7 @@ actor QwenModelStore {
               isStrictDescendant(snapshotDirectory, of: revisionRoot),
               isStrictDescendant(stagingRoot, of: revisionRoot),
               isStrictDescendant(cacheRoot, of: revisionRoot) else {
-            throw QwenModelStoreFailure.invalidStorageRoot
+            throw LocalSpeechModelStoreFailure.invalidStorageRoot
         }
         try validateExistingPrivatePathComponents()
     }
@@ -402,10 +405,10 @@ actor QwenModelStore {
     private func validateExistingDirectory(_ url: URL) throws {
         let values = try url.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
         guard values.isSymbolicLink != true else {
-            throw QwenModelStoreFailure.symbolicLinkRejected
+            throw LocalSpeechModelStoreFailure.symbolicLinkRejected
         }
         guard values.isDirectory == true else {
-            throw QwenModelStoreFailure.invalidStorageRoot
+            throw LocalSpeechModelStoreFailure.invalidStorageRoot
         }
     }
 
@@ -448,20 +451,28 @@ actor QwenModelStore {
                 )
             }
             try fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: url.path)
-        } catch let failure as QwenModelStoreFailure {
+        } catch let failure as LocalSpeechModelStoreFailure {
             throw failure
         } catch {
-            throw QwenModelStoreFailure.storageFailure
+            throw LocalSpeechModelStoreFailure.storageFailure
         }
     }
 
     private func validateReadySnapshot(at root: URL, hashesRequired: Bool) throws {
         try validateVerificationReceipt(at: root)
+        guard derivesTokenizer else {
+            try validatePublicSnapshot(
+                at: root,
+                hashesRequired: hashesRequired,
+                permittedRuntimeFiles: [Self.verificationReceiptName]
+            )
+            return
+        }
         let tokenizer = root.appendingPathComponent(Self.derivedTokenizerName)
         let derivedReceipt = root.appendingPathComponent(Self.derivedReceiptName)
         guard fileManager.fileExists(atPath: tokenizer.path),
               fileManager.fileExists(atPath: derivedReceipt.path) else {
-            throw QwenModelStoreFailure.derivedTokenizerInvalid
+            throw LocalSpeechModelStoreFailure.derivedTokenizerInvalid
         }
         try validateDerivedReceipt(tokenizerURL: tokenizer, receiptURL: derivedReceipt)
         try validatePublicSnapshot(
@@ -484,7 +495,7 @@ actor QwenModelStore {
                 from: Data(contentsOf: url)
             )
         } catch {
-            throw QwenModelStoreFailure.invalidVerificationReceipt
+            throw LocalSpeechModelStoreFailure.invalidVerificationReceipt
         }
         guard receipt.schemaVersion == 1,
               receipt.repositoryID == manifest.repositoryID,
@@ -492,11 +503,12 @@ actor QwenModelStore {
               receipt.fileCount == manifest.files.count,
               receipt.byteCount == manifest.byteCount,
               receipt.manifestFingerprint == manifest.fingerprint else {
-            throw QwenModelStoreFailure.invalidVerificationReceipt
+            throw LocalSpeechModelStoreFailure.invalidVerificationReceipt
         }
     }
 
     private func recordDerivedTokenizer(at root: URL) throws {
+        guard derivesTokenizer else { return }
         try validateVerificationReceipt(at: root)
         try validatePublicSnapshot(
             at: root,
@@ -509,12 +521,12 @@ actor QwenModelStore {
         let tokenizer = root.appendingPathComponent(Self.derivedTokenizerName)
         let metadata = try regularFileMetadata(tokenizer)
         guard metadata.byteCount > 0 else {
-            throw QwenModelStoreFailure.derivedTokenizerInvalid
+            throw LocalSpeechModelStoreFailure.derivedTokenizerInvalid
         }
         let data = try Data(contentsOf: tokenizer)
         guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
               object["model"] != nil else {
-            throw QwenModelStoreFailure.derivedTokenizerInvalid
+            throw LocalSpeechModelStoreFailure.derivedTokenizerInvalid
         }
         try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: tokenizer.path)
         try writePrivateJSON(
@@ -523,7 +535,7 @@ actor QwenModelStore {
                 artifact: Self.derivedTokenizerName,
                 derivation: "Qwen3TTSModel.fromModelDirectory",
                 byteCount: metadata.byteCount,
-                sha256: try QwenSHA256.file(tokenizer)
+                sha256: try LocalSpeechSHA256.file(tokenizer)
             ),
             to: root.appendingPathComponent(Self.derivedReceiptName)
         )
@@ -537,15 +549,15 @@ actor QwenModelStore {
                 from: Data(contentsOf: receiptURL)
             )
         } catch {
-            throw QwenModelStoreFailure.derivedTokenizerInvalid
+            throw LocalSpeechModelStoreFailure.derivedTokenizerInvalid
         }
         let metadata = try regularFileMetadata(tokenizerURL)
         guard receipt.schemaVersion == 1,
               receipt.artifact == Self.derivedTokenizerName,
               receipt.derivation == "Qwen3TTSModel.fromModelDirectory",
               receipt.byteCount == metadata.byteCount,
-              receipt.sha256 == (try QwenSHA256.file(tokenizerURL)) else {
-            throw QwenModelStoreFailure.derivedTokenizerInvalid
+              receipt.sha256 == (try LocalSpeechSHA256.file(tokenizerURL)) else {
+            throw LocalSpeechModelStoreFailure.derivedTokenizerInvalid
         }
     }
 
@@ -560,24 +572,24 @@ actor QwenModelStore {
         let expectedFiles = publicPaths.union(permittedRuntimeFiles)
         guard inventory.files == expectedFiles else {
             if !publicPaths.subtracting(inventory.files).isEmpty {
-                throw QwenModelStoreFailure.missingFile
+                throw LocalSpeechModelStoreFailure.missingFile
             }
-            throw QwenModelStoreFailure.unexpectedSnapshotShape
+            throw LocalSpeechModelStoreFailure.unexpectedSnapshotShape
         }
         let expectedDirectories = Set(manifest.files.flatMap { parentDirectories(for: $0.path) })
         guard inventory.directories == expectedDirectories else {
-            throw QwenModelStoreFailure.unexpectedSnapshotShape
+            throw LocalSpeechModelStoreFailure.unexpectedSnapshotShape
         }
 
         for expected in manifest.files {
             let fileURL = root.appendingPathComponent(expected.path)
             let metadata = try regularFileMetadata(fileURL)
             guard metadata.byteCount == expected.byteCount else {
-                throw QwenModelStoreFailure.wrongFileSize
+                throw LocalSpeechModelStoreFailure.wrongFileSize
             }
             if hashesRequired,
-               try QwenSHA256.file(fileURL) != expected.sha256 {
-                throw QwenModelStoreFailure.hashMismatch
+               try LocalSpeechSHA256.file(fileURL) != expected.sha256 {
+                throw LocalSpeechModelStoreFailure.hashMismatch
             }
         }
     }
@@ -585,11 +597,11 @@ actor QwenModelStore {
     private func validateSnapshotRoot(_ root: URL) throws {
         let standardized = root.standardizedFileURL
         guard isStrictDescendant(standardized, of: revisionRoot) else {
-            throw QwenModelStoreFailure.invalidSnapshotRoot
+            throw LocalSpeechModelStoreFailure.invalidSnapshotRoot
         }
         for component in pathChain(from: revisionRoot, through: standardized) {
             guard fileManager.fileExists(atPath: component.path) else {
-                throw QwenModelStoreFailure.invalidSnapshotRoot
+                throw LocalSpeechModelStoreFailure.invalidSnapshotRoot
             }
             try validateExistingDirectory(component)
         }
@@ -606,7 +618,7 @@ actor QwenModelStore {
             options: [],
             errorHandler: { _, _ in false }
         ) else {
-            throw QwenModelStoreFailure.unexpectedSnapshotShape
+            throw LocalSpeechModelStoreFailure.unexpectedSnapshotShape
         }
 
         var files = Set<String>()
@@ -617,14 +629,14 @@ actor QwenModelStore {
                 forKeys: [.isRegularFileKey, .isDirectoryKey, .isSymbolicLinkKey]
             )
             guard values.isSymbolicLink != true else {
-                throw QwenModelStoreFailure.symbolicLinkRejected
+                throw LocalSpeechModelStoreFailure.symbolicLinkRejected
             }
             if values.isDirectory == true {
                 directories.insert(relative)
             } else if values.isRegularFile == true {
                 files.insert(relative)
             } else {
-                throw QwenModelStoreFailure.unexpectedSnapshotShape
+                throw LocalSpeechModelStoreFailure.unexpectedSnapshotShape
             }
         }
         return SnapshotInventory(files: files, directories: directories)
@@ -640,13 +652,13 @@ actor QwenModelStore {
             ]
         )
         guard values.isSymbolicLink != true else {
-            throw QwenModelStoreFailure.symbolicLinkRejected
+            throw LocalSpeechModelStoreFailure.symbolicLinkRejected
         }
         guard values.isRegularFile == true else {
-            throw QwenModelStoreFailure.missingFile
+            throw LocalSpeechModelStoreFailure.missingFile
         }
         guard let size = values.fileSize, let modified = values.contentModificationDate else {
-            throw QwenModelStoreFailure.storageFailure
+            throw LocalSpeechModelStoreFailure.storageFailure
         }
         return (Int64(size), modified)
     }
@@ -657,7 +669,7 @@ actor QwenModelStore {
             let metadata = try regularFileMetadata(root.appendingPathComponent(path))
             return "\(path)\u{0}\(metadata.byteCount)\u{0}\(metadata.modified.timeIntervalSince1970)"
         }
-        return QwenSHA256.string(Data(rows.joined(separator: "\n").utf8))
+        return LocalSpeechSHA256.string(Data(rows.joined(separator: "\n").utf8))
     }
 
     private struct SnapshotPromotion {
@@ -678,7 +690,7 @@ actor QwenModelStore {
                     isDirectory: true
                 )
                 guard isStrictDescendant(backup, of: revisionRoot) else {
-                    throw QwenModelStoreFailure.invalidStorageRoot
+                    throw LocalSpeechModelStoreFailure.invalidStorageRoot
                 }
                 _ = try fileManager.replaceItemAt(
                     final,
@@ -692,17 +704,17 @@ actor QwenModelStore {
                 promotion = SnapshotPromotion(backup: backup)
                 try postReplacementValidation(final, backup)
                 guard fileManager.fileExists(atPath: backup.path) else {
-                    throw QwenModelStoreFailure.storageFailure
+                    throw LocalSpeechModelStoreFailure.storageFailure
                 }
                 try validateExistingDirectory(backup)
             } else {
                 try fileManager.moveItem(at: staging, to: final)
                 promotion = SnapshotPromotion(backup: nil)
             }
-        } catch let failure as QwenModelStoreFailure {
+        } catch let failure as LocalSpeechModelStoreFailure {
             throw failure
         } catch {
-            throw QwenModelStoreFailure.storageFailure
+            throw LocalSpeechModelStoreFailure.storageFailure
         }
     }
 
@@ -711,11 +723,11 @@ actor QwenModelStore {
     /// only the scoped removal of that retained backup.
     private func commit(_ promotion: SnapshotPromotion?) throws {
         guard let promotion else {
-            throw QwenModelStoreFailure.storageFailure
+            throw LocalSpeechModelStoreFailure.storageFailure
         }
         guard let backup = promotion.backup else { return }
         guard fileManager.fileExists(atPath: backup.path) else {
-            throw QwenModelStoreFailure.storageFailure
+            throw LocalSpeechModelStoreFailure.storageFailure
         }
         try validateExistingDirectory(backup)
         try removeScopedItem(backup, inside: revisionRoot)
@@ -741,7 +753,7 @@ actor QwenModelStore {
                 isDirectory: true
             )
             guard isStrictDescendant(failed, of: revisionRoot) else {
-                throw QwenModelStoreFailure.invalidStorageRoot
+                throw LocalSpeechModelStoreFailure.invalidStorageRoot
             }
             _ = try fileManager.replaceItemAt(
                 final,
@@ -758,11 +770,11 @@ actor QwenModelStore {
         try validateExistingDirectory(final)
     }
 
-    private func preparationFailure(for error: Error) -> QwenModelStoreFailure {
+    private func preparationFailure(for error: Error) -> LocalSpeechModelStoreFailure {
         if error is CancellationError {
             return .cancelled
         }
-        if let failure = error as? QwenModelStoreFailure {
+        if let failure = error as? LocalSpeechModelStoreFailure {
             return failure
         }
         return .downloadFailed
@@ -787,7 +799,7 @@ actor QwenModelStore {
             try JSONEncoder.publicSafe.encode(value).write(to: url, options: .atomic)
             try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
         } catch {
-            throw QwenModelStoreFailure.storageFailure
+            throw LocalSpeechModelStoreFailure.storageFailure
         }
     }
 
@@ -797,12 +809,12 @@ actor QwenModelStore {
             at: root,
             includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey]
         ) else {
-            throw QwenModelStoreFailure.storageFailure
+            throw LocalSpeechModelStoreFailure.storageFailure
         }
         while let url = enumerator.nextObject() as? URL {
             let values = try url.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
             guard values.isSymbolicLink != true else {
-                throw QwenModelStoreFailure.symbolicLinkRejected
+                throw LocalSpeechModelStoreFailure.symbolicLinkRejected
             }
             try fileManager.setAttributes(
                 [.posixPermissions: values.isDirectory == true ? 0o700 : 0o600],
@@ -825,7 +837,7 @@ actor QwenModelStore {
         try validateExistingDirectory(parent)
         guard isStrictDescendant(item.standardizedFileURL, of: parent.standardizedFileURL),
               item.standardizedFileURL.path != "/" else {
-            throw QwenModelStoreFailure.invalidStorageRoot
+            throw LocalSpeechModelStoreFailure.invalidStorageRoot
         }
         try fileManager.removeItem(at: item)
     }
@@ -835,11 +847,11 @@ actor QwenModelStore {
         let path = url.standardizedFileURL.path
         let prefix = base.hasSuffix("/") ? base : base + "/"
         guard path.hasPrefix(prefix) else {
-            throw QwenModelStoreFailure.invalidSnapshotRoot
+            throw LocalSpeechModelStoreFailure.invalidSnapshotRoot
         }
         let relative = String(path.dropFirst(prefix.count))
         guard isSafeRelativePath(relative) else {
-            throw QwenModelStoreFailure.unexpectedSnapshotShape
+            throw LocalSpeechModelStoreFailure.unexpectedSnapshotShape
         }
         return relative
     }
@@ -905,7 +917,7 @@ private struct DerivedRuntimeReceipt: Codable {
     let sha256: String
 }
 
-enum QwenSHA256 {
+enum LocalSpeechSHA256 {
     static func string(_ data: Data) -> String {
         SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }
@@ -915,7 +927,7 @@ enum QwenSHA256 {
         do {
             handle = try FileHandle(forReadingFrom: url)
         } catch {
-            throw QwenModelStoreFailure.storageFailure
+            throw LocalSpeechModelStoreFailure.storageFailure
         }
         defer { try? handle.close() }
 
@@ -929,7 +941,7 @@ enum QwenSHA256 {
                 hasher.update(data: data)
             }
         } catch {
-            throw QwenModelStoreFailure.storageFailure
+            throw LocalSpeechModelStoreFailure.storageFailure
         }
         return hasher.finalize().map { String(format: "%02x", $0) }.joined()
     }

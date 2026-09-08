@@ -1684,6 +1684,15 @@ public actor InterviewRoomSession {
     private func completeInterviewerResponse(
         for candidate: CandidateTurn
     ) async throws -> InterviewRoomSnapshot {
+        let attachedBoard: InterviewerBoardContext?
+        if case .revision(let revisionID) = candidate.boardAttachment {
+            guard let revision = manifest.board.revisions.first(where: { $0.id == revisionID }) else {
+                throw InterviewRoomSessionError.boardRevisionNotFound(revisionID)
+            }
+            attachedBoard = try InterviewerBoardContext(revision: revision)
+        } else {
+            attachedBoard = nil
+        }
         let responseTurnID = Self.turnID(
             sessionID: manifest.sessionID,
             commandID: candidate.commandID,
@@ -1697,7 +1706,8 @@ public actor InterviewRoomSession {
             priorVisibleTurns: Self.boundedPriorVisibleTurns(
                 Array(manifest.turns.dropLast())
             ),
-            responseTurnID: responseTurnID
+            responseTurnID: responseTurnID,
+            attachedBoard: attachedBoard
         )
         let response = try await interviewerRuntime.respond(to: request)
         guard !response.displayMarkdown.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
@@ -2359,9 +2369,10 @@ public actor InterviewRoomSession {
         in board: BoardWorkspace
     ) throws {
         guard case .revision(let revisionID) = attachment else { return }
-        guard board.revisions.contains(where: { $0.id == revisionID }) else {
+        guard let revision = board.revisions.first(where: { $0.id == revisionID }) else {
             throw InterviewRoomSessionError.boardRevisionNotFound(revisionID)
         }
+        _ = try InterviewerBoardContext(revision: revision)
     }
 
     private static func validateBoardArtifactBundle(

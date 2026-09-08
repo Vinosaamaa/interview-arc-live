@@ -14,8 +14,10 @@ not practice transcript content.
 ## Decision
 
 `CodexAppServerInterviewerRuntime` is a provider Adapter behind the existing
-`InterviewerRuntime` Interface. It pins and preflights the exact tested Codex
-CLI protocol, creates a Live-owned ephemeral thread, and runs with
+`InterviewerRuntime` Interface. It uses the installed Codex CLI without a
+version allowlist. Readiness checks the App Server initialization and ChatGPT
+authentication responses; each turn validates the actual protocol and canonical
+output. It creates a Live-owned ephemeral thread and runs with
 read-only/no-approval permissions. The process disables configured MCP
 servers, apps, plugins, hooks, shell execution, and other tool surfaces; any
 unexpected server request or tool item fails the turn closed. It never
@@ -43,12 +45,27 @@ Failure never replays automatically. A user retry has a fresh Command identity
 while retaining the intended Interviewer identity. Reply retries also retain
 the Candidate Turn; Opening retries have no Candidate Turn.
 
+## Provider boundary
+
+The Core-owned `InterviewerProvider` extends `InterviewerRuntime` with a provider
+name and readiness check. Provider-neutral failures, requests, and canonical
+responses are the room's only runtime contract. The app selects its initial
+Codex adapter in `LiveInterviewerProviders`; room models never construct or
+import a Codex adapter. Speech generation remains independently replaceable.
+
+Pi, Cursor subscription access, and other providers are planned adapters, not
+implemented integrations. Each must establish its supported authentication and
+invocation path and satisfy the same turn, cancellation, and recovery contract.
+Adding one must not require rewriting the Board, Session Manifest, or speech
+coordinator, and must not silently change the account or billing mode.
+
 ## Consequences
 
 Experimental protocol churn is local to one Adapter and fixture suite. A
-missing, unauthenticated, or incompatible Codex installation fails closed
-without losing the Candidate Turn. This private transport is not the
-commercial product contract; a hosted runtime may replace it without changing
+missing or unauthenticated Codex installation, failed protocol exchange, or
+invalid response preserves the Candidate Turn and exposes an explicit retry.
+A CLI version change alone never disables the interviewer. This private
+transport is not the commercial product contract; a hosted runtime may replace it without changing
 the Interview Room Session Interface.
 
 ## References

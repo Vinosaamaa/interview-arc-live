@@ -74,7 +74,7 @@ struct InterviewerUtterancePresentation: Equatable {
         case .generating:
             return InterviewerUtterancePresentation(
                 title: "Generating locally",
-                detail: "Mara is preparing this exact interviewer turn.",
+                detail: "The selected local voice is preparing this interviewer turn.",
                 systemImage: "waveform",
                 tone: .working,
                 primaryActionTitle: "Stop",
@@ -160,13 +160,16 @@ struct InterviewerSpeechReadinessPresentation: Equatable {
     let canRemove: Bool
 
     static func make(
-        readiness: InterviewerSpeechReadiness
+        readiness: InterviewerSpeechReadiness,
+        engineName: String = "Qwen",
+        downloadSize: String = "1.838 GiB",
+        minimumFreeSpace: String = "4 GiB"
     ) -> InterviewerSpeechReadinessPresentation {
         switch readiness {
         case .notInstalled:
             return InterviewerSpeechReadinessPresentation(
-                title: "Add Mara’s local voice",
-                detail: "The interview works without speech. Install the pinned model only when you choose.",
+                title: "Add \(engineName) voice",
+                detail: "Download \(downloadSize) once; \(minimumFreeSpace) free space required. Speech runs on this Mac with no usage fees.",
                 systemImage: "arrow.down.circle",
                 tone: .quiet,
                 progress: nil,
@@ -191,8 +194,8 @@ struct InterviewerSpeechReadinessPresentation: Equatable {
             )
         case .ready:
             return InterviewerSpeechReadinessPresentation(
-                title: "Mara voice ready",
-                detail: "Interviewer text and generated audio stay on this Mac.",
+                title: "\(engineName) voice ready",
+                detail: "Voice generation runs on this Mac with no usage fees.",
                 systemImage: "waveform.circle.fill",
                 tone: .ready,
                 progress: nil,
@@ -203,8 +206,8 @@ struct InterviewerSpeechReadinessPresentation: Equatable {
             )
         case .unavailable(let failure):
             return InterviewerSpeechReadinessPresentation(
-                title: failureTitle(failure),
-                detail: failureDetail(failure),
+                title: failure == .insufficientStorage ? "\(minimumFreeSpace) of free space required" : failureTitle(failure),
+                detail: failure == .insufficientStorage ? "Free space, then start the \(downloadSize) download again." : failureDetail(failure),
                 systemImage: "exclamationmark.triangle.fill",
                 tone: .warning,
                 progress: nil,
@@ -231,7 +234,7 @@ struct InterviewerSpeechReadinessPresentation: Equatable {
         _ failure: InterviewerSpeechReadinessFailure
     ) -> String {
         switch failure {
-        case .insufficientStorage: return "4 GiB of free space required"
+        case .insufficientStorage: return "More free space required"
         case .networkUnavailable: return "Model download unavailable"
         case .verificationFailed: return "Model verification failed"
         case .incompatibleRuntime: return "Local voice unavailable on this Mac"
@@ -245,7 +248,7 @@ struct InterviewerSpeechReadinessPresentation: Equatable {
     ) -> String {
         switch failure {
         case .insufficientStorage:
-            return "Free space, then explicitly start the 1.838 GiB download again."
+            return "Free space, then explicitly start the download again."
         case .networkUnavailable:
             return "The interview remains usable. Try the explicit download again when online."
         case .verificationFailed:

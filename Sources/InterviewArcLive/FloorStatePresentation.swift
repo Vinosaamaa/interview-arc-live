@@ -62,12 +62,13 @@ struct FloorStatePresentation: Equatable {
         var speechActivity: SpeechActivity?
         var isInterviewerRequestInFlight: Bool
         var isOpeningInterviewer: Bool
-        var isCodexReady: Bool
+        var isInterviewerReady: Bool
         var canStopRecording: Bool
         var roomAvailability: RoomAvailability
         var turnMode: TurnMode
         var isFloorHeld: Bool
         var isCheckingAnswer: Bool
+        var isMicrophonePaused: Bool
 
         init(
             phase: InterviewRoomPhase? = nil,
@@ -78,12 +79,13 @@ struct FloorStatePresentation: Equatable {
             speechActivity: SpeechActivity? = nil,
             isInterviewerRequestInFlight: Bool = false,
             isOpeningInterviewer: Bool = false,
-            isCodexReady: Bool = false,
+            isInterviewerReady: Bool = false,
             canStopRecording: Bool = false,
             roomAvailability: RoomAvailability = .ready,
             turnMode: TurnMode = .manual,
             isFloorHeld: Bool = false,
-            isCheckingAnswer: Bool = false
+            isCheckingAnswer: Bool = false,
+            isMicrophonePaused: Bool = false
         ) {
             self.phase = phase
             self.candidateSegmentLifecycles = candidateSegmentLifecycles
@@ -93,12 +95,13 @@ struct FloorStatePresentation: Equatable {
             self.speechActivity = speechActivity
             self.isInterviewerRequestInFlight = isInterviewerRequestInFlight
             self.isOpeningInterviewer = isOpeningInterviewer
-            self.isCodexReady = isCodexReady
+            self.isInterviewerReady = isInterviewerReady
             self.canStopRecording = canStopRecording
             self.roomAvailability = roomAvailability
             self.turnMode = turnMode
             self.isFloorHeld = isFloorHeld
             self.isCheckingAnswer = isCheckingAnswer
+            self.isMicrophonePaused = isMicrophonePaused
         }
     }
 
@@ -117,7 +120,8 @@ struct FloorStatePresentation: Equatable {
             full: fullSurface(for: input),
             compact: Surface(
                 label: compactLabel(for: input),
-                detail: status.detail
+                detail: input.isMicrophonePaused && input.turnMode == .continuousConversation
+                    && input.phase == .candidateFloor ? "Resume to listen" : status.detail
             ),
             systemImage: status.systemImage,
             primaryActionHint: phaseActionHint(for: input.phase)
@@ -210,6 +214,9 @@ struct FloorStatePresentation: Equatable {
         }
 
         if input.turnMode == .continuousConversation, input.phase == .candidateFloor {
+            if input.isMicrophonePaused {
+                return (.candidateFloor, .quiet, "Microphone paused", "mic.slash.fill")
+            }
             if input.isFloorHeld {
                 return (
                     .holdingFloor,
@@ -331,18 +338,21 @@ struct FloorStatePresentation: Equatable {
             if input.isOpeningInterviewer {
                 return Surface(
                     label: "Mara is opening",
-                    detail: "Codex is preparing the greeting"
+                    detail: "The interviewer is preparing the greeting"
                 )
             }
             return Surface(
-                label: "Answer saved · Codex working",
-                detail: "Codex is preparing Mara"
+                label: "Answer saved · interviewer working",
+                detail: "The interviewer is preparing a response"
             )
         }
 
         switch input.phase {
         case .candidateFloor:
             if input.turnMode == .continuousConversation {
+                if input.isMicrophonePaused {
+                    return Surface(label: "Microphone paused", detail: "Resume when you are ready to speak")
+                }
                 if input.isFloorHeld {
                     return Surface(label: "Holding your floor", detail: candidateDetail(for: input))
                 }
@@ -358,16 +368,16 @@ struct FloorStatePresentation: Equatable {
         case .interviewerProcessing:
             if input.isOpeningInterviewer {
                 return Surface(
-                    label: input.isCodexReady
+                    label: input.isInterviewerReady
                         ? "Opening greeting needs retry"
-                        : "Opening greeting needs Codex to retry",
+                        : "Opening greeting needs the interviewer to retry",
                     detail: "No candidate answer yet"
                 )
             }
             return Surface(
-                label: input.isCodexReady
+                label: input.isInterviewerReady
                     ? "Answer saved · interviewer retry required"
-                    : "Answer saved · check Codex to retry",
+                    : "Answer saved · check the interviewer to retry",
                 detail: "Candidate answer saved"
             )
         case .interviewerTurn:
@@ -416,6 +426,7 @@ struct FloorStatePresentation: Equatable {
         switch input.phase {
         case .candidateFloor:
             if input.turnMode == .continuousConversation {
+                if input.isMicrophonePaused { return "Mic paused" }
                 if input.isFloorHeld { return "Holding your floor" }
                 if input.isCheckingAnswer { return "Checking answer" }
                 return "Listening"
@@ -472,20 +483,21 @@ extension SystemDesignRoomModel {
                 statusMessage: statusMessage,
                 attentionMessage: errorMessage
                     ?? speechErrorMessage
-                    ?? codexAttentionMessage,
+                    ?? interviewerAttentionMessage,
                 speechActivity: speechActivity,
                 isInterviewerRequestInFlight: isInterviewerRequestInFlight,
                 isOpeningInterviewer: snapshot?.turns.isEmpty == true
                     && snapshot?.phase != .candidateFloor
                     && (snapshot?.phase == .interviewerProcessing
                         || isInterviewerRequestInFlight),
-                isCodexReady: isCodexReady,
+                isInterviewerReady: isInterviewerReady,
                 canStopRecording: canStopRecording,
                 roomAvailability: floorRoomAvailability,
                 turnMode: snapshot?.turnMode ?? .continuousConversation,
                 isFloorHeld: snapshot?.isFloorHeld == true,
                 isCheckingAnswer: snapshot?.endpointEvaluations.last?.lifecycle == .authorized
-                    || snapshot?.endpointGraces.contains(where: { $0.lifecycle == .pending }) == true
+                    || snapshot?.endpointGraces.contains(where: { $0.lifecycle == .pending }) == true,
+                isMicrophonePaused: isMicrophonePaused
             )
         )
     }

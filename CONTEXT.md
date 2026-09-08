@@ -58,6 +58,21 @@ Interviewer Turn. It may be explicit or proposed by the selected Turn Mode.
 One logical candidate answer. It may contain multiple Segments separated by
 thinking or work. Segments are never sent to the interviewer independently.
 
+### Interviewer Provider
+
+The selected AI adapter that checks its own readiness and produces a canonical
+Interviewer Turn through the Core-owned `InterviewerProvider` contract. Codex
+is the first adapter; Pi, Cursor, and other providers are future integrations.
+Provider authentication and transport stay inside the adapter. A provider change
+never changes Activity or Session identity, and voice is selected independently.
+
+### Attached Board Context
+
+The exact immutable Board Revision explicitly attached to the current Candidate
+Turn and supplied to the Interviewer Provider as structured diagram data. Core
+resolves and bounds it; provider adapters cannot read draft boards, files, or
+scratch notes. A later draft edit never changes the context for a retry.
+
 ### Interviewer Turn
 
 One canonical response containing rich `displayMarkdown` and concise
@@ -249,3 +264,7 @@ separate recording, model, transcript, or persistence state.
 - A failed transcription never deletes the Source Recording.
 - No client invents speech, hidden model memory, an Accepted verdict, or a
   durable write receipt.
+
+### Local Speech Engine
+
+A Local Speech Engine selects the model and named voice for future interviewer synthesis attempts. Qwen and Kokoro implement the same private model preparation and speech-generation lifecycle. The selection is a Live preference, independent of the AI interviewer provider. Switching joins active synthesis and stops playback; it never changes historical attempt provenance or saved audio.

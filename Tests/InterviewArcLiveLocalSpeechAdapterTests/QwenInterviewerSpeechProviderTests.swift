@@ -2,12 +2,12 @@ import Foundation
 import InterviewArcLiveCore
 import XCTest
 
-@testable import InterviewArcLiveQwenAdapter
+@testable import InterviewArcLiveLocalSpeechAdapter
 
 @MainActor
-final class QwenInterviewerSpeechProviderTests: XCTestCase {
+final class LocalInterviewerSpeechProviderTests: XCTestCase {
     func testMaraV1MapsEveryResolvedQwenGenerationOptionExactly() {
-        let provenance = QwenInterviewerSpeechProviderFixture.publicProvenance
+        let provenance = LocalInterviewerSpeechProviderFixture.publicProvenance
         let profile = provenance.profile
         let resolved = QwenResolvedGenerationOptions(profile: profile)
 
@@ -163,7 +163,7 @@ final class QwenInterviewerSpeechProviderTests: XCTestCase {
         XCTAssertEqual(events.count, 33)
         XCTAssertEqual(events.compactMap(Self.pcmChunk).count, 32)
         XCTAssertTrue(highWaterMark > 0)
-        XCTAssertTrue(highWaterMark <= QwenInterviewerSpeechProvider.outputBufferCapacity)
+        XCTAssertTrue(highWaterMark <= LocalInterviewerSpeechProvider.outputBufferCapacity)
     }
 
     func testCancellationJoinsProducerSuspendedByBackpressure() async throws {
@@ -185,11 +185,11 @@ final class QwenInterviewerSpeechProviderTests: XCTestCase {
         do {
             while try await iterator.next() != nil {}
             XCTFail("joined producer cancellation must terminate the stream")
-        } catch let error as QwenInterviewerSpeechError {
+        } catch let error as LocalInterviewerSpeechError {
             XCTAssertEqual(error, .cancelled)
         }
         let highWaterMark = await fixture.provider.outputBufferHighWaterMark()
-        XCTAssertTrue(highWaterMark <= QwenInterviewerSpeechProvider.outputBufferCapacity)
+        XCTAssertTrue(highWaterMark <= LocalInterviewerSpeechProvider.outputBufferCapacity)
 
         let retry = try await Self.collect(
             try await fixture.provider.synthesize(
@@ -250,7 +250,7 @@ final class QwenInterviewerSpeechProviderTests: XCTestCase {
                     )
                 )
                 XCTFail("non-finite audio must fail")
-            } catch let error as QwenInterviewerSpeechError {
+            } catch let error as LocalInterviewerSpeechError {
                 XCTAssertEqual(error, .invalidAudio)
             }
             XCTAssertEqual(fixture.runtime.activeDelayedProducerCount(), 0)
@@ -262,7 +262,7 @@ final class QwenInterviewerSpeechProviderTests: XCTestCase {
     func testOversizedPCMChunkFailsBeforeEnteringBoundedBuffer() async throws {
         let oversized = [Float](
             repeating: 0.1,
-            count: QwenInterviewerSpeechProvider.maximumChunkSampleCount + 1
+            count: LocalInterviewerSpeechProvider.maximumChunkSampleCount + 1
         )
         let fixture = try ProviderFixture.make(runtimeBehavior: .chunks([oversized]))
         defer { fixture.remove() }
@@ -275,7 +275,7 @@ final class QwenInterviewerSpeechProviderTests: XCTestCase {
                 )
             )
             XCTFail("an oversized upstream chunk must not enter the output buffer")
-        } catch let error as QwenInterviewerSpeechError {
+        } catch let error as LocalInterviewerSpeechError {
             XCTAssertEqual(error, .invalidAudio)
         }
     }
@@ -283,10 +283,10 @@ final class QwenInterviewerSpeechProviderTests: XCTestCase {
     func testTotalGeneratedSamplesCannotExceedProviderBoundary() async throws {
         let fullChunk = [Float](
             repeating: 0.1,
-            count: QwenInterviewerSpeechProvider.maximumChunkSampleCount
+            count: LocalInterviewerSpeechProvider.maximumChunkSampleCount
         )
-        let fullChunkCount = QwenInterviewerSpeechProvider.maximumGeneratedSampleCount
-            / QwenInterviewerSpeechProvider.maximumChunkSampleCount
+        let fullChunkCount = LocalInterviewerSpeechProvider.maximumGeneratedSampleCount
+            / LocalInterviewerSpeechProvider.maximumChunkSampleCount
         let chunks = Array(repeating: fullChunk, count: fullChunkCount) + [[0.1]]
         let fixture = try ProviderFixture.make(runtimeBehavior: .chunks(chunks))
         defer { fixture.remove() }
@@ -299,7 +299,7 @@ final class QwenInterviewerSpeechProviderTests: XCTestCase {
                 )
             )
             XCTFail("provider output must not exceed 2,400,000 samples")
-        } catch let error as QwenInterviewerSpeechError {
+        } catch let error as LocalInterviewerSpeechError {
             XCTAssertEqual(error, .invalidAudio)
         }
     }
@@ -312,7 +312,7 @@ final class QwenInterviewerSpeechProviderTests: XCTestCase {
         do {
             _ = try await fixture.provider.synthesize(Self.request(text: "   "))
             XCTFail("empty speech must fail")
-        } catch let error as QwenInterviewerSpeechError {
+        } catch let error as LocalInterviewerSpeechError {
             XCTAssertEqual(error, .invalidRequest)
         }
 
@@ -334,7 +334,7 @@ final class QwenInterviewerSpeechProviderTests: XCTestCase {
                 Self.request(text: "private fixture words", profile: wrongProfile)
             )
             XCTFail("unapproved profile must fail")
-        } catch let error as QwenInterviewerSpeechError {
+        } catch let error as LocalInterviewerSpeechError {
             XCTAssertEqual(error, .profileMismatch)
             XCTAssertFalse(String(describing: error).contains("private fixture words"))
         }
@@ -344,7 +344,7 @@ final class QwenInterviewerSpeechProviderTests: XCTestCase {
                 try await fixture.provider.synthesize(Self.request(text: "Finite output only."))
             )
             XCTFail("NaN PCM must fail")
-        } catch let error as QwenInterviewerSpeechError {
+        } catch let error as LocalInterviewerSpeechError {
             XCTAssertEqual(error, .invalidAudio)
         }
     }
@@ -367,7 +367,7 @@ final class QwenInterviewerSpeechProviderTests: XCTestCase {
         do {
             _ = try await fixture.provider.synthesize(Self.request(text: "After unload."))
             XCTFail("unload must release process-loaded model")
-        } catch let error as QwenInterviewerSpeechError {
+        } catch let error as LocalInterviewerSpeechError {
             XCTAssertEqual(error, .notPrepared)
         }
     }
@@ -454,11 +454,11 @@ final class QwenInterviewerSpeechProviderTests: XCTestCase {
 private struct ProviderFixture {
     let root: URL
     let modelRoot: URL
-    let manifest: QwenSnapshotManifest
+    let manifest: LocalSpeechSnapshotManifest
     let downloader: ProviderSnapshotDownloader
     let loader: ProviderModelLoader
     let runtime: ProviderRuntime
-    let provider: QwenInterviewerSpeechProvider
+    let provider: LocalInterviewerSpeechProvider
 
     static func make(
         runtimeBehavior: ProviderRuntime.Behavior = .chunks([[0.1, -0.1]])
@@ -473,29 +473,29 @@ private struct ProviderFixture {
             "config.json": Data(#"{"sample_rate":24000}"#.utf8),
             "speech_tokenizer/model.safetensors": Data([1, 2, 3, 4]),
         ]
-        let manifest = QwenSnapshotManifest(
+        let manifest = LocalSpeechSnapshotManifest(
             repositoryID: "fixture/provider-model",
             revision: "1234567890abcdef1234567890abcdef12345678",
             files: contents.keys.sorted().map { path in
                 let data = contents[path]!
-                return QwenSnapshotFile(
+                return LocalSpeechSnapshotFile(
                     path: path,
                     byteCount: Int64(data.count),
-                    sha256: QwenSHA256.string(data)
+                    sha256: LocalSpeechSHA256.string(data)
                 )
             }
         )
         let runtime = ProviderRuntime(behavior: runtimeBehavior)
         let loader = ProviderModelLoader(runtime: runtime)
         let downloader = ProviderSnapshotDownloader(contents: contents)
-        let store = QwenModelStore(
+        let store = LocalSpeechModelStore(
             modelRoot: modelRoot,
             manifest: manifest,
             downloader: downloader,
             freeSpaceReader: ProviderFreeSpaceReader(),
             minimumFreeBytes: 1
         )
-        let provider = QwenInterviewerSpeechProvider(store: store, loader: loader)
+        let provider = LocalInterviewerSpeechProvider(store: store, loader: loader)
         return ProviderFixture(
             root: root,
             modelRoot: modelRoot,
@@ -512,7 +512,7 @@ private struct ProviderFixture {
     }
 }
 
-private extension QwenInterviewerSpeechProviderFixture {
+private extension LocalInterviewerSpeechProviderFixture {
     static var publicProvenance: InterviewerSpeechProvenance {
         InterviewerSpeechProvenance(
             providerID: Qwen3TTSProvenance.providerID,
@@ -523,16 +523,16 @@ private extension QwenInterviewerSpeechProviderFixture {
     }
 }
 
-private enum QwenInterviewerSpeechProviderFixture {}
+private enum LocalInterviewerSpeechProviderFixture {}
 
-private struct ProviderFreeSpaceReader: QwenFreeSpaceReading {
+private struct ProviderFreeSpaceReader: LocalSpeechFreeSpaceReading {
     func availableBytes(for location: URL) throws -> Int64 {
         _ = location
         return 1_000_000
     }
 }
 
-private actor ProviderSnapshotDownloader: QwenSnapshotDownloading {
+private actor ProviderSnapshotDownloader: LocalSpeechSnapshotDownloading {
     private let contents: [String: Data]
     private var calls = 0
 
@@ -541,10 +541,10 @@ private actor ProviderSnapshotDownloader: QwenSnapshotDownloading {
     }
 
     func downloadSnapshot(
-        manifest: QwenSnapshotManifest,
+        manifest: LocalSpeechSnapshotManifest,
         destination: URL,
         cacheRoot: URL,
-        progress: @escaping @Sendable (QwenModelStoreProgress) -> Void
+        progress: @escaping @Sendable (LocalSpeechModelStoreProgress) -> Void
     ) async throws {
         _ = cacheRoot
         calls += 1
@@ -557,7 +557,7 @@ private actor ProviderSnapshotDownloader: QwenSnapshotDownloading {
             try data.write(to: url)
         }
         progress(
-            QwenModelStoreProgress(
+            LocalSpeechModelStoreProgress(
                 stage: .downloading,
                 completedBytes: manifest.byteCount,
                 totalBytes: manifest.byteCount
@@ -568,7 +568,7 @@ private actor ProviderSnapshotDownloader: QwenSnapshotDownloading {
     func callCount() -> Int { calls }
 }
 
-private actor ProviderModelLoader: QwenSpeechModelLoading {
+private actor ProviderModelLoader: LocalSpeechModelLoading {
     private let runtime: ProviderRuntime
     private var directories = [URL]()
 
@@ -576,9 +576,9 @@ private actor ProviderModelLoader: QwenSpeechModelLoading {
         self.runtime = runtime
     }
 
-    func loadModel(from directory: URL) async throws -> any QwenStreamingSpeechModel {
+    func loadModel(from directory: URL) async throws -> any LocalStreamingSpeechModel {
         directories.append(directory)
-        let tokenizer = directory.appendingPathComponent(QwenModelStore.derivedTokenizerName)
+        let tokenizer = directory.appendingPathComponent(LocalSpeechModelStore.derivedTokenizerName)
         if !FileManager.default.fileExists(atPath: tokenizer.path) {
             try Data(#"{"model":{"type":"BPE"}}"#.utf8).write(to: tokenizer)
         }
@@ -588,7 +588,7 @@ private actor ProviderModelLoader: QwenSpeechModelLoading {
     func loadedDirectories() -> [URL] { directories }
 }
 
-private final class ProviderRuntime: QwenStreamingSpeechModel, @unchecked Sendable {
+private final class ProviderRuntime: LocalStreamingSpeechModel, @unchecked Sendable {
     enum Behavior: Sendable {
         case chunks([[Float]])
         case waitForCancellation
@@ -619,7 +619,7 @@ private final class ProviderRuntime: QwenStreamingSpeechModel, @unchecked Sendab
     func startGeneration(
         text: String,
         profile: InterviewerSpeechProfile
-    ) -> any QwenSpeechGeneration {
+    ) -> any LocalSpeechGeneration {
         lock.withLock { requests.append(ObservedRequest(text: text, profile: profile)) }
         switch behavior {
         case .chunks(let chunks):
@@ -730,7 +730,7 @@ private final class ProviderRuntime: QwenStreamingSpeechModel, @unchecked Sendab
 
 /// Test double for the pinned upstream Qwen handle. `cancelAndWait` joins the
 /// exact producer Task, including deliberately non-cancellable teardown.
-private final class ProviderTestGeneration: QwenSpeechGeneration, @unchecked Sendable {
+private final class ProviderTestGeneration: LocalSpeechGeneration, @unchecked Sendable {
     private var iterator: AsyncThrowingStream<[Float], Error>.Iterator
     private let producerTask: Task<Void, Never>?
 

@@ -1,4 +1,5 @@
 import AppKit
+import InterviewArcLiveCore
 
 @MainActor
 final class InterviewArcLiveTerminationGate {
@@ -42,8 +43,29 @@ final class InterviewArcLiveApp: NSObject, NSApplicationDelegate {
     private var terminationGate: InterviewArcLiveTerminationGate?
 
     override init() {
-        let hosted = try? HostedPracticeController.makeDefault()
-        model = SystemDesignRoomModel(hostedController: hosted)
+        let hosted: HostedPracticeController?
+        let roomPreferences: UserDefaults
+#if INTERVIEW_ARC_LIVE_DIAGNOSTIC_STATE_ROOT
+        let environment = ProcessInfo.processInfo.environment
+        if environment["INTERVIEW_ARC_LIVE_DIAGNOSTIC_LOCAL_ROOM"] == "1" {
+            guard let diagnosticRoot = try? LivePaths.applicationSupportRoot(),
+                  diagnosticRoot.path.hasPrefix(
+                    URL(fileURLWithPath: "/private/tmp", isDirectory: true)
+                        .standardizedFileURL.path + "/interview-arc-live-ui-smoke-") else {
+                fatalError("Diagnostic room requires an isolated temporary state root.")
+            }
+            hosted = nil
+            roomPreferences = UserDefaults(suiteName:
+                "app.interviewarc.live.diagnostic.\(diagnosticRoot.lastPathComponent)") ?? .standard
+        } else {
+            hosted = try? HostedPracticeController.makeDefault()
+            roomPreferences = .standard
+        }
+#else
+        hosted = try? HostedPracticeController.makeDefault()
+        roomPreferences = .standard
+#endif
+        model = SystemDesignRoomModel(preferences: roomPreferences, hostedController: hosted)
         behavioralModel = BehavioralRoomModel()
         super.init()
     }

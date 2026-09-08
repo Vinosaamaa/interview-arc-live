@@ -243,7 +243,7 @@ struct CompactSystemDesignRoomView: View {
       button
         .buttonStyle(.borderedProminent)
         .tint(CompactMockupPalette.stop)
-    case .recordSegment, .keepFloor, .holdFloor, .primaryPhaseAction:
+    case .recordSegment, .toggleMicrophone, .keepFloor, .holdFloor, .primaryPhaseAction:
       button
         .buttonStyle(.bordered)
         .tint(CompactMockupPalette.violet)
@@ -267,7 +267,7 @@ struct CompactSystemDesignRoomView: View {
     for action: CompactRoomAction
   ) -> Double {
     switch action {
-    case .recordSegment, .stopRecording: return 50
+    case .recordSegment, .stopRecording, .toggleMicrophone: return 50
     case .keepFloor: return 45
     case .holdFloor: return 48
     case .primaryPhaseAction: return 40
@@ -283,6 +283,8 @@ struct CompactSystemDesignRoomView: View {
       Task { await model.recordSegment() }
     case .stopRecording:
       Task { await model.stopRecording() }
+    case .toggleMicrophone:
+      Task { await model.toggleMicrophone() }
     case .keepFloor:
       Task { await model.keepMyFloor() }
     case .holdFloor:

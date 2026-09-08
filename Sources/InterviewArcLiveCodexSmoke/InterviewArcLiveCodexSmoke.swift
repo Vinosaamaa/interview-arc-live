@@ -33,8 +33,6 @@ struct InterviewArcLiveCodexSmoke {
             break
         case .missing:
             fail("Codex smoke failed: Codex is not installed.", code: 69)
-        case .incompatible(_, let requiredVersion):
-            fail("Codex smoke failed: this build requires \(requiredVersion).", code: 69)
         case .unauthenticated:
             fail("Codex smoke failed: sign in through ChatGPT or Codex first.", code: 69)
         case .transportFailure:
@@ -74,7 +72,7 @@ struct InterviewArcLiveCodexSmoke {
                 fail("Codex smoke failed: no canonical interviewer response.", code: 70)
             }
             print("Installed Codex interviewer smoke passed.")
-        } catch let error as CodexAppServerRuntimeError {
+        } catch let error as InterviewerRuntimeError {
             fail(safeFailureMessage(for: error), code: 70)
         } catch {
             fail("Codex smoke failed before a canonical response was accepted.", code: 70)
@@ -82,13 +80,11 @@ struct InterviewArcLiveCodexSmoke {
     }
 
     private static func safeFailureMessage(
-        for error: CodexAppServerRuntimeError
+        for error: InterviewerRuntimeError
     ) -> String {
         switch error {
         case .missing:
             "Codex smoke failed: Codex is not installed."
-        case .incompatible(_, let requiredVersion):
-            "Codex smoke failed: this build requires \(requiredVersion)."
         case .unauthenticated:
             "Codex smoke failed: sign in through ChatGPT or Codex first."
         case .transportFailure:

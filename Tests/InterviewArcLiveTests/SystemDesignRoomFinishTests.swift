@@ -42,7 +42,7 @@ final class SystemDesignRoomFinishTests: XCTestCase {
 
     func testFinishInterviewReportsWhenTheLocalRoomIsNotOpen() async {
         let model = SystemDesignRoomModel(
-            codexRuntime: UnopenedRoomCodexRuntime()
+            interviewerRuntime: UnopenedRoomCodexRuntime()
         )
 
         let didFinish = await model.finishInterview()
@@ -56,8 +56,9 @@ final class SystemDesignRoomFinishTests: XCTestCase {
     }
 }
 
-private actor UnopenedRoomCodexRuntime: LiveCodexInterviewerRuntime {
-    func preflight() async -> CodexAppServerReadiness { .ready }
+private actor UnopenedRoomCodexRuntime: InterviewerProvider {
+    let providerName = "Fixture"
+    func preflight() async -> InterviewerReadiness { .ready }
 
     func respond(
         to request: InterviewerRequest

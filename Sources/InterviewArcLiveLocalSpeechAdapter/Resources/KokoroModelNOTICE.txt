@@ -1,0 +1,7 @@
+Kokoro-82M-bf16 and af_heart: hexgrad Kokoro-82M, Apache-2.0.
+https://huggingface.co/mlx-community/Kokoro-82M-bf16/tree/a71e4d38b236d968966a2002c4c895dbd12b1c3c
+English pronunciation resources: beshkenadze/kitten-tts-g2p, MIT.
+https://huggingface.co/beshkenadze/kitten-tts-g2p/tree/9c692b92682d959d9013a9cfe6a49541997add18
+Models are downloaded explicitly into Live-owned storage and verified against KokoroProvenance.swift. They are not bundled with the app.
+Apache-2.0 license: https://www.apache.org/licenses/LICENSE-2.0
+The source license and exact receipts for the English pronunciation implementation are in KokoroEnglishG2PNOTICE.txt.

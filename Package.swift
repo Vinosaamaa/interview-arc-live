@@ -39,7 +39,10 @@ let package = Package(
         ),
     ],
     targets: [
-        .target(name: "InterviewArcLiveCore"),
+        .target(
+            name: "InterviewArcLiveCore",
+            swiftSettings: [.define("INTERVIEW_ARC_LIVE_DIAGNOSTIC_STATE_ROOT", .when(configuration: .debug))]
+        ),
         .target(
             name: "InterviewArcLiveHostedClient",
             dependencies: ["InterviewArcLiveCore"]
@@ -59,7 +62,7 @@ let package = Package(
             dependencies: ["InterviewArcLiveCore"]
         ),
         .target(
-            name: "InterviewArcLiveQwenAdapter",
+            name: "InterviewArcLiveLocalSpeechAdapter",
             dependencies: [
                 "InterviewArcLiveCore",
                 .product(name: "HuggingFace", package: "swift-huggingface"),
@@ -78,11 +81,12 @@ let package = Package(
                 "InterviewArcLiveCore",
                 "InterviewArcLiveHostedClient",
                 "InterviewArcLiveCodexAdapter",
-                "InterviewArcLiveQwenAdapter",
+                "InterviewArcLiveLocalSpeechAdapter",
                 "InterviewArcLiveSpeechOutputAdapter",
                 "InterviewArcLiveVoiceAdapter",
             ],
-            resources: [.copy("Resources/BoardEditor")]
+            resources: [.copy("Resources/BoardEditor")],
+            swiftSettings: [.define("INTERVIEW_ARC_LIVE_DIAGNOSTIC_STATE_ROOT", .when(configuration: .debug))]
         ),
         .executableTarget(
             name: "InterviewArcLiveCodexSmoke",
@@ -102,7 +106,7 @@ let package = Package(
             name: "InterviewArcLiveSpeechSmoke",
             dependencies: [
                 "InterviewArcLiveCore",
-                "InterviewArcLiveQwenAdapter",
+                "InterviewArcLiveLocalSpeechAdapter",
                 "InterviewArcLiveSpeechOutputAdapter",
             ]
         ),
@@ -136,10 +140,10 @@ let package = Package(
             ]
         ),
         .testTarget(
-            name: "InterviewArcLiveQwenAdapterTests",
+            name: "InterviewArcLiveLocalSpeechAdapterTests",
             dependencies: [
                 "InterviewArcLiveCore",
-                "InterviewArcLiveQwenAdapter",
+                "InterviewArcLiveLocalSpeechAdapter",
             ]
         ),
         .testTarget(
@@ -154,8 +158,9 @@ let package = Package(
             dependencies: [
                 "InterviewArcLive",
                 "InterviewArcLiveCore",
+                "InterviewArcLiveHostedClient",
                 "InterviewArcLiveCodexAdapter",
-                "InterviewArcLiveQwenAdapter",
+                "InterviewArcLiveLocalSpeechAdapter",
                 "InterviewArcLiveSpeechOutputAdapter",
             ]
         ),

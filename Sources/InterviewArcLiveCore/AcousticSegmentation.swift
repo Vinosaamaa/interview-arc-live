@@ -42,6 +42,13 @@ public struct AcousticPreRoll: Sendable, Equatable {
     }
 }
 
+public enum AcousticSegmentationFailure: Error, Sendable, Equatable {
+    case microphonePermissionDenied
+    case echoCancellationUnavailable
+    case inputUnavailable
+    case captureBufferExceeded
+}
+
 /// Narrow local-audio Seam for Continuous Conversation. Production uses a
 /// VoiceCore-backed Adapter; tests inject a deterministic Adapter.
 @MainActor
@@ -50,7 +57,7 @@ public protocol AcousticSegmenting: AnyObject {
         _ handler: (@MainActor @Sendable (AcousticSegmentationEvent) -> Void)?
     )
 
-    func arm(_ mode: AcousticSegmentationMode) async
+    func arm(_ mode: AcousticSegmentationMode) async throws
 
     func disarm() async
 

@@ -36,6 +36,22 @@ endpoint evaluation, and, for a current `likely_end`, complete Endpoint Grace
 and the canonical at-most-once Hand off. After the Interviewer Turn and local
 speech playback complete, Live re-arms Candidate Floor automatically.
 
+Acoustic event handling never waits for a network transcription. The coordinator
+serializes local capture boundaries and owns a separate ordered transcription
+queue, allowing the next Segment to record while earlier audio waits for Groq.
+Handoff remains blocked until every included Segment has selected evidence.
+New Interviewer Turns enter one application delivery path for local speech and
+hosted pair synchronization, whether initiated by a button or Endpoint Grace.
+Quit and End disarm input and join owned work before releasing hosted authority.
+
+System Design uses one VoiceCore acoustic input for detection and recording.
+The 400 ms pre-roll and subsequent speech remain in a bounded in-memory buffer
+while durable capture authorization and timer startup finish. Setup exceeding
+15 seconds fails visibly instead of silently dropping the answer's beginning.
+Only authorized capture creates a private source M4A. Automatic startup requests
+microphone permission explicitly; denial and input failures surface in the room.
+Pause preserves active recording and exposes Resume in both room sizes.
+
 The normal Continuous Conversation presentation does not require Record,
 Stop, or Hand off. Those actions remain available as explicit recovery and
 compatibility controls when automatic capture is unavailable or a retained
@@ -58,7 +74,9 @@ decodable and available only as recovery or advanced behavior.
 The first shipment supports candidate barge-in without adopting simultaneous
 two-speaker dialogue. While interviewer TTS plays, its exact output frames are
 the far-end reference for local echo cancellation. Local speech-start
-detection receives only the cleaned near-end signal. Confirmed candidate speech
+detection receives only the cleaned near-end signal. If voice processing is
+unavailable, automatic interruption stays disarmed and the room offers Stop
+speech; ordinary listening resumes after playback. Confirmed candidate speech
 stops playback and stale generation, preserves a bounded pre-roll, durably
 opens Candidate Floor, and then records normal Segment evidence. Unconfirmed
 noise or residual playback cannot create a Candidate Turn or leave the device.

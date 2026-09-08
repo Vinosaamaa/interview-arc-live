@@ -1,0 +1,44 @@
+Kokoro English pronunciation source
+
+Vendored from Vinosaamaa/mlx-audio-swift revision a228dc056c6b298a2f5aff7f10e3aed537577fa0, Sources/MLXAudioTTS/Models/StyleTTS2/G2P (excluding MisakiTextProcessor.swift).
+Only trailing whitespace is normalized; the source logic is unchanged. Live supplies verified local resources through its own TextProcessor; no upstream global-cache downloader is included. No model weights are bundled.
+
+MIT License
+
+Copyright (c) 2025 Prince Canuma
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+Original upstream source SHA-256 receipts:
+b0fad8445251d8925790de566ee3c55f7a44681b2619db3dca6d4c1a69cc1f44  EnglishG2P.swift
+fe3f0f65974db23404058ec6f2bc80a0a3498bbaceb6ce0f51aeddebc9a5219d  EnglishNum2Word.swift
+4316d2233a2fc7a42250805b60e67546477e8ce0922ac15e4faa9f6f40791e49  FallbackNetwork/BARTConfig.swift
+97fd126eeb112ede707f2d81e37bbef3c555192f2e6e6aabed2b0401fdff821c  FallbackNetwork/BARTDecoderLayer.swift
+4970bc0ba9d2486d80bbf683690d04543b5c129fc28a480a03a33a71404b9542  FallbackNetwork/BARTEncoderLayer.swift
+6b98f76a9b0999e30ddb9a0037e7b1e22cc8b77ccb03893a04e4350facf59479  FallbackNetwork/BARTLayerNorm.swift
+1b66912431728ac085ed4d3904b74d6f8af79a4f39821483a5055da677c0d027  FallbackNetwork/BARTModel.swift
+17a979d9ab1dd96ffdba13e1650351401e37d7b63da4a2dd326a78e5bdf0370f  FallbackNetwork/EnglishFallbackNetwork.swift
+bf439fbee9e67c73b22a466572c23aebab312f982fd28d8c646614cd462d174f  FallbackNetwork/FeedForward.swift
+842b8705c1d34b119cb279307dda84c349d839c32e553c2598346932ff5d8c4b  FallbackNetwork/MultiHeadAttention.swift
+ab1dd1d5e5393c09e823db495708e2535e62e116c9b8dec485698f118caff3f8  G2PExtensions.swift
+f6925325fa43debc641dcc47b7a755a99466e436fb7e244fb68805da58397d7d  Lexicon/DataResourcesUtil.swift
+7106f32244b83e2b18e4e8ee5e1156d457fa5df183c449d62352fffaa0ab7bd3  Lexicon/Lexicon.swift
+d3c047b119829decdf575b36fbf1c9fb33f1c126b0c74ecbf622ed5b5bf89e87  Lexicon/PennTagUtil.swift
+a131c6fa1b4ac3fefd736759f8590bab5a06363cf1ace123cd8b42f198f8231c  MToken.swift
+25681bdd764292f6a2ba6f70f75a104a607d6300d0a49986c79048c8f17c15a7  TokenContext.swift

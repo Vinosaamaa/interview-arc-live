@@ -108,7 +108,18 @@ struct InterviewArcLiveEndpointSmoke {
             code: 70
           )
         }
-        fail("Endpoint smoke failed: functional Patient Auto invariants were not satisfied.", code: 70)
+        let evaluation = run.completed.endpointEvaluations.first
+        let diagnostic = [
+          "pending=\(validatePendingSnapshot(run.pending))",
+          "completed=\(validateCompletedSnapshot(run.completed))",
+          "persisted=\(validatePersistence(persisted, completed: run.completed))",
+          "classifier_calls=\(classifierCalls)",
+          "interviewer_calls=\(interviewerCalls)",
+          "authorization_durable=\(durableAtEntry)",
+          "endpoint_failure=\(evaluation?.failure?.reason.rawValue ?? "none")",
+          "endpoint_decision=\(evaluation?.proposal?.decision.rawValue ?? "none")"
+        ].joined(separator: " ")
+        fail("Endpoint smoke failed: \(diagnostic)", code: 70)
       }
       print("Installed Patient Auto Groq endpoint and automatic Hand off smoke passed.")
     } catch SegmentSpeechCoordinatorError.credentialUnavailable {

@@ -2,11 +2,15 @@ import CryptoKit
 import Darwin
 import Foundation
 import InterviewArcLiveCore
-import InterviewArcLiveQwenAdapter
+import InterviewArcLiveLocalSpeechAdapter
 import InterviewArcLiveSpeechOutputAdapter
 
 @main
 struct InterviewArcLiveSpeechSmoke {
+    private static var engine: LocalSpeechEngine {
+        LocalSpeechEngine(rawValue: ProcessInfo.processInfo.environment[
+            "INTERVIEW_ARC_LIVE_SPEECH_ENGINE"] ?? "qwen") ?? .qwen
+    }
     private static let spokenText =
         "Let's clarify the requirements before we choose an architecture."
 
@@ -33,7 +37,7 @@ struct InterviewArcLiveSpeechSmoke {
                 .map(String.init) ?? "unknown"
             let totalGeneration = result.metrics.totalGenerationMilliseconds
                 .map(String.init) ?? "unknown"
-            print("model_revision=\(Qwen3TTSProvenance.modelRevision)")
+            print("model_revision=\(engine.provenance.modelRevision)")
             print("chunk_count=\(result.metrics.chunkCount)")
             print("time_to_first_audio_ms=\(firstAudio)")
             print("generation_total_ms=\(totalGeneration)")
@@ -54,7 +58,7 @@ struct InterviewArcLiveSpeechSmoke {
     private static func run(
         smokeRoot: URL
     ) async throws -> SmokeResult {
-        let provider = try QwenInterviewerSpeechProvider()
+        let provider = try LocalInterviewerSpeechProvider(engine: engine)
         let initial = await provider.readiness()
         let permitsDownload = ProcessInfo.processInfo.environment[
             "INTERVIEW_ARC_LIVE_ALLOW_MODEL_DOWNLOAD"
@@ -64,7 +68,7 @@ struct InterviewArcLiveSpeechSmoke {
         case .notInstalled:
             guard permitsDownload else {
                 throw SmokeFailure(
-                    message: "The pinned local voice is absent. Set INTERVIEW_ARC_LIVE_ALLOW_MODEL_DOWNLOAD=1 to authorize the 1.838 GiB transfer.",
+                    message: "The pinned local voice is absent. Set INTERVIEW_ARC_LIVE_ALLOW_MODEL_DOWNLOAD=1 to authorize the \(engine.downloadSizeLabel) transfer.",
                     exitCode: 69
                 )
             }
@@ -122,7 +126,7 @@ struct InterviewArcLiveSpeechSmoke {
             utteranceID: utteranceID,
             attemptID: attemptID,
             spokenText: spokenText,
-            profile: .maraV1
+            profile: provider.provenance.profile
         )
         do {
             try await audioStore.beginWrite(writeRequest)

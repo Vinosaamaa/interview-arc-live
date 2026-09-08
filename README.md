@@ -82,8 +82,9 @@ npm run bundle
 
 The preview keeps its Session Manifest and source recordings under Live's local
 Application Support root. Manual Hand off joins selected Groq transcripts and
-uses the exactly preflighted, locally authenticated Codex App Server for one
-canonical interviewer response. Continuous Conversation and Patient Auto classify
+uses the locally authenticated Codex App Server for one canonical interviewer
+response. Compatibility is checked through the actual protocol, without a CLI
+version gate. Continuous Conversation and Patient Auto classify
 the accumulated answer after a newly completed Segment and, for a durable
 `likely_end`, start one durable four-second Endpoint Grace before the same
 canonical Hand off unless a Floor Hold is active. Keep my floor, Hold floor,
@@ -92,12 +93,16 @@ grace. Local acoustic segmentation starts and finalizes Segments without Record 
 Stop on the Continuous Conversation happy path.
 
 Interviewer speech is optional and never runs for historical turns
-automatically. The app discloses and downloads only the pinned
-`mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-8bit` revision shown in the UI
-(1.838 GiB, Apache-2.0) after explicit authorization and a 4 GiB free-space
-check. The model lives under Live's Application Support model directory; after
-installation, synthesis and WAV playback stay on the Mac. Written transcript
-use does not depend on speech availability.
+without an explicit Play or Generate action. The Mara menu selects Qwen or
+Kokoro independently of the AI provider, and remembers the selection.
+Qwen remains the default: the pinned 0.6B CustomVoice 8-bit package is
+1.838 GiB with a 4 GiB free-space check. Kokoro's 82M bf16 English af_heart
+package and pronunciation files total 321.2 MiB with a 1 GiB free-space check.
+Each engine downloads only after an explicit action, verifies its immutable
+revision and every file hash, and stores its model separately under Live's
+Application Support directory. Synthesis and WAV playback stay on the Mac.
+Switching stops and joins current speech; saved audio remains playable with its
+original provenance. Written transcript use does not depend on speech readiness.
 
 ## Opt-in installed Codex smoke
 
@@ -136,3 +141,11 @@ download it unless the same invocation also sets
 default tests and app startup. It requires the retained manifest from the
 exact installed package and verifies the installed signature plus application,
 helper, metadata, and MLX Metal-resource hashes before execution.
+
+### Select a local voice
+
+In the System Design room, open the **Mara** menu and choose **Voice engine → Qwen** or **Kokoro**. Download the selected model once when prompted. Qwen uses the existing 1.838 GiB model; Kokoro downloads 321.2 MiB including its English voice and pronunciation files. Both run locally without per-use speech fees. Switching stops current speech and keeps saved audio available; the choice survives relaunch. Removing one model leaves the other model and interview recordings intact.
+
+The AI interviewer provider is separate from the voice engine. Codex is currently implemented, without a CLI version gate; Pi, Cursor subscription, and other provider adapters are roadmap work.
+
+Debug builds support isolated room verification: set `INTERVIEW_ARC_LIVE_DIAGNOSTIC_STATE_ROOT` to a fresh directory beginning with `/private/tmp/interview-arc-live-ui-smoke-` and set `INTERVIEW_ARC_LIVE_DIAGNOSTIC_LOCAL_ROOM=1`. This uses separate local session state and preferences without opening a real hosted activity. Release builds omit both overrides.

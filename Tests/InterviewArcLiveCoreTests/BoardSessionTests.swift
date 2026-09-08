@@ -4,6 +4,29 @@ import XCTest
 
 @MainActor
 final class BoardSessionTests: XCTestCase {
+    func testOversizedBoardCannotCommitAnAnswerOrSendTruncatedContext() async throws {
+        let store = InMemorySessionManifestStore()
+        let session = try await makeSession(store: store, runtime: fixtureRuntime())
+        _ = try await session.execute(.giveCandidateFloor(commandID: CommandID("large-floor")))
+        let document = try BoardDocument(canvas: BoardDocument.empty.canvas, elements: (0..<17).map {
+            .label(BoardLabel(id: BoardElementID("large-\($0)"), origin: BoardPoint(x: 10, y: 10),
+                              text: String(repeating: "x", count: 16 * 1_024)))
+        })
+        _ = try await session.execute(.updateBoardDraft(commandID: CommandID("large-draft"), document: document))
+        let saved = try await session.execute(.saveBoardRevision(commandID: CommandID("large-save")))
+        let revision = try XCTUnwrap(saved.board.revisions.first)
+        do {
+            _ = try await session.execute(.handOffWithBoard(commandID: CommandID("large-send"),
+                transcript: CandidateTranscript(body: "A complete answer", quality: .verified),
+                boardAttachment: .revision(revision.id)))
+            XCTFail("Oversized attachments must require an explicit smaller revision")
+        } catch {
+            XCTAssertEqual(error as? InterviewerBoardContextError, .tooLarge)
+        }
+        let retained = await session.snapshot()
+        XCTAssertEqual(retained, saved)
+    }
+
     func testSavedRevisionIsAtomicallyAttachedToHandOffAndSurvivesReplayAndRestore() async throws {
         let store = InMemorySessionManifestStore()
         let runtime = InspectingInterviewerRuntime(
@@ -56,6 +79,9 @@ final class BoardSessionTests: XCTestCase {
         )
         let revision = try XCTUnwrap(saved.board.revisions.first)
         XCTAssertEqual(revision.document, document)
+        _ = try await session.execute(.updateBoardDraft(
+            commandID: CommandID("edit-after-attachment-save"),
+            document: try fixtureDocument(label: "Unattached draft must stay private")))
 
         let handOff = InterviewRoomCommand.handOffWithBoard(
             commandID: CommandID("handoff-public-board-revision"),
@@ -76,6 +102,8 @@ final class BoardSessionTests: XCTestCase {
         XCTAssertEqual(candidate.boardAttachment, .revision(revision.id))
         let persistedBeforeProvider = await runtime.candidateObservedBeforeResponse()
         XCTAssertEqual(persistedBeforeProvider, candidate)
+        let sentBoard = await runtime.boardObservedBeforeResponse()
+        XCTAssertEqual(sentBoard, try InterviewerBoardContext(revision: revision))
 
         let loadedManifest = await store.load(sessionID: sessionID)
         let durableManifest = try XCTUnwrap(loadedManifest)
@@ -802,6 +830,7 @@ private actor InspectingInterviewerRuntime: InterviewerRuntime {
     private let store: InMemorySessionManifestStore
     private let response: CanonicalInterviewerResponse
     private var observedCandidate: CandidateTurn?
+    private var observedBoard: InterviewerBoardContext?
 
     init(
         store: InMemorySessionManifestStore,
@@ -812,12 +841,15 @@ private actor InspectingInterviewerRuntime: InterviewerRuntime {
     }
 
     func respond(to request: InterviewerRequest) async throws -> CanonicalInterviewerResponse {
+        observedBoard = request.attachedBoard
         let persisted = await store.load(sessionID: request.sessionID)
         if case .candidate(let candidate) = persisted?.turns.last {
             observedCandidate = candidate
         }
         return response
     }
+
+    func boardObservedBeforeResponse() -> InterviewerBoardContext? { observedBoard }
 
     func candidateObservedBeforeResponse() -> CandidateTurn? {
         observedCandidate

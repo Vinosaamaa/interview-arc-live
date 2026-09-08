@@ -256,6 +256,90 @@ final class LiveGroqCredentialStoreTests: XCTestCase {
         }
     }
 
+    func testAuthorizedReadIsReusedAcrossReadinessAndTranscription() async throws {
+        let fixture = TransactionCredentialFixture(
+            value: "public-test-key", failingReadCalls: [2]
+        )
+        let store = LiveGroqCredentialStore(backend: fixture.backend)
+        let readiness = try await store.readiness()
+        XCTAssertEqual(readiness, .ready)
+        for _ in 0..<3 {
+            let value = try await store.readGroqCredential()
+            let nextReadiness = try await store.readiness()
+            XCTAssertEqual(value, "public-test-key")
+            XCTAssertEqual(nextReadiness, .ready)
+        }
+        XCTAssertEqual(fixture.readCount, 1)
+
+        let newStore = LiveGroqCredentialStore(backend: fixture.backend)
+        let newReadiness = try await newStore.readiness()
+        XCTAssertEqual(newReadiness, .keychainUnavailable)
+        XCTAssertEqual(fixture.readCount, 2)
+    }
+
+    func testReplacementAndRemovalDoNotRetainCachedCredential() async throws {
+        let fixture = TransactionCredentialFixture(value: "old-key")
+        let store = LiveGroqCredentialStore(backend: fixture.backend)
+        _ = try await store.readGroqCredential()
+        try await store.useUntilQuit("temporary-key")
+        let temporary = try await store.readGroqCredential()
+        XCTAssertEqual(temporary, "temporary-key")
+        try await store.saveAndVerify("replacement-key")
+        let replacement = try await store.readGroqCredential()
+        let readiness = try await store.readiness()
+        XCTAssertEqual(replacement, "replacement-key")
+        XCTAssertEqual(readiness, .ready)
+        XCTAssertEqual(fixture.readCount, 3)
+        try await store.remove()
+        let removed = try await store.read()
+        XCTAssertNil(removed)
+        XCTAssertEqual(fixture.readCount, 4)
+    }
+
+    func testFailedReplacementInvalidatesCacheBeforeReadback() async throws {
+        let fixture = TransactionCredentialFixture(
+            value: "old-key", mismatchedReadCalls: [3: "wrong-key"]
+        )
+        let store = LiveGroqCredentialStore(backend: fixture.backend)
+        _ = try await store.readGroqCredential()
+        do {
+            try await store.saveAndVerify("replacement-key")
+            XCTFail("Expected the real readback to reject the replacement")
+        } catch let error as LiveGroqCredentialStoreError {
+            XCTAssertEqual(error, .verificationFailed)
+        }
+        let restored = try await store.readGroqCredential()
+        XCTAssertEqual(restored, "old-key")
+        XCTAssertEqual(fixture.readCount, 5)
+    }
+
+    func testFailedRemovalDoesNotKeepServingCachedCredential() async throws {
+        let fixture = TransactionCredentialFixture(
+            value: "old-key", failingReadCalls: [2], removeFails: true
+        )
+        let store = LiveGroqCredentialStore(backend: fixture.backend)
+        _ = try await store.readGroqCredential()
+        do {
+            try await store.remove()
+            XCTFail("Expected removal failure")
+        } catch let error as LiveGroqCredentialStoreError {
+            XCTAssertEqual(error, .keychainUnavailable)
+        }
+        let readiness = try await store.readiness()
+        XCTAssertEqual(readiness, .keychainUnavailable)
+        XCTAssertEqual(fixture.readCount, 2)
+    }
+
+    func testMissingCredentialIsReadAgainAfterAnExternalSave() async throws {
+        let fixture = CredentialMemoryFixture()
+        let store = LiveGroqCredentialStore(backend: fixture.backend)
+        let missing = try await store.readiness()
+        XCTAssertEqual(missing, .missing)
+        try fixture.backend.save("new-key")
+        let value = try await store.readGroqCredential()
+        XCTAssertEqual(value, "new-key")
+    }
+
     func testRemoveClearsCredential() async throws {
         let fixture = CredentialMemoryFixture(value: "public-test-key")
         let store = LiveGroqCredentialStore(backend: fixture.backend)
@@ -341,6 +425,10 @@ private final class TransactionCredentialFixture: @unchecked Sendable {
         self.failingReadCalls = failingReadCalls
         self.mismatchedReadCalls = mismatchedReadCalls
         self.removeFails = removeFails
+    }
+
+    var readCount: Int {
+        lock.withLock { reads }
     }
 
     var value: String? {
