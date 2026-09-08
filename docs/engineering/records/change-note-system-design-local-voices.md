@@ -10,7 +10,7 @@ capabilityIds: ["interview-room-session"]
 createdAt: "2026-09-07"
 reconstructed: false
 confidence: "verified"
-unknowns: ["Hosted XCTest, exact Metal package, physical microphone and interactive controls pending"]
+unknowns: ["Final metadata-head CI and physical microphone interaction check pending"]
 modules: ["local-speech-adapter", "interviewer-speech-coordinator", "segment-speech-coordinator", "system-design-room"]
 interfaces: ["interviewer-speech-provider", "interviewer-provider"]
 seams: ["session-to-interviewer-speech", "session-to-interviewer-runtime"]
@@ -117,7 +117,21 @@ A compile-time diagnostic build can open an isolated local room for headed verif
   assertion was the compact-room closed action list, which omitted the new
   microphone toggle. That expectation is now updated; release packaging did
   not run because the test step failed. A new exact-head run remains required.
-- Pending: hosted XCTest and Metal package; headed microphone and interaction checks. Native UI automation timed out and macOS denied fallback accessibility access. These remain verification blockers, not inferred successes.
+- Hosted run 34181981424 passed all required tests and release packaging at PR
+  head b156f1e. Its merge commit aa5278642f76492f4de4730dcd294af55603dc0a has
+  exactly the same source tree as that head. Downloaded arm64 package signature,
+  executable/helper/resource hashes, and dependency graph all verified locally.
+- The downloaded release helper and its bundled Metal library passed both local
+  voices with the already installed model files: Qwen first audio 2,361 ms,
+  generation 4,071 ms, audio 4,080 ms; Kokoro first audio and generation 4,295 ms,
+  audio 4,075 ms. Both validated their WAV and playback/Stop. No installation,
+  Keychain access, model download, or hosted activity write was needed.
+- Package review found outdated microphone permission text describing only
+  manual transcription. It now explains automatic segment transcription and
+  Pause. This metadata-only correction requires a final exact-head hosted run.
+- Pending: final metadata-head CI and physical microphone/interruption checks.
+  Native UI automation previously timed out and macOS denied fallback
+  accessibility access. Synthetic capture is not physical microphone acceptance.
 
 ## Execution ledger
 
