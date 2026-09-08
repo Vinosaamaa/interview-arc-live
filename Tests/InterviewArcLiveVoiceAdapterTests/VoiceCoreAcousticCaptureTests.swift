@@ -40,6 +40,21 @@ final class VoiceCoreAcousticCaptureTests: XCTestCase {
         await input.disarm()
     }
 
+    func testBargeInRequiresEchoProcessingButQuietFloorStillListens() async throws {
+        let input = VoiceCoreAcousticSegmenter(requestPermission: { true }, startInput: {})
+        var detectedSpeech = 0
+        input.setEventHandler { if $0 == .speechStarted { detectedSpeech += 1 } }
+        do { try await input.arm(.bargeInDetection); XCTFail("Unprocessed echo cannot authorize barge-in") }
+        catch { XCTAssertEqual(error as? AcousticSegmentationFailure, .echoCancellationUnavailable) }
+        let samples = Array(repeating: Float(0.1), count: 1_024)
+        for _ in 0..<12 { input.ingest(rms: 0.1, samples: samples) }
+        XCTAssertEqual(detectedSpeech, 0)
+        try await input.arm(.candidateListening)
+        for _ in 0..<8 { input.ingest(rms: 0.1, samples: samples) }
+        XCTAssertEqual(detectedSpeech, 1)
+        await input.disarm()
+    }
+
     func testPermissionDenialIsReportedBeforeInputStarts() async {
         var inputStarts = 0
         let input = VoiceCoreAcousticSegmenter(requestPermission: { false },

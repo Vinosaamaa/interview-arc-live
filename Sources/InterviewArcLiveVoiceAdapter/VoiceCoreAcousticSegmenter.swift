@@ -38,6 +38,7 @@ public final class VoiceCoreAcousticSegmenter: AcousticSegmenting, VoiceCoreReco
     private var consecutiveSilenceFrames = 0
     private var isSpeechActive = false
     private var tapInstalled = false
+    private var voiceProcessingAvailable = false
     private var tapSampleRate: Double = 44_100
     private var preRoll: [Float] = []
 
@@ -77,6 +78,9 @@ public final class VoiceCoreAcousticSegmenter: AcousticSegmenting, VoiceCoreReco
     public func arm(_ mode: AcousticSegmentationMode) async throws {
         let preserveSpeech = isSpeechActive && Self.isLive(self.mode) && Self.isLive(mode)
         try await ensureMicrophone()
+        guard mode != .bargeInDetection || voiceProcessingAvailable else {
+            throw AcousticSegmentationFailure.echoCancellationUnavailable
+        }
         self.mode = mode
         if !preserveSpeech {
             consecutiveSpeechFrames = 0
@@ -144,9 +148,11 @@ public final class VoiceCoreAcousticSegmenter: AcousticSegmenting, VoiceCoreReco
         let input = engine.inputNode
         do {
             try input.setVoiceProcessingEnabled(true)
+            voiceProcessingAvailable = input.isVoiceProcessingEnabled
         } catch {
-            // Voice processing is best-effort echo cancellation. Energy VAD
-            // still runs on the near-end buffer if the hardware rejects it.
+            // Ordinary listening remains available when output is silent.
+            // Unprocessed speaker echo must never authorize candidate barge-in.
+            voiceProcessingAvailable = false
         }
         let format = input.outputFormat(forBus: 0)
         guard format.channelCount > 0, format.sampleRate > 0 else {
@@ -157,7 +163,9 @@ public final class VoiceCoreAcousticSegmenter: AcousticSegmenting, VoiceCoreReco
             [weak self] buffer, _ in
             let rms = Self.rootMeanSquare(buffer)
             let samples = Self.channelSamples(buffer)
-            Task { @MainActor [weak self] in
+            // AVAudioEngine invokes this tap serially. FIFO dispatch preserves
+            // PCM order; independent Tasks do not promise that ordering.
+            DispatchQueue.main.async { [weak self] in
                 self?.ingest(rms: rms, samples: samples)
             }
         }

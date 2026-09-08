@@ -74,7 +74,9 @@ decodable and available only as recovery or advanced behavior.
 The first shipment supports candidate barge-in without adopting simultaneous
 two-speaker dialogue. While interviewer TTS plays, its exact output frames are
 the far-end reference for local echo cancellation. Local speech-start
-detection receives only the cleaned near-end signal. Confirmed candidate speech
+detection receives only the cleaned near-end signal. If voice processing is
+unavailable, automatic interruption stays disarmed and the room offers Stop
+speech; ordinary listening resumes after playback. Confirmed candidate speech
 stops playback and stale generation, preserves a bounded pre-roll, durably
 opens Candidate Floor, and then records normal Segment evidence. Unconfirmed
 noise or residual playback cannot create a Candidate Turn or leave the device.

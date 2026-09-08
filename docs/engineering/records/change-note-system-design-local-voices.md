@@ -60,7 +60,12 @@ segments prevent premature AI handoff. Quit joins transcription and preserves
 active audio; End quiesces input before hosted completion. The same acoustic tap
 now supplies detection and private AAC recording, including bounded onset audio.
 Permission denial and startup errors are visible. Pause has an explicit Resume
-control and truthful paused status in full and compact rooms.
+control and truthful paused status in full and compact rooms. Pausing during an
+answer transcribes the saved audio while suppressing automatic handoff; Resume
+reevaluates that answer without a manual recovery action. An already dispatched
+AI reply is joined before canceling remaining grace state. When the input cannot
+cancel speaker echo, automatic interruption stays disabled and Stop speech
+remains available; normal listening resumes after playback.
 
 ## Implementation
 
@@ -93,6 +98,11 @@ A compile-time diagnostic build can open an isolated local room for headed verif
   input frames survived delayed startup and decoded successfully. Denied
   permission, Pause during permission startup, and the bounded onset buffer also
   passed without physical microphone access.
+- Pause/interruption regressions: active-answer Pause saved and transcribed the
+  audio, Resume completed the answer automatically, and Quit during a delayed AI
+  response retained its website pair. Synthetic audio verified that unavailable
+  echo cancellation disables barge-in while ordinary listening still works.
+  The final native rebuild passed in 18.31 seconds.
 - Native Automatic-mode views rendered successfully at 1280 and 992 pixels and
   in the compact room, using synthetic session data. Visual review confirmed
   Pause/Resume, legible paused status, and hands-free instructions. The final

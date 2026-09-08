@@ -2060,6 +2060,8 @@ final class SystemDesignRoomModel: ObservableObject {
             switch failure {
             case .microphonePermissionDenied:
                 self.errorMessage = "Allow Interview Arc Live in System Settings → Privacy & Security → Microphone, then resume listening."
+            case .echoCancellationUnavailable:
+                self.errorMessage = "This input cannot cancel speaker echo. Use Stop speech to interrupt Mara; listening resumes after playback."
             case .inputUnavailable:
                 self.errorMessage = "Live could not start the microphone. Check the selected input device, then resume listening."
             case .captureBufferExceeded:

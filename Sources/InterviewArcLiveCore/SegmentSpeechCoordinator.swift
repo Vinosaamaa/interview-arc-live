@@ -47,6 +47,7 @@ public final class SegmentSpeechCoordinator {
     private var pendingAutomaticTranscriptions: [(SegmentID, CommandID)] = []
     private var isHandlingBargeIn = false
     private var wantsContinuousListening = false
+    private var isInputPaused = false
     private var isPreparingForTermination = false
     private var armedAcousticMode: AcousticSegmentationMode = .disarmed
     private var endpointGraceTask: Task<Void, Never>?
@@ -235,6 +236,7 @@ public final class SegmentSpeechCoordinator {
         cancelScheduledGraceIfInactive()
         if next.turnMode == .continuousConversation {
             isPreparingForTermination = false
+            isInputPaused = false
             wantsContinuousListening = true
             await armContinuousListeningIfNeeded()
         } else {
@@ -566,9 +568,17 @@ public final class SegmentSpeechCoordinator {
     }
 
     public func enableContinuousListening() async {
+        let resuming = isInputPaused
+        isInputPaused = false
         isPreparingForTermination = false
         wantsContinuousListening = true
         await armContinuousListeningIfNeeded()
+        if resuming, let segment = snapshot.segments.last(where: {
+            $0.committedTurnID == nil && $0.selectedCandidate != nil && $0.lifecycle != .excluded
+        }) {
+            _ = await evaluateEndpointIfNeeded(triggerSegmentID: segment.id,
+                sourceCommandID: CommandID("resume-listening-\(snapshot.revision)"))
+        }
     }
 
     public func setInterviewerPlaybackStopper(
@@ -614,16 +624,31 @@ public final class SegmentSpeechCoordinator {
     public func pauseMicrophone(
         commandID: CommandID
     ) async throws -> InterviewRoomSnapshot {
+        isInputPaused = true
         wantsContinuousListening = false
+        cancelScheduledGrace()
         await disarmAcousticSegmenter()
         trace(command: "pause_microphone", resultCode: "disarmed")
         await acousticEventTask?.value
-        if snapshot.segments.contains(where: {
+        if let segmentID = snapshot.segments.first(where: {
             $0.lifecycle == .captureAuthorized
                 || $0.lifecycle == .recording
                 || $0.lifecycle == .finalizationAuthorized
-        }) {
-            return try await finalizeSegment(commandID: commandID)
+        })?.id {
+            let finalized = try await finalizeSegment(commandID: commandID)
+            if snapshot.turnMode == .continuousConversation,
+               finalized.segments.first(where: { $0.id == segmentID })?.lifecycle == .audioReady {
+                enqueueAutomaticTranscription(segmentID: segmentID,
+                    commandID: InterviewRoomSession.derivedCommandID(source: commandID, operation: "pause-transcribe"))
+            }
+        }
+        // An already dispatched handoff owns the session command until its
+        // response is durable. Input is paused immediately; join that work
+        // before deciding whether an uncommitted grace still needs cancellation.
+        await endpointResponseTask?.value
+        if let grace = snapshot.endpointGraces.last(where: { $0.lifecycle == .pending }) {
+            _ = try await cancelEndpointGrace(graceID: grace.id,
+                commandID: InterviewRoomSession.derivedCommandID(source: commandID, operation: "pause-grace"))
         }
         return snapshot
     }
@@ -1002,7 +1027,7 @@ public final class SegmentSpeechCoordinator {
     ) async -> InterviewRoomSnapshot {
         guard snapshot.phase == .candidateFloor,
               snapshot.turnMode.usesAutomaticEndpointCompletion,
-              !isPreparingForTermination else {
+              !isPreparingForTermination, !isInputPaused else {
             return snapshot
         }
 
@@ -1141,7 +1166,8 @@ public final class SegmentSpeechCoordinator {
         evaluationID: EndpointEvaluationID,
         sourceCommandID: CommandID
     ) async -> InterviewRoomSnapshot {
-        guard snapshot.floorHolds.activeHold == nil else {
+        guard !isInputPaused, !isPreparingForTermination,
+              snapshot.floorHolds.activeHold == nil else {
             await armContinuousListeningIfNeeded()
             return snapshot
         }
@@ -1169,6 +1195,11 @@ public final class SegmentSpeechCoordinator {
                   }),
                   grace.lifecycle == .pending else {
                 return application.snapshot
+            }
+            guard !isInputPaused, !isPreparingForTermination else {
+                return try await cancelEndpointGrace(graceID: grace.id,
+                    commandID: InterviewRoomSession.derivedCommandID(source: activationCommandID,
+                        operation: "paused-before-grace"))
             }
             schedule(grace)
             return application.snapshot
@@ -1209,6 +1240,7 @@ public final class SegmentSpeechCoordinator {
     }
 
     private func completeScheduledGrace(_ graceID: EndpointGraceID) async {
+        guard !isInputPaused, !isPreparingForTermination else { cancelScheduledGrace(); return }
         guard let grace = snapshot.endpointGraces.first(where: {
             $0.id == graceID && $0.lifecycle == .pending
         }) else {
@@ -1242,6 +1274,7 @@ public final class SegmentSpeechCoordinator {
         // A completed grace owns its full response/delivery task separately
         // from the cancelable timer. Quit joins the latest ordered response.
         await previousResponse?.value
+        guard !isInputPaused, !isPreparingForTermination else { return }
         do {
             _ = try await applyAndPublish(
                 .completeEndpointGrace(

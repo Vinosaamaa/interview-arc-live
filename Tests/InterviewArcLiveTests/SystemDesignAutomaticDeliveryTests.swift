@@ -166,6 +166,26 @@ final class SystemDesignAutomaticDeliveryTests: XCTestCase {
         XCTAssertEqual(fixture.model.floorStatePresentation.full.label, "Listening")
     }
 
+    func testPauseDuringSpeechTranscribesSavedAudioAndResumeNeedsNoRecoveryClick() async throws {
+        let fixture = try await AutomaticDeliveryFixture()
+        defer { fixture.removeTemporaryFiles() }
+        await fixture.conversation.enableContinuousListening()
+        _ = try await fixture.conversation.requestOpeningInterviewerTurn(
+            commandID: CommandID("active-pause-opening"))
+        await fixture.speech.waitUntilIdle()
+        fixture.segmenter.emit(.speechStarted)
+        try await waitUntil { fixture.conversation.snapshot.segments.first?.lifecycle == .recording }
+        await fixture.model.toggleMicrophone()
+        try await waitUntil { fixture.conversation.snapshot.segments.first?.selectedCandidate != nil }
+        XCTAssertTrue(fixture.model.isMicrophonePaused)
+        XCTAssertEqual(fixture.model.hostedSnapshot.activity?.pairs.count, 0)
+        await fixture.model.toggleMicrophone()
+        try await waitUntil { fixture.model.hostedSnapshot.activity?.pairs.count == 1 }
+        await fixture.speech.waitUntilIdle()
+        XCTAssertFalse(fixture.model.isMicrophonePaused)
+        XCTAssertEqual(fixture.segmenter.mode, .candidateListening)
+    }
+
     func testAutomaticCaptureCannotRecordAfterHostedWriteAccessIsReleased() async throws {
         let fixture = try await AutomaticDeliveryFixture()
         defer { fixture.removeTemporaryFiles() }

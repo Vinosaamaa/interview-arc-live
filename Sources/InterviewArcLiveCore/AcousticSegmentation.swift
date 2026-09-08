@@ -44,6 +44,7 @@ public struct AcousticPreRoll: Sendable, Equatable {
 
 public enum AcousticSegmentationFailure: Error, Sendable, Equatable {
     case microphonePermissionDenied
+    case echoCancellationUnavailable
     case inputUnavailable
     case captureBufferExceeded
 }
