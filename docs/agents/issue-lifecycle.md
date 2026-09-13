@@ -43,14 +43,11 @@ or any behavior that could silently lose or corrupt interview work.
 - Do not merge, install, notarize, deploy, or close without the authorization
   and verification required by the current user request.
 
-## Execution ledger
+## Task communication
 
-Implementation PRs and coordinator handoffs keep a chronological ledger of the
-meaningful work actually performed. Record exact Pacific timestamps when
-instrumented, repeated hosted runs and their reason, external waits, artifacts,
-retention, and provider-exposed metered usage. Use `unknown` rather than
-inventing missing request time, duration, or cost. Omit actions that did not
-happen. The ledger is administrative and never enters a practice transcript.
+Do not produce or post execution ledgers, timing breakdowns, hosted-run tables,
+or cost reports unless the user explicitly asks. Keep normal updates concise
+and report the outcome, relevant verification, and unresolved blockers.
 
 ## Resolution
 
